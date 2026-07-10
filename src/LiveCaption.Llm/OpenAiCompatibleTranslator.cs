@@ -109,24 +109,28 @@ public sealed class OpenAiCompatibleTranslator : ITranslator
             return false;
         }
 
-        var candidate = TrimSurroundingQuotes(value.Trim());
-        if (candidate.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        var candidate = TrimSurroundingQuotes(RemoveFormattingCharacters(value).Trim());
+        if (candidate.StartsWith("Bearer", StringComparison.OrdinalIgnoreCase) &&
+            candidate.Length > "Bearer".Length &&
+            char.IsWhiteSpace(candidate["Bearer".Length]))
         {
-            candidate = candidate["Bearer ".Length..].Trim();
+            candidate = candidate["Bearer".Length..].Trim();
         }
 
-        candidate = TrimSurroundingQuotes(candidate).Trim();
+        candidate = TrimSurroundingQuotes(RemoveWhitespaceAndFormattingCharacters(candidate));
         if (candidate.Length == 0)
         {
             error = "请先在设置中填写 API Key。";
             return false;
         }
 
-        foreach (var character in candidate)
+        for (var index = 0; index < candidate.Length; index++)
         {
+            var character = candidate[index];
             if (character is < (char)0x21 or > (char)0x7E)
             {
-                error = "API Key 含有无效字符。请只粘贴密钥本身，不要包含中文引号、全角空格或说明文字。";
+                error = $"API Key 的第 {index + 1} 个字符为 U+{(int)character:X4}，不能用于 HTTP 请求头。"
+                    + " 已自动清理常见的空格、引号和不可见格式字符；请确认粘贴的是密钥本身。";
                 return false;
             }
         }
@@ -148,6 +152,39 @@ public sealed class OpenAiCompatibleTranslator : ITranslator
 
     private static string TrimSurroundingQuotes(string value) =>
         value.Trim('"', '\'', '\u201c', '\u201d', '\u2018', '\u2019');
+
+    private static string RemoveFormattingCharacters(string value)
+    {
+        var builder = new StringBuilder(value.Length);
+        foreach (var character in value)
+        {
+            if (character is '\u200b' or '\u200c' or '\u200d' or '\u2060' or '\ufeff')
+            {
+                continue;
+            }
+
+            builder.Append(character);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string RemoveWhitespaceAndFormattingCharacters(string value)
+    {
+        var builder = new StringBuilder(value.Length);
+        foreach (var character in value)
+        {
+            if (char.IsWhiteSpace(character) ||
+                character is '\u200b' or '\u200c' or '\u200d' or '\u2060' or '\ufeff')
+            {
+                continue;
+            }
+
+            builder.Append(character);
+        }
+
+        return builder.ToString();
+    }
 
     private static void Merge(JsonObject destination, JsonObject source)
     {

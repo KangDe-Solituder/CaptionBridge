@@ -13,6 +13,7 @@ public sealed class AppRuntime : IAsyncDisposable
     private readonly ISessionStore _sessionStore;
     private readonly MouseSelectionWatcher _mouseWatcher;
     private readonly GlobalHotkeyService _hotkeyService;
+    private readonly SemaphoreSlim _selectionGate = new(1, 1);
     private SequentialCaptionTranslator? _captionTranslator;
     private BasicSegmenter? _segmenter;
     private CancellationTokenSource? _liveCancellation;
@@ -174,14 +175,26 @@ public sealed class AppRuntime : IAsyncDisposable
 
     private async Task RaiseSelectionAsync(bool force)
     {
-        var text = await _selectionSource.TryGetSelectionAsync(CancellationToken.None);
-        if (string.IsNullOrWhiteSpace(text) || (!force && string.Equals(text, _lastSelection, StringComparison.Ordinal)))
+        if (!await _selectionGate.WaitAsync(0).ConfigureAwait(true))
         {
             return;
         }
 
-        _lastSelection = text;
-        SelectionReady?.Invoke(this, new SelectionReadyEventArgs(text, System.Windows.Forms.Cursor.Position));
+        try
+        {
+            var text = await _selectionSource.TryGetSelectionAsync(CancellationToken.None);
+            if (string.IsNullOrWhiteSpace(text) || (!force && string.Equals(text, _lastSelection, StringComparison.Ordinal)))
+            {
+                return;
+            }
+
+            _lastSelection = text;
+            SelectionReady?.Invoke(this, new SelectionReadyEventArgs(text, System.Windows.Forms.Cursor.Position));
+        }
+        finally
+        {
+            _selectionGate.Release();
+        }
     }
 
     private async void OnCaptionObserved(object? sender, CaptionTextObserved observed)

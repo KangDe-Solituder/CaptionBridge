@@ -7,6 +7,18 @@ namespace LiveCaption.Core.Tests;
 public sealed class TranslationAndSegmentTests
 {
     [Fact]
+    public void ApiKeyNormalizationRemovesInvisibleFormattingCharacters()
+    {
+        var succeeded = OpenAiCompatibleTranslator.TryNormalizeApiKey(
+            "sk-test\u200b_12\ufeff3",
+            out var normalized,
+            out var error);
+
+        Assert.True(succeeded, error);
+        Assert.Equal("sk-test_123", normalized);
+    }
+
+    [Fact]
     public void ApiKeyNormalizationRemovesBearerPrefixAndSmartQuotes()
     {
         var succeeded = OpenAiCompatibleTranslator.TryNormalizeApiKey(
@@ -27,7 +39,7 @@ public sealed class TranslationAndSegmentTests
             out var error);
 
         Assert.False(succeeded);
-        Assert.Contains("\u65e0\u6548\u5b57\u7b26", error);
+        Assert.Contains("U+5BC6", error);
     }
 
     [Fact]

@@ -15,6 +15,7 @@ public partial class App : System.Windows.Application
     private ServiceProvider? _services;
     private System.Windows.Forms.NotifyIcon? _trayIcon;
     private OverlayWindow? _overlay;
+    private SelectionToolbarWindow? _selectionToolbar;
     private bool _showingUnhandledError;
 
     public App()
@@ -92,7 +93,11 @@ public partial class App : System.Windows.Application
             }
 
             _trayIcon?.Dispose();
-            _services?.Dispose();
+            if (_services is not null)
+            {
+                await _services.DisposeAsync();
+                _services = null;
+            }
             CrashReporter.WriteLifecycle($"Application exited normally with code {e.ApplicationExitCode}.");
         }
         catch (Exception exception)
@@ -104,8 +109,21 @@ public partial class App : System.Windows.Application
 
     private void OnSelectionReady(object? sender, SelectionReadyEventArgs eventArgs)
     {
-        Dispatcher.Invoke(() => new SelectionToolbarWindow(eventArgs.Text, eventArgs.Position,
-            _services!.GetRequiredService<AppRuntime>()).Show());
+        Dispatcher.BeginInvoke(() =>
+        {
+            _selectionToolbar?.Dismiss();
+            var toolbar = new SelectionToolbarWindow(eventArgs.Text, eventArgs.Position,
+                _services!.GetRequiredService<AppRuntime>());
+            toolbar.Closed += (_, _) =>
+            {
+                if (ReferenceEquals(_selectionToolbar, toolbar))
+                {
+                    _selectionToolbar = null;
+                }
+            };
+            _selectionToolbar = toolbar;
+            toolbar.Show();
+        });
     }
 
     private void OnCaptionTranslated(object? sender, CaptionTranslatedEventArgs eventArgs)
