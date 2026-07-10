@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LiveCaption.App/LiveCaption.App.csproj" />
+    <Project Path="src/LiveCaption.Core/LiveCaption.Core.csproj" />
+    <Project Path="src/LiveCaption.Llm/LiveCaption.Llm.csproj" />
+    <Project Path="src/LiveCaption.Storage/LiveCaption.Storage.csproj" />
+    <Project Path="src/LiveCaption.Windows/LiveCaption.Windows.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LiveCaption.Core.Tests/LiveCaption.Core.Tests.csproj" />
+  </Folder>
+</Solution>
