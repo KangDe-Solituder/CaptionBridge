@@ -146,10 +146,14 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="Track" Property="Background" Value="{StaticResource Success}" />
-                                <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="ThumbOffset" Storyboard.TargetProperty="X" To="18" Duration="0:0:0.16" /></Storyboard></BeginStoryboard>
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="ThumbOffset" Storyboard.TargetProperty="X" To="18" Duration="0:0:0.16" /></Storyboard></BeginStoryboard>
+                                </Trigger.EnterActions>
                             </Trigger>
                             <Trigger Property="IsChecked" Value="False">
-                                <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="ThumbOffset" Storyboard.TargetProperty="X" To="0" Duration="0:0:0.16" /></Storyboard></BeginStoryboard>
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="ThumbOffset" Storyboard.TargetProperty="X" To="0" Duration="0:0:0.16" /></Storyboard></BeginStoryboard>
+                                </Trigger.EnterActions>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45" /></Trigger>
                         </ControlTemplate.Triggers>
