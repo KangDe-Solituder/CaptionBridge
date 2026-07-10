@@ -25,6 +25,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private double _overlayFontSize;
     private double _overlayOpacity;
     private bool _overlayAlwaysOnTop;
+    private readonly string _diagnosticsPath = CrashReporter.LatestLogPath;
     private string _status = "正在加载设置…";
 
     public MainViewModel(SettingsService settings, AppRuntime runtime)
@@ -57,6 +58,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public double OverlayOpacity { get => _overlayOpacity; set => Set(ref _overlayOpacity, value); }
     public bool OverlayAlwaysOnTop { get => _overlayAlwaysOnTop; set => Set(ref _overlayAlwaysOnTop, value); }
     public string Status { get => _status; set => Set(ref _status, value); }
+    public string DiagnosticsPath => _diagnosticsPath;
     public string LiveButtonText => _runtime.IsLiveRunning ? "停止实时字幕" : "启动实时字幕";
 
     public Task InitializeAsync()
@@ -101,6 +103,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
         finally
         {
             OnPropertyChanged(nameof(LiveButtonText));
+        }
+    }
+
+    public void OpenDiagnosticsFolder()
+    {
+        try
+        {
+            CrashReporter.OpenLogDirectory();
+        }
+        catch (Exception exception)
+        {
+            Status = $"无法打开诊断目录：{exception.Message}";
         }
     }
 

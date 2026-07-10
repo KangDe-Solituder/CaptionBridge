@@ -19,8 +19,25 @@ public sealed class SettingsService
 
     public async Task LoadAsync(CancellationToken cancellationToken)
     {
-        Current = await _settingsStore.LoadAsync(cancellationToken);
-        ApiKey = await _secretStore.GetAsync(OpenAiCompatibleTranslator.ApiKeySecretName, cancellationToken) ?? string.Empty;
+        try
+        {
+            Current = await _settingsStore.LoadAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            CrashReporter.WriteException(exception, "Loading settings failed; defaults were used.");
+            Current = new AppSettings();
+        }
+
+        try
+        {
+            ApiKey = await _secretStore.GetAsync(OpenAiCompatibleTranslator.ApiKeySecretName, cancellationToken) ?? string.Empty;
+        }
+        catch (Exception exception)
+        {
+            CrashReporter.WriteException(exception, "Loading the encrypted API key failed; an empty key was used.");
+            ApiKey = string.Empty;
+        }
     }
 
     public async Task SaveAsync(AppSettings settings, string apiKey, CancellationToken cancellationToken)

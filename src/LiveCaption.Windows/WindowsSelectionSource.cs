@@ -1,7 +1,6 @@
 using System.Windows;
 using System.Windows.Automation;
 using System.Runtime.InteropServices;
-using System.Diagnostics;
 using LiveCaption.Core;
 
 namespace LiveCaption.Windows;
@@ -41,11 +40,7 @@ public sealed class WindowsSelectionSource : ITextSelectionSource
             var ranges = ((TextPattern)pattern).GetSelection();
             return ranges.Length == 0 ? null : string.Join(" ", ranges.Select(range => range.GetText(-1)));
         }
-        catch (ElementNotAvailableException)
-        {
-            return null;
-        }
-        catch (InvalidOperationException)
+        catch (Exception)
         {
             return null;
         }
@@ -68,7 +63,7 @@ public sealed class WindowsSelectionSource : ITextSelectionSource
             copiedSequence = NativeMethods.GetClipboardSequenceNumber();
             return Clipboard.GetText().Trim();
         }
-        catch (COMException)
+        catch (Exception)
         {
             return null;
         }
@@ -80,7 +75,7 @@ public sealed class WindowsSelectionSource : ITextSelectionSource
                 {
                     Clipboard.SetDataObject(original, true);
                 }
-                catch (COMException)
+                catch (Exception)
                 {
                     // Another application may own the clipboard; leaving the copied text is safer than retrying.
                 }

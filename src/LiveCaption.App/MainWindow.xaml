@@ -79,6 +79,15 @@
                                 <StackPanel><TextBlock Text="模型" Foreground="{StaticResource TextSecondary}" FontSize="12" /><TextBlock Text="{Binding Model}" Margin="0,3,0,0" /></StackPanel>
                                 <StackPanel Grid.Column="1"><TextBlock Text="目标语言" Foreground="{StaticResource TextSecondary}" FontSize="12" /><TextBlock Text="{Binding TargetLanguage}" Margin="0,3,0,0" /></StackPanel>
                             </Grid>
+                            <Separator Background="{StaticResource BorderSubtle}" Margin="0,16" />
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="诊断日志" Foreground="{StaticResource TextSecondary}" FontSize="12" />
+                                    <TextBlock Text="{Binding DiagnosticsPath}" TextTrimming="CharacterEllipsis" Margin="0,3,16,0" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Content="打开目录" Style="{StaticResource SecondaryButton}" Click="OpenDiagnostics_OnClick" />
+                            </Grid>
                         </StackPanel>
                     </Border>
                     <TextBlock Text="快速开始" FontSize="15" FontWeight="SemiBold" Margin="0,28,0,10" />

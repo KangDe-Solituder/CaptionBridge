@@ -25,6 +25,7 @@ public partial class MainWindow : Window
     private async void Save_OnClick(object sender, RoutedEventArgs eventArgs) => await _viewModel.SaveAsync();
     private async void Test_OnClick(object sender, RoutedEventArgs eventArgs) => await _viewModel.TestAsync();
     private async void ToggleLive_OnClick(object sender, RoutedEventArgs eventArgs) => await _viewModel.ToggleLiveAsync();
+    private void OpenDiagnostics_OnClick(object sender, RoutedEventArgs eventArgs) => _viewModel.OpenDiagnosticsFolder();
 
     public void ShowAndActivate()
     {
