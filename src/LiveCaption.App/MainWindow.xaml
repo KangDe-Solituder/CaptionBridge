@@ -3,8 +3,37 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="LiveCaption" Width="1080" Height="720" MinWidth="900" MinHeight="620"
         Background="{StaticResource AppBackground}" Foreground="{StaticResource TextPrimary}"
-        WindowStartupLocation="CenterScreen">
-    <TabControl x:Name="RootTabs" TabStripPlacement="Left" BorderThickness="0" Background="Transparent">
+        WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize">
+    <Window.Resources>
+        <Style x:Key="WindowDotButton" TargetType="Button">
+            <Setter Property="Width" Value="13" />
+            <Setter Property="Height" Value="13" />
+            <Setter Property="Margin" Value="0,0,9,0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Ellipse Fill="{TemplateBinding Background}" Stroke="#1A000000" StrokeThickness="0.5" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Border BorderBrush="#D7D7DC" BorderThickness="1" Background="{StaticResource Surface}">
+        <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="44" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+            <Border Grid.Row="0" Background="#F5F5F7" BorderBrush="{StaticResource BorderSubtle}" BorderThickness="0,0,0,1" MouseLeftButtonDown="TitleBar_OnMouseLeftButtonDown">
+                <Grid>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="17,0,0,0">
+                        <Button Background="#FF5F57" Style="{StaticResource WindowDotButton}" ToolTip="隐藏到托盘" Click="CloseWindow_OnClick" />
+                        <Button Background="#FEBC2E" Style="{StaticResource WindowDotButton}" ToolTip="最小化" Click="MinimizeWindow_OnClick" />
+                        <Button Background="#28C840" Style="{StaticResource WindowDotButton}" ToolTip="最大化" Click="MaximizeWindow_OnClick" />
+                    </StackPanel>
+                    <TextBlock Text="LiveCaption" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" Foreground="#7A7A80" />
+                </Grid>
+            </Border>
+    <TabControl Grid.Row="1" x:Name="RootTabs" TabStripPlacement="Left" BorderThickness="0" Background="Transparent">
         <TabControl.Resources>
             <Style TargetType="TabItem">
                 <Setter Property="Width" Value="184" />
@@ -54,7 +83,8 @@
             </ControlTemplate>
         </TabControl.Template>
 
-        <TabItem Header="概览">
+        <TabItem>
+            <TabItem.Header><StackPanel Orientation="Horizontal"><TextBlock Text="⌂" Width="25" FontSize="17" /><TextBlock Text="概览" /></StackPanel></TabItem.Header>
             <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="48,38" MaxWidth="760" HorizontalAlignment="Left">
                     <TextBlock Text="概览" FontSize="28" FontWeight="SemiBold" />
@@ -102,7 +132,8 @@
             </ScrollViewer>
         </TabItem>
 
-        <TabItem Header="翻译服务">
+        <TabItem>
+            <TabItem.Header><StackPanel Orientation="Horizontal"><TextBlock Text="文" Width="25" FontWeight="SemiBold" /><TextBlock Text="翻译服务" /></StackPanel></TabItem.Header>
             <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="48,38" MaxWidth="760" HorizontalAlignment="Left">
                     <TextBlock Text="翻译服务" FontSize="28" FontWeight="SemiBold" />
@@ -131,15 +162,19 @@
                             <TextBox Text="{Binding ExtraBodyJson, UpdateSourceTrigger=PropertyChanged}" Height="62" Margin="0,6,0,0" TextWrapping="Wrap" AcceptsReturn="True" VerticalContentAlignment="Top" />
                         </StackPanel>
                     </Border>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
-                        <Button Content="测试连接" Style="{StaticResource SecondaryButton}" Click="Test_OnClick" />
+                    <Border Background="#F5F5F7" BorderBrush="{StaticResource BorderSubtle}" BorderThickness="1" CornerRadius="7" Padding="14,10" Margin="0,18,0,0">
+                        <TextBlock Text="{Binding ConnectionStatus}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" />
+                    </Border>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                        <Button Content="{Binding TestButtonText}" IsEnabled="{Binding CanTestConnection}" Style="{StaticResource SecondaryButton}" Click="Test_OnClick" />
                         <Button Content="保存设置" Style="{StaticResource PrimaryButton}" Margin="10,0,0,0" Click="Save_OnClick" />
                     </StackPanel>
                 </StackPanel>
             </ScrollViewer>
         </TabItem>
 
-        <TabItem Header="划词翻译">
+        <TabItem>
+            <TabItem.Header><StackPanel Orientation="Horizontal"><TextBlock Text="⌁" Width="25" FontSize="17" /><TextBlock Text="划词翻译" /></StackPanel></TabItem.Header>
             <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="48,38" MaxWidth="760" HorizontalAlignment="Left">
                     <TextBlock Text="划词翻译" FontSize="28" FontWeight="SemiBold" />
@@ -154,7 +189,7 @@
                             <Separator Background="{StaticResource BorderSubtle}" Margin="0,18" />
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                <StackPanel><TextBlock Text="剪贴板兼容模式" FontWeight="SemiBold" /><TextBlock Text="UI Automation 无法读取选区时，短暂复制并安全恢复剪贴板。" Foreground="{StaticResource TextSecondary}" FontSize="12" Margin="0,4,20,0" /></StackPanel>
+                                <StackPanel><TextBlock Text="安全剪贴板取词" FontWeight="SemiBold" /><TextBlock Text="只在确认发生拖选后短暂复制文字，并在读取后恢复原剪贴板。" Foreground="{StaticResource TextSecondary}" FontSize="12" Margin="0,4,20,0" /></StackPanel>
                                 <CheckBox Grid.Column="1" Style="{StaticResource SwitchStyle}" IsChecked="{Binding ClipboardFallbackEnabled}" VerticalAlignment="Center" />
                             </Grid>
                         </StackPanel>
@@ -172,7 +207,8 @@
             </ScrollViewer>
         </TabItem>
 
-        <TabItem Header="实时字幕">
+        <TabItem>
+            <TabItem.Header><StackPanel Orientation="Horizontal"><TextBlock Text="CC" Width="25" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" /><TextBlock Text="实时字幕" /></StackPanel></TabItem.Header>
             <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="48,38" MaxWidth="760" HorizontalAlignment="Left">
                     <TextBlock Text="实时字幕" FontSize="28" FontWeight="SemiBold" />
@@ -210,4 +246,6 @@
             </ScrollViewer>
         </TabItem>
     </TabControl>
+        </Grid>
+    </Border>
 </Window>

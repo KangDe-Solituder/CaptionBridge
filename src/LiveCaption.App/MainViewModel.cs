@@ -27,6 +27,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool _overlayAlwaysOnTop;
     private readonly string _diagnosticsPath = CrashReporter.LatestLogPath;
     private string _status = "正在加载设置…";
+    private string _connectionStatus = "尚未测试连接";
+    private bool _isTestingConnection;
 
     public MainViewModel(SettingsService settings, AppRuntime runtime)
     {
@@ -58,6 +60,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public double OverlayOpacity { get => _overlayOpacity; set => Set(ref _overlayOpacity, value); }
     public bool OverlayAlwaysOnTop { get => _overlayAlwaysOnTop; set => Set(ref _overlayAlwaysOnTop, value); }
     public string Status { get => _status; set => Set(ref _status, value); }
+    public string ConnectionStatus { get => _connectionStatus; set => Set(ref _connectionStatus, value); }
+    public bool IsTestingConnection
+    {
+        get => _isTestingConnection;
+        set
+        {
+            Set(ref _isTestingConnection, value);
+            OnPropertyChanged(nameof(TestButtonText));
+            OnPropertyChanged(nameof(CanTestConnection));
+        }
+    }
+    public string TestButtonText => IsTestingConnection ? "测试中…" : "测试连接";
+    public bool CanTestConnection => !IsTestingConnection;
     public string DiagnosticsPath => _diagnosticsPath;
     public string LiveButtonText => _runtime.IsLiveRunning ? "停止实时字幕" : "启动实时字幕";
 
@@ -68,30 +83,64 @@ public sealed class MainViewModel : INotifyPropertyChanged
         return Task.CompletedTask;
     }
 
-    public async Task SaveAsync()
+    public async Task<bool> SaveAsync()
     {
         try
         {
             await _settings.SaveAsync(BuildSettings(), ApiKey, CancellationToken.None);
             Status = "设置已保存。";
+            return true;
         }
         catch (Exception exception)
         {
             Status = $"保存失败：{exception.Message}";
+            return false;
         }
     }
 
     public async Task TestAsync()
     {
-        await SaveAsync();
-        Status = "正在测试翻译服务…";
-        var result = await _runtime.TranslateSelectionAsync("Hello, LiveCaption.", TranslationMode.Selection);
-        Status = result.IsError ? $"测试失败：{result.ErrorMessage}" : $"连接正常：{result.Text} ({result.LatencyMilliseconds} ms)";
+        if (IsTestingConnection)
+        {
+            return;
+        }
+
+        IsTestingConnection = true;
+        ConnectionStatus = "正在连接翻译服务…";
+        Status = ConnectionStatus;
+        try
+        {
+            if (!await SaveAsync())
+            {
+                ConnectionStatus = Status;
+                return;
+            }
+
+            ConnectionStatus = "正在发送测试文本…";
+            var result = await _runtime.TranslateSelectionAsync("Hello, LiveCaption.", TranslationMode.Selection);
+            ConnectionStatus = result.IsError
+                ? $"连接失败：{result.ErrorMessage}"
+                : $"连接成功 · {result.LatencyMilliseconds} ms · 返回“{result.Text}”";
+            Status = ConnectionStatus;
+        }
+        catch (Exception exception)
+        {
+            CrashReporter.WriteException(exception, "Translation connection test failed.");
+            ConnectionStatus = $"连接失败：{exception.Message}";
+            Status = ConnectionStatus;
+        }
+        finally
+        {
+            IsTestingConnection = false;
+        }
     }
 
     public async Task ToggleLiveAsync()
     {
-        await SaveAsync();
+        if (!await SaveAsync())
+        {
+            return;
+        }
         try
         {
             await _runtime.ToggleLiveAsync();

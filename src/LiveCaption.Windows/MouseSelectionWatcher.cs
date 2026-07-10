@@ -1,4 +1,5 @@
 using System.Windows.Threading;
+using System.Runtime.InteropServices;
 
 namespace LiveCaption.Windows;
 
@@ -7,6 +8,7 @@ public sealed class MouseSelectionWatcher : IDisposable
     private readonly Dispatcher _dispatcher;
     private readonly NativeMethods.LowLevelMouseProc _callback;
     private IntPtr _hook;
+    private NativeMethods.Point? _mouseDownPosition;
 
     public MouseSelectionWatcher(Dispatcher dispatcher)
     {
@@ -41,15 +43,28 @@ public sealed class MouseSelectionWatcher : IDisposable
 
     private IntPtr HookCallback(int code, IntPtr wParam, IntPtr lParam)
     {
-        if (code >= 0 && wParam.ToInt32() == NativeMethods.WmLButtonUp)
+        if (code >= 0 && wParam.ToInt32() == NativeMethods.WmLButtonDown)
         {
-            _dispatcher.BeginInvoke(async () =>
+            _mouseDownPosition = Marshal.PtrToStructure<NativeMethods.LowLevelMouseHookData>(lParam).Position;
+        }
+        else if (code >= 0 && wParam.ToInt32() == NativeMethods.WmLButtonUp)
+        {
+            var mouseUp = Marshal.PtrToStructure<NativeMethods.LowLevelMouseHookData>(lParam).Position;
+            var mouseDown = _mouseDownPosition;
+            _mouseDownPosition = null;
+            if (mouseDown is not null && IsDragSelection(mouseDown.Value, mouseUp))
             {
-                await Task.Delay(110);
-                SelectionCompleted?.Invoke(this, EventArgs.Empty);
-            });
+                _dispatcher.BeginInvoke(async () =>
+                {
+                    await Task.Delay(110);
+                    SelectionCompleted?.Invoke(this, EventArgs.Empty);
+                });
+            }
         }
 
         return NativeMethods.CallNextHookEx(_hook, code, wParam, lParam);
     }
+
+    private static bool IsDragSelection(NativeMethods.Point start, NativeMethods.Point end) =>
+        Math.Abs(start.X - end.X) >= 4 || Math.Abs(start.Y - end.Y) >= 4;
 }

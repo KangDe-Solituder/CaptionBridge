@@ -5,6 +5,7 @@ namespace LiveCaption.Windows;
 internal static class NativeMethods
 {
     internal const int WhMouseLl = 14;
+    internal const int WmLButtonDown = 0x0201;
     internal const int WmLButtonUp = 0x0202;
     internal const int WmHotkey = 0x0312;
     internal const uint ModAlt = 0x0001;
@@ -95,7 +96,24 @@ internal static class NativeMethods
     internal struct InputUnion
     {
         [FieldOffset(0)]
+        public MouseInput Mouse;
+
+        [FieldOffset(0)]
         public KeybdInput Keyboard;
+
+        [FieldOffset(0)]
+        public HardwareInput Hardware;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MouseInput
+    {
+        public int X;
+        public int Y;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -106,5 +124,23 @@ internal static class NativeMethods
         public uint Flags;
         public uint Time;
         public IntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct HardwareInput
+    {
+        public uint Message;
+        public ushort ParameterLow;
+        public ushort ParameterHigh;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct LowLevelMouseHookData
+    {
+        public Point Position;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
     }
 }

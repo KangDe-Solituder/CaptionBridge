@@ -1,6 +1,4 @@
 using System.Windows;
-using System.Windows.Automation;
-using System.Runtime.InteropServices;
 using LiveCaption.Core;
 
 namespace LiveCaption.Windows;
@@ -14,36 +12,12 @@ public sealed class WindowsSelectionSource : ITextSelectionSource
         _clipboardFallbackEnabled = clipboardFallbackEnabled;
     }
 
-    public async Task<string?> TryGetSelectionAsync(CancellationToken cancellationToken)
+    public Task<string?> TryGetSelectionAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var automationText = TryGetAutomationSelection();
-        if (!string.IsNullOrWhiteSpace(automationText))
-        {
-            return automationText.Trim();
-        }
-
-        return _clipboardFallbackEnabled() ? await TryGetClipboardSelectionAsync(cancellationToken) : null;
-    }
-
-    private static string? TryGetAutomationSelection()
-    {
-        try
-        {
-            var focused = AutomationElement.FocusedElement;
-            if (focused is null || focused.Current.ProcessId == Environment.ProcessId ||
-                !focused.TryGetCurrentPattern(TextPattern.Pattern, out var pattern))
-            {
-                return null;
-            }
-
-            var ranges = ((TextPattern)pattern).GetSelection();
-            return ranges.Length == 0 ? null : string.Join(" ", ranges.Select(range => range.GetText(-1)));
-        }
-        catch (Exception)
-        {
-            return null;
-        }
+        return _clipboardFallbackEnabled()
+            ? TryGetClipboardSelectionAsync(cancellationToken)
+            : Task.FromResult<string?>(null);
     }
 
     private static async Task<string?> TryGetClipboardSelectionAsync(CancellationToken cancellationToken)
@@ -61,7 +35,8 @@ public sealed class WindowsSelectionSource : ITextSelectionSource
             }
 
             copiedSequence = NativeMethods.GetClipboardSequenceNumber();
-            return Clipboard.GetText().Trim();
+            var text = Clipboard.GetText().Trim();
+            return string.IsNullOrWhiteSpace(text) ? null : text;
         }
         catch (Exception)
         {
@@ -77,7 +52,7 @@ public sealed class WindowsSelectionSource : ITextSelectionSource
                 }
                 catch (Exception)
                 {
-                    // Another application may own the clipboard; leaving the copied text is safer than retrying.
+                    // Another application may own the clipboard; do not retry or interrupt the user.
                 }
             }
         }
