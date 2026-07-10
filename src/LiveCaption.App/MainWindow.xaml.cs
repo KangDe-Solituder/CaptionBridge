@@ -1,17 +1,24 @@
 using System.Windows;
+using System.ComponentModel;
 
 namespace LiveCaption.App;
 
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel;
+    private bool _exitRequested;
 
     public MainWindow(MainViewModel viewModel)
     {
         InitializeComponent();
         _viewModel = viewModel;
         DataContext = _viewModel;
-        Loaded += async (_, _) => await _viewModel.InitializeAsync();
+        Loaded += async (_, _) =>
+        {
+            await _viewModel.InitializeAsync();
+            ApiKeyBox.Password = _viewModel.ApiKey;
+        };
+        Closing += OnClosing;
     }
 
     private void ApiKeyBox_OnPasswordChanged(object sender, RoutedEventArgs eventArgs) => _viewModel.ApiKey = ApiKeyBox.Password;
@@ -24,5 +31,22 @@ public partial class MainWindow : Window
         Show();
         WindowState = WindowState.Normal;
         Activate();
+    }
+
+    public void RequestExit()
+    {
+        _exitRequested = true;
+        Close();
+    }
+
+    private void OnClosing(object? sender, CancelEventArgs eventArgs)
+    {
+        if (_exitRequested)
+        {
+            return;
+        }
+
+        eventArgs.Cancel = true;
+        Hide();
     }
 }

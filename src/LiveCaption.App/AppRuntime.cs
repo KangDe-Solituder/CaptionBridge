@@ -41,9 +41,24 @@ public sealed class AppRuntime : IAsyncDisposable
     public void StartSelectionFeatures()
     {
         _mouseWatcher.SelectionCompleted += OnMouseSelectionCompleted;
-        _mouseWatcher.Start();
         _hotkeyService.Pressed += OnHotkeyPressed;
-        _hotkeyService.RegisterDefault();
+        try
+        {
+            _mouseWatcher.Start();
+        }
+        catch (Exception exception)
+        {
+            StatusChanged?.Invoke(this, $"自动划词监听不可用：{exception.Message}");
+        }
+
+        try
+        {
+            _hotkeyService.RegisterDefault();
+        }
+        catch (Exception exception)
+        {
+            StatusChanged?.Invoke(this, $"快捷键不可用：{exception.Message}");
+        }
     }
 
     public async Task<TranslationResult> TranslateSelectionAsync(string source, TranslationMode mode, CancellationToken cancellationToken = default)

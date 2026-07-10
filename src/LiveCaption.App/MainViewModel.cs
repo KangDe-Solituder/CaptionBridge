@@ -19,13 +19,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool _selectionToolbarEnabled;
     private bool _clipboardFallbackEnabled;
     private bool _keepSystemCaptionVisible;
+    private int _stableMilliseconds;
+    private int _maximumDurationMilliseconds;
+    private int _maximumLength;
+    private double _overlayFontSize;
+    private double _overlayOpacity;
+    private bool _overlayAlwaysOnTop;
     private string _status = "正在加载设置…";
 
     public MainViewModel(SettingsService settings, AppRuntime runtime)
     {
         _settings = settings;
         _runtime = runtime;
-        _runtime.StatusChanged += (_, status) => Status = status;
+        _runtime.StatusChanged += (_, status) =>
+        {
+            Status = status;
+            OnPropertyChanged(nameof(LiveButtonText));
+        };
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -40,6 +50,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool SelectionToolbarEnabled { get => _selectionToolbarEnabled; set => Set(ref _selectionToolbarEnabled, value); }
     public bool ClipboardFallbackEnabled { get => _clipboardFallbackEnabled; set => Set(ref _clipboardFallbackEnabled, value); }
     public bool KeepSystemCaptionVisible { get => _keepSystemCaptionVisible; set => Set(ref _keepSystemCaptionVisible, value); }
+    public int StableMilliseconds { get => _stableMilliseconds; set => Set(ref _stableMilliseconds, value); }
+    public int MaximumDurationMilliseconds { get => _maximumDurationMilliseconds; set => Set(ref _maximumDurationMilliseconds, value); }
+    public int MaximumLength { get => _maximumLength; set => Set(ref _maximumLength, value); }
+    public double OverlayFontSize { get => _overlayFontSize; set => Set(ref _overlayFontSize, value); }
+    public double OverlayOpacity { get => _overlayOpacity; set => Set(ref _overlayOpacity, value); }
+    public bool OverlayAlwaysOnTop { get => _overlayAlwaysOnTop; set => Set(ref _overlayAlwaysOnTop, value); }
     public string Status { get => _status; set => Set(ref _status, value); }
     public string LiveButtonText => _runtime.IsLiveRunning ? "停止实时字幕" : "启动实时字幕";
 
@@ -106,8 +122,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ShowToolbarOnSelection = SelectionToolbarEnabled,
             ClipboardFallbackEnabled = ClipboardFallbackEnabled
         },
-        Captions = new CaptionSettings { KeepSystemCaptionVisible = KeepSystemCaptionVisible },
-        Overlay = _settings.Current.Overlay
+        Captions = new CaptionSettings
+        {
+            KeepSystemCaptionVisible = KeepSystemCaptionVisible,
+            StableMilliseconds = Math.Clamp(StableMilliseconds, 200, 5000),
+            MaximumDurationMilliseconds = Math.Clamp(MaximumDurationMilliseconds, 500, 10000),
+            MaximumLength = Math.Clamp(MaximumLength, 16, 500)
+        },
+        Overlay = new OverlaySettings
+        {
+            FontSize = Math.Clamp(OverlayFontSize, 12, 48),
+            Opacity = Math.Clamp(OverlayOpacity, 0.2, 1),
+            AlwaysOnTop = OverlayAlwaysOnTop
+        }
     };
 
     private void Apply(AppSettings settings, string apiKey)
@@ -123,6 +150,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         SelectionToolbarEnabled = settings.Selection.ShowToolbarOnSelection;
         ClipboardFallbackEnabled = settings.Selection.ClipboardFallbackEnabled;
         KeepSystemCaptionVisible = settings.Captions.KeepSystemCaptionVisible;
+        StableMilliseconds = settings.Captions.StableMilliseconds;
+        MaximumDurationMilliseconds = settings.Captions.MaximumDurationMilliseconds;
+        MaximumLength = settings.Captions.MaximumLength;
+        OverlayFontSize = settings.Overlay.FontSize;
+        OverlayOpacity = settings.Overlay.Opacity;
+        OverlayAlwaysOnTop = settings.Overlay.AlwaysOnTop;
     }
 
     private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)

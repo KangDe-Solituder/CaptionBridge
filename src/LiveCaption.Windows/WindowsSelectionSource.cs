@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Automation;
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 using LiveCaption.Core;
 
 namespace LiveCaption.Windows;
@@ -31,7 +32,8 @@ public sealed class WindowsSelectionSource : ITextSelectionSource
         try
         {
             var focused = AutomationElement.FocusedElement;
-            if (focused is null || !focused.TryGetCurrentPattern(TextPattern.Pattern, out var pattern))
+            if (focused is null || focused.Current.ProcessId == Environment.ProcessId ||
+                !focused.TryGetCurrentPattern(TextPattern.Pattern, out var pattern))
             {
                 return null;
             }

@@ -15,6 +15,11 @@ public partial class App : System.Windows.Application
     private System.Windows.Forms.NotifyIcon? _trayIcon;
     private OverlayWindow? _overlay;
 
+    public App()
+    {
+        EnsureWindowsDirectoryEnvironment();
+    }
+
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -75,6 +80,7 @@ public partial class App : System.Windows.Application
                 return;
             }
 
+            _overlay.ApplySettings(_services!.GetRequiredService<SettingsService>().Current.Overlay);
             _overlay.Update(eventArgs.Segment.SourceText, eventArgs.Result.IsError ? eventArgs.Result.ErrorMessage ?? "翻译失败" : eventArgs.Result.Text);
             if (!_overlay.IsVisible)
             {
@@ -88,7 +94,11 @@ public partial class App : System.Windows.Application
         var menu = new System.Windows.Forms.ContextMenuStrip();
         menu.Items.Add("显示主窗口", null, (_, _) => Dispatcher.Invoke(mainWindow.ShowAndActivate));
         menu.Items.Add("实时字幕", null, async (_, _) => await runtime.ToggleLiveAsync());
-        menu.Items.Add("退出", null, (_, _) => Shutdown());
+        menu.Items.Add("退出", null, (_, _) =>
+        {
+            mainWindow.RequestExit();
+            Shutdown();
+        });
         _trayIcon = new System.Windows.Forms.NotifyIcon
         {
             Icon = System.Drawing.SystemIcons.Application,
@@ -97,5 +107,19 @@ public partial class App : System.Windows.Application
             ContextMenuStrip = menu
         };
         _trayIcon.DoubleClick += (_, _) => Dispatcher.Invoke(mainWindow.ShowAndActivate);
+    }
+
+    private static void EnsureWindowsDirectoryEnvironment()
+    {
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WINDIR")))
+        {
+            return;
+        }
+
+        var systemRoot = Environment.GetEnvironmentVariable("SystemRoot");
+        if (!string.IsNullOrWhiteSpace(systemRoot))
+        {
+            Environment.SetEnvironmentVariable("WINDIR", systemRoot, EnvironmentVariableTarget.Process);
+        }
     }
 }
