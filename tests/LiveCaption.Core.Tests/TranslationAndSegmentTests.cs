@@ -7,6 +7,30 @@ namespace LiveCaption.Core.Tests;
 public sealed class TranslationAndSegmentTests
 {
     [Fact]
+    public void ApiKeyNormalizationRemovesBearerPrefixAndSmartQuotes()
+    {
+        var succeeded = OpenAiCompatibleTranslator.TryNormalizeApiKey(
+            "  \u201cBearer sk-test_123\u201d  ",
+            out var normalized,
+            out var error);
+
+        Assert.True(succeeded, error);
+        Assert.Equal("sk-test_123", normalized);
+    }
+
+    [Fact]
+    public void ApiKeyNormalizationRejectsNonAsciiCharacters()
+    {
+        var succeeded = OpenAiCompatibleTranslator.TryNormalizeApiKey(
+            "sk-test\u5bc6\u94a5",
+            out _,
+            out var error);
+
+        Assert.False(succeeded);
+        Assert.Contains("\u65e0\u6548\u5b57\u7b26", error);
+    }
+
+    [Fact]
     public void CreatePayloadMergesDeepSeekThinkingSetting()
     {
         var payload = OpenAiCompatibleTranslator.CreatePayload(CreateRequest("{\"thinking\":{\"type\":\"disabled\"}}"));

@@ -42,21 +42,28 @@ public sealed class SettingsService
 
     public async Task SaveAsync(AppSettings settings, string apiKey, CancellationToken cancellationToken)
     {
-        await _settingsStore.SaveAsync(settings, cancellationToken);
-        if (!string.Equals(apiKey, ApiKey, StringComparison.Ordinal))
+        var normalizedApiKey = string.Empty;
+        if (!string.IsNullOrWhiteSpace(apiKey) &&
+            !OpenAiCompatibleTranslator.TryNormalizeApiKey(apiKey, out normalizedApiKey, out var apiKeyError))
         {
-            if (string.IsNullOrWhiteSpace(apiKey))
+            throw new InvalidOperationException(apiKeyError);
+        }
+
+        await _settingsStore.SaveAsync(settings, cancellationToken);
+        if (!string.Equals(normalizedApiKey, ApiKey, StringComparison.Ordinal))
+        {
+            if (string.IsNullOrWhiteSpace(normalizedApiKey))
             {
                 await _secretStore.DeleteAsync(OpenAiCompatibleTranslator.ApiKeySecretName, cancellationToken);
             }
             else
             {
-                await _secretStore.SetAsync(OpenAiCompatibleTranslator.ApiKeySecretName, apiKey.Trim(), cancellationToken);
+                await _secretStore.SetAsync(OpenAiCompatibleTranslator.ApiKeySecretName, normalizedApiKey, cancellationToken);
             }
         }
 
         Current = settings;
-        ApiKey = apiKey.Trim();
+        ApiKey = normalizedApiKey;
     }
 
     public ProviderOptions ProviderOptions => new(

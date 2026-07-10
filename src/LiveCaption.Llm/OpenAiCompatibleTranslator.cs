@@ -22,10 +22,10 @@ public sealed class OpenAiCompatibleTranslator : ITranslator
 
     public async Task<TranslationResult> TranslateAsync(TranslationRequest request, CancellationToken cancellationToken)
     {
-        var apiKey = await _secretStore.GetAsync(ApiKeySecretName, cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(apiKey))
+        var storedApiKey = await _secretStore.GetAsync(ApiKeySecretName, cancellationToken).ConfigureAwait(false);
+        if (!TryNormalizeApiKey(storedApiKey, out var apiKey, out var apiKeyError))
         {
-            return new TranslationResult(string.Empty, 0, request.ProviderOptions.Model, true, "请先在设置中保存 API Key。");
+            return new TranslationResult(string.Empty, 0, request.ProviderOptions.Model, true, apiKeyError);
         }
 
         try
@@ -95,6 +95,46 @@ public sealed class OpenAiCompatibleTranslator : ITranslator
             .GetString() ?? string.Empty;
     }
 
+    public static bool TryNormalizeApiKey(
+        string? value,
+        out string normalized,
+        out string? error)
+    {
+        normalized = string.Empty;
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            error = "请先在设置中填写 API Key。";
+            return false;
+        }
+
+        var candidate = TrimSurroundingQuotes(value.Trim());
+        if (candidate.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            candidate = candidate["Bearer ".Length..].Trim();
+        }
+
+        candidate = TrimSurroundingQuotes(candidate).Trim();
+        if (candidate.Length == 0)
+        {
+            error = "请先在设置中填写 API Key。";
+            return false;
+        }
+
+        foreach (var character in candidate)
+        {
+            if (character is < (char)0x21 or > (char)0x7E)
+            {
+                error = "API Key 含有无效字符。请只粘贴密钥本身，不要包含中文引号、全角空格或说明文字。";
+                return false;
+            }
+        }
+
+        normalized = candidate;
+        return true;
+    }
+
     private static Uri ResolveEndpoint(string endpoint)
     {
         var normalized = endpoint.Trim().TrimEnd('/');
@@ -105,6 +145,9 @@ public sealed class OpenAiCompatibleTranslator : ITranslator
 
         return new Uri(normalized, UriKind.Absolute);
     }
+
+    private static string TrimSurroundingQuotes(string value) =>
+        value.Trim('"', '\'', '\u201c', '\u201d', '\u2018', '\u2019');
 
     private static void Merge(JsonObject destination, JsonObject source)
     {
