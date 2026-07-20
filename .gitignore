@@ -1,18 +1,75 @@
-# Build outputs
-[Bb]in/
-[Oo]bj/
-.vs/
+# Node / frontend
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+.yarn-cache/
+dist/
+.vite/
+.cache/
+.turbo/
+coverage/
+*.tsbuildinfo
 
-# Local application state and secrets
+# Environment files and local secrets
+.env
+.env.*
+!.env.example
+*.local
+*.local.json
+*.secret
+*.secrets
+*.pem
+*.key
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/worker/.venv-build/
+src-tauri/worker/.venv/
+src-tauri/worker/build/
+src-tauri/worker/dist/
+src-tauri/worker/*.spec
+
+# Python / ASR worker
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+*.whl
+
+# Local application state and diagnostics
 .livecaption/
 sessions/
 logs/
-appsettings.local.json
+*.db
+*.db-shm
+*.db-wal
 
-# User and OS files
-*.user
+# IDE and editor files
+.idea/
+.vs/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+*.code-workspace
 *.suo
+*.user
 *.userosscache
 *.sln.docstates
+
+# User and OS files
+.DS_Store
 Thumbs.db
 Desktop.ini
+
+# Build and crash artifacts
+*.log
+*.dmp
+*.pdb
+*.msi
+*.msix
+*.appx

@@ -1,107 +1,72 @@
 # LiveCaption TODO
 
-> 当前方向：以现有 WPF 版本作为原型和踩坑记录，后续主线迁移到 `Tauri + React + Rust`。`[x]` 表示已完成或已验证，`[ ]` 表示待实现。
+Updated: 2026-07-19.
 
-## 已完成的产品设计
+## Completed first product pass
 
-- [x] 明确产品定位：轻量级 Windows 配信字幕、划词翻译与场景表达辅助工具。
-- [x] 明确三项核心能力：实时字幕翻译、划词翻译、基于已有字幕上下文的场景翻译。
-- [x] 明确第一版闭环：LLM 接入、划词工具条、Live Captions 启动与读取、Overlay、设置、最小日志。
-- [x] 明确后续能力：特殊词、ASR 校准、会后复核、场景包、笔记软件联动。
-- [x] 明确重要限制：第一版不做本地 ASR、本地 LLM、OCR、自动平台发言。
+- [x] Migrate the WPF prototype to Tauri v2 + React + TypeScript + Rust.
+- [x] Add main workspace, settings, selection toolbar/result window, and live-caption overlay.
+- [x] Add OpenAI-compatible endpoint, model, target language, `extra_body`, timeout, tokens, and temperature settings.
+- [x] Store API keys through the Windows Credential Manager backend.
+- [x] Add shortcut and automatic selection triggers, clipboard fallback, copy, regenerate, and persistent result windows.
+- [x] Clamp selection windows to the active monitor work area.
+- [x] Add configurable caption overlay drag modes: Alt, anywhere, and top handle.
+- [x] Add overlay close, refresh, expand/collapse, transparent background, caption color, and font controls.
+- [x] Add Windows Live Captions launch, UI Automation reading, sentence segmentation, translation, and JSONL sessions.
+- [x] Add status-prompt filtering and snapshot-based pause/resume recovery.
+- [x] Add SSE streaming, first-token latency, five-second total deadline, direct no-proxy requests, and DeepSeek V4 thinking control.
+- [x] Add bounded UI histories/queues, debounced position persistence, and duplicate source-event suppression.
+- [x] Add tray icon, open/toggle/quit menu, double-click restore, and close-to-tray main-window behavior.
+- [x] Add strict Rust tests, Unicode preview tests, snapshot recovery tests, frontend production builds, and Clippy checks.
+- [x] Keep dev, raw release, and installed builds on one stable settings path without silent default fallback.
+- [x] Build release binaries as Windows GUI applications with hidden PowerShell helper processes.
+- [x] Limit only realtime captions to five seconds; allow selected-text translation to complete without a total deadline.
+- [x] Show the automatic-selection toolbar immediately, capture text in the background, and let the user's own Ctrl+C operation win.
 
-## WPF 原型状态
+## Phase 2 — Caption Engine 2.0 (recommended)
 
-- [x] 建立 `.NET 10` WPF 原型工程。
-- [x] 验证 OpenAI-compatible LLM 接入、DeepSeek 配置、`extra_body`、API Key DPAPI 保存。
-- [x] 验证 Windows Live Captions 启动、UI Automation 读取字幕、基础切片和 Overlay 显示。
-- [x] 验证划词翻译的剪贴板回退路线。
-- [x] 记录到 WPF / UI Automation 路线的关键问题：UI 现代化成本高、窗口生命周期脆弱、弹窗定位与交互不够稳定。
-- [x] 结论：WPF 原型保留为技术参考，不继续作为长期产品 UI 主线。
+### Native source reader
 
-## 新主线：Tauri + React 基础工程
+- [x] Replace the PowerShell UI Automation bridge with a native `windows` crate COM/UIA reader (PowerShell compatibility fallback retained).
+- [ ] Add typed candidate metadata: automation id, bounding rectangle, visibility, source revision, and timestamp.
+- [ ] Add tests for multiple candidate nodes, stale nodes, localized status prompts, and source disappearance.
 
-- [ ] 创建新的 Tauri v2 + React + TypeScript 工程。
-- [ ] 保留当前 Git 仓库历史，新增 Tauri 工程目录或重组为新主工程。
-- [ ] 建立 `frontend / src-tauri / core` 分层，避免 React 组件直接处理系统 API。
-- [ ] 配置 ESLint、Prettier、TypeScript strict、Rust clippy 与格式化命令。
-- [ ] 建立统一设计系统：颜色、字体、间距、阴影、圆角、动效、窗口布局。
-- [ ] 建立应用日志、错误边界、诊断日志入口和崩溃提示。
-- [ ] 配置本地开发、构建和打包脚本。
+### Reconnect and health
 
-## 新主线：现代 UI 与窗口体验
+- [x] Add a reader heartbeat and `last_caption_update` timestamp to runtime status.
+- [x] Add automatic reconnect/restart after process exit, UIA failure, or repeated reader failures.
+- [ ] Add a maximum restart rate and explicit stale-source detection to avoid restart loops.
+- [x] Show source health, last update, reconnect count, queue depth, and first-token latency in the main workspace.
+- [x] Make the overlay refresh button invoke the same supervised recovery path.
 
-- [ ] 设计主窗口：状态总览、字幕状态、LLM 状态、最近记录、快速操作。
-- [ ] 设计设置页：单页纵向设置列表，不使用复杂抽屉；分组清晰但视觉连续。
-- [ ] 设计划词工具条：深色胶囊样式，包含翻译、解释、复制，位置贴近选区。
-- [ ] 设计翻译结果卡片：可复制、可关闭、可拖动、不会弹到屏幕角落。
-- [ ] 设计字幕 Overlay：透明、置顶、可拖动、可调字体和透明度。
-- [ ] 设计场景翻译窗口：输入、用途、语气、目标语言、是否使用当前字幕上下文。
-- [ ] 实现系统托盘：开启/关闭实时字幕、开启/关闭划词翻译、打开场景翻译、设置、退出。
-- [ ] 实现窗口关闭、最小化到托盘、退出应用的清晰行为。
-- [ ] 实现基础动效：窗口淡入、工具条出现、结果卡片展开、设置项反馈。
+### Translation quality and latency
 
-## 新主线：LLM 与设置
+- [ ] Add a provider capability profile for streaming, thinking control, max output, and endpoint quirks.
+- [x] Add optional context from the last 0–4 committed source segments.
+- [ ] Add a glossary with preferred translations and term-level overrides.
+- [x] Add cancellation for superseded live-caption requests.
+- [x] Record request start, first token, completion, timeout, and queue metrics.
+- [ ] Add a configurable live-caption translation policy for speed vs context.
 
-- [ ] 在 Rust 后端实现 OpenAI-compatible Chat Completions 客户端。
-- [ ] 支持 Endpoint、模型、API Key、超时、最大输出、温度、目标语言。
-- [ ] 支持高级 `extra_body` JSON，默认 DeepSeek V4 Flash 传入 `thinking.type = disabled`。
-- [ ] 使用系统 Keyring 或等价安全存储保存 API Key。
-- [ ] 普通设置使用带 `schema_version` 的 JSON 保存，并预留迁移入口。
-- [ ] 实现“测试连接”、取消请求、超时提示、错误详情和可读诊断。
-- [ ] 实现请求数、平均延迟、失败次数和基础成本估算。
+### Verification
 
-## 新主线：划词翻译
+- [ ] Add frontend component tests for settings, overlay controls, and close-to-tray behavior.
+- [ ] Add a fake UIA source and fake SSE provider for deterministic integration tests.
+- [ ] Add a long-session soak test covering memory, queue size, reconnects, and export integrity.
+- [ ] Add a packaged Windows smoke test for tray icon, multi-monitor positioning, hidden source mode, and refresh.
 
-- [ ] 实现全局开关：开启后选中文字自动显示工具条。
-- [ ] 实现全局快捷键作为可靠回退。
-- [ ] 实现受控剪贴板读取选区，优先保证失败时不破坏用户剪贴板。
-- [ ] 评估并接入可行的 Windows UI Automation 选区读取，仅作为增强路径。
-- [ ] 实现翻译模式：默认“非中文 -> 中文”。
-- [ ] 实现解释模式：用中文简短说明词义、读法、句子重点或上下文含义。
-- [ ] 实现复制原文与复制结果。
-- [ ] 增加去抖、短文本过滤、窗口失焦自动关闭、重复触发保护。
-- [ ] 增加应用黑名单/白名单，避免在游戏、密码框或不适合的窗口中误触发。
+See [QUALITY_ACCEPTANCE.md](QUALITY_ACCEPTANCE.md) for the release gates and manual Windows test matrix.
 
-## 新主线：实时字幕翻译
+## Phase 3 — Session workspace
 
-- [ ] 开启实时字幕时主动启动 Windows Live Captions。
-- [ ] Rust 后端连接 Live Captions UI Automation 控件并持续读取文本。
-- [ ] 启动失败时给出可操作提示，包括 `Win + Ctrl + L` 指引。
-- [ ] 默认显示 LiveCaption 自己的 Overlay，可设置是否保留系统字幕窗口。
-- [ ] 高频读取并规范化字幕文本，计算差分。
-- [ ] 实现基础切片器：句末标点、约 1 秒稳定时间、最大 3 秒时长、最大长度。
-- [ ] 实现顺序翻译队列，片段带 `segment_id`、`sequence_id`、`revision`。
-- [ ] 实现过期结果抑制，旧异步结果不得覆盖新显示。
-- [ ] 实现 `preview / commit` 状态：预览用于显示，确认片段进入日志。
-- [ ] 网络失败时保存原文和失败状态，不阻塞字幕捕获。
+- [ ] Searchable session history with timestamps and source/provider metadata.
+- [ ] Raw-vs-translated comparison, corrections, favorites, notes, and Markdown export.
+- [ ] Glossary management with aliases, readings, scope, and priority.
+- [ ] Import/export settings and portable diagnostics bundle.
 
-## 新主线：存储与日志
+## Later product tracks
 
-- [ ] 实时字幕开始时创建会话。
-- [ ] 第一版使用 JSONL 追加日志保存时间、原文、译文、状态、模型、延迟。
-- [ ] 保留 `ISessionStore` / repository 抽象，后续可迁移到 SQLite。
-- [ ] 支持手动结束会话。
-- [ ] 支持查看当前会话日志路径。
-- [ ] 后续支持 SRT / VTT / CSV 导出。
-
-## 后续阶段：质量与上下文
-
-- [ ] 实现特殊词管理：词、内容、场景、读音、固定译法、优先级。
-- [ ] 实现近音候选与日语读音联想，辅助 ASR 校准。
-- [ ] 翻译请求中加入有限 `ContextPack` 和 `TermCandidates`。
-- [ ] 实现场景翻译：用近期 committed 字幕作为可见、可关闭的上下文。
-- [ ] 实现会后高级 LLM 复核：纠错、润色、特殊词提取建议。
-- [ ] 支持用户审核特殊词建议后入库。
-- [ ] 支持 Markdown、Obsidian、Logseq、Notion 等导出或联动。
-
-## 验收标准
-
-- [ ] UI 视觉统一，主窗口、工具条、结果卡片、Overlay 都像同一款产品。
-- [ ] 所有浮窗可关闭，必要时可拖动，不会固定弹到屏幕角落。
-- [ ] 有明确退出按钮和托盘退出入口。
-- [ ] DeepSeek 测试连接可用，错误信息能定位 Endpoint、Key、模型或网络问题。
-- [ ] 划词翻译在 Chrome、VS Code、记事本等常见应用中可用，失败时不破坏剪贴板。
-- [ ] 实时字幕可启动 Live Captions、读取字幕、翻译并写入 JSONL。
-- [ ] 连续运行 1 小时内存不线性增长；发布前目标为 3 小时稳定运行。
-- [ ] API 失败不影响原文捕获和会话保存。
+- [ ] Scene translation using recent committed captions as optional context.
+- [ ] OCR region translation.
+- [ ] ASR correction suggestions that preserve the raw caption text.
+- [ ] Multiple overlay profiles for language pairs, games, meetings, and videos.
