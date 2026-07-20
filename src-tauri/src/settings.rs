@@ -14,12 +14,17 @@ pub struct AppPaths {
 
 impl AppPaths {
     pub fn new(data_dir: PathBuf) -> Self {
+        let models_dir = data_dir.join("models");
+        Self::new_with_models_dir(data_dir, models_dir)
+    }
+
+    fn new_with_models_dir(data_dir: PathBuf, models_dir: PathBuf) -> Self {
         Self {
             logs_dir: data_dir.join("logs"),
             sessions_dir: data_dir.join("sessions"),
             settings_file: data_dir.join("settings.json"),
-            models_dir: data_dir.join("models"),
-            downloads_dir: data_dir.join("downloads"),
+            downloads_dir: models_dir.join(".downloads"),
+            models_dir,
             data_dir,
         }
     }
@@ -28,7 +33,15 @@ impl AppPaths {
         let local_app_data = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .ok_or_else(|| "Windows LOCALAPPDATA 路径不可用".to_string())?;
-        Ok(Self::new(local_app_data.join("com.dimfi.livecaption")))
+        let data_dir = local_app_data.join("com.dimfi.livecaption");
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_dir = manifest_dir
+            .parent()
+            .ok_or_else(|| "无法确定应用工作区目录".to_string())?;
+        Ok(Self::new_with_models_dir(
+            data_dir,
+            workspace_dir.join("Model"),
+        ))
     }
 
     pub fn ensure(&self) -> Result<(), String> {
@@ -126,6 +139,8 @@ mod tests {
     fn shared_path_is_stable_across_build_profiles() {
         let paths = AppPaths::shared().unwrap();
         assert!(paths.data_dir.ends_with("com.dimfi.livecaption"));
+        assert!(paths.models_dir.ends_with("Livecaption\\Model"));
+        assert_eq!(paths.downloads_dir, paths.models_dir.join(".downloads"));
     }
 
     #[test]

@@ -10,6 +10,8 @@ use std::{
 };
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const MIN_SELECTION_DRAG_DISTANCE: i32 = 10;
+const MIN_SELECTION_DRAG_DURATION: Duration = Duration::from_millis(80);
 
 use arboard::Clipboard;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition};
@@ -92,7 +94,6 @@ pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
     thread::spawn(move || {
         let mut was_down = false;
         let mut mouse_started: Option<(POINT, Instant)> = None;
-        let mut last_click: Option<(POINT, Instant)> = None;
         let automatic_generation = Arc::new(AtomicU64::new(0));
         loop {
             thread::sleep(Duration::from_millis(24));
@@ -130,14 +131,7 @@ pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
                 } else if !mouse_down {
                     if let Some((start, started)) = mouse_started.take() {
                         if let Some(end) = cursor_position() {
-                            let distance = (end.x - start.x).abs() + (end.y - start.y).abs();
-                            let double_click = last_click.is_some_and(|(previous, at)| {
-                                at.elapsed() <= Duration::from_millis(360)
-                                    && (end.x - previous.x).abs() + (end.y - previous.y).abs() <= 8
-                            });
-                            if (distance >= 8 && started.elapsed() >= Duration::from_millis(60))
-                                || double_click
-                            {
+                            if is_intentional_selection_drag(start, end, started.elapsed()) {
                                 emit_automatic_selection(
                                     &app,
                                     &state,
@@ -145,7 +139,6 @@ pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
                                     Arc::clone(&automatic_generation),
                                 );
                             }
-                            last_click = Some((end, Instant::now()));
                         }
                     }
                 }
@@ -170,6 +163,11 @@ pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
             was_down = down;
         }
     });
+}
+
+fn is_intentional_selection_drag(start: POINT, end: POINT, elapsed: Duration) -> bool {
+    let distance = (end.x - start.x).abs() + (end.y - start.y).abs();
+    distance >= MIN_SELECTION_DRAG_DISTANCE && elapsed >= MIN_SELECTION_DRAG_DURATION
 }
 
 fn emit_selection(app: &AppHandle, state: &AppState) {
@@ -683,8 +681,36 @@ fn keyboard_input(key: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_powershell_output, parse_live_caption_snapshot, run_powershell, validate_hotkey,
+        decode_powershell_output, is_intentional_selection_drag, parse_live_caption_snapshot,
+        run_powershell, validate_hotkey,
     };
+    use std::time::Duration;
+    use windows::Win32::Foundation::POINT;
+
+    #[test]
+    fn automatic_selection_requires_a_deliberate_drag() {
+        let start = POINT { x: 100, y: 100 };
+        assert!(!is_intentional_selection_drag(
+            start,
+            start,
+            Duration::from_millis(200)
+        ));
+        assert!(!is_intentional_selection_drag(
+            start,
+            POINT { x: 104, y: 103 },
+            Duration::from_millis(200)
+        ));
+        assert!(!is_intentional_selection_drag(
+            start,
+            POINT { x: 130, y: 100 },
+            Duration::from_millis(40)
+        ));
+        assert!(is_intentional_selection_drag(
+            start,
+            POINT { x: 130, y: 100 },
+            Duration::from_millis(120)
+        ));
+    }
 
     #[test]
     fn requires_a_modifier_and_reserves_live_caption_shortcut() {

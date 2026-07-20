@@ -151,6 +151,7 @@ fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String> {
         // Credential Manager is an external Windows service. Reading it here
         // would block Tauri's command thread while all three webviews boot.
         api_key_configured: state.api_key_configured.load(Ordering::Relaxed),
+        model_directory: state.paths.models_dir.to_string_lossy().into_owned(),
     })
 }
 
@@ -190,6 +191,7 @@ fn save_settings(
     let view = SettingsView {
         settings: request.settings,
         api_key_configured: state.api_key_configured.load(Ordering::Relaxed),
+        model_directory: state.paths.models_dir.to_string_lossy().into_owned(),
     };
     let _ = app.emit("settings:changed", &view);
     Ok(view)
@@ -290,6 +292,7 @@ async fn set_caption_running_inner(
                 join.abort();
             }
         }
+        shutdown_idle_asr_worker(&state, "停止字幕").await;
         if let Some(window) = app.get_webview_window("overlay") {
             let _ = window.hide();
         }
@@ -298,6 +301,15 @@ async fn set_caption_running_inner(
         state.log("info", "实时字幕翻译已停止");
     }
     Ok(())
+}
+
+async fn shutdown_idle_asr_worker(state: &AppState, reason: &str) {
+    state.idle_worker_generation.fetch_add(1, Ordering::Relaxed);
+    let idle_worker = { state.idle_asr_worker.lock().await.take() };
+    if let Some((model_id, worker)) = idle_worker {
+        worker.shutdown().await;
+        state.log("info", format!("{reason}，已关闭 ASR Worker：{model_id}"));
+    }
 }
 
 #[tauri::command]
@@ -775,6 +787,11 @@ fn main() {
                         SettingsView {
                             settings,
                             api_key_configured: configured,
+                            model_directory: credential_state
+                                .paths
+                                .models_dir
+                                .to_string_lossy()
+                                .into_owned(),
                         },
                     );
                 }
@@ -825,7 +842,16 @@ fn build_tray(app: &mut tauri::App) -> Result<(), tauri::Error> {
                     let _ = set_caption_running_inner(app_handle, state, !running).await;
                 });
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                let app_handle = app.clone();
+                let state = app.state::<AppState>().inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ =
+                        set_caption_running_inner(app_handle.clone(), state.clone(), false).await;
+                    shutdown_idle_asr_worker(&state, "退出应用").await;
+                    app_handle.exit(0);
+                });
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

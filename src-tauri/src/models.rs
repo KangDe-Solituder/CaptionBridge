@@ -310,6 +310,7 @@ impl Default for AppSettings {
 pub struct SettingsView {
     pub settings: AppSettings,
     pub api_key_configured: bool,
+    pub model_directory: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

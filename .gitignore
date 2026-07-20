@@ -43,6 +43,7 @@ __pycache__/
 
 # Local application state and diagnostics
 .livecaption/
+Model/
 sessions/
 logs/
 *.db

@@ -41,6 +41,21 @@ const previewSettings: AppSettings = {
   visual: { theme: "system", blur_enabled: true, blur_scope: "floating", reduce_motion: false },
 };
 
+const builtInModels: ModelInfo[] = [
+  {
+    id: "kotoba-whisper-v2.0-faster", display_name: "Kotoba Whisper v2.0 Faster",
+    repository: "kotoba-tech/kotoba-whisper-v2.0-faster", revision: "f44edd35eaeb2274e85ac7b31fb2c6f59ff1c4bc",
+    license: "MIT", expected_size_bytes: 1_516_480_096, installed_size_bytes: 0,
+    status: "not_installed", downloaded_bytes: 0, recommended: true,
+  },
+  {
+    id: "whisper-large-v3-turbo", display_name: "Whisper large-v3-turbo",
+    repository: "dropbox-dash/faster-whisper-large-v3-turbo", revision: "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+    license: "MIT", expected_size_bytes: 1_621_665_983, installed_size_bytes: 0,
+    status: "not_installed", downloaded_bytes: 0, recommended: false,
+  },
+];
+
 function useTheme(settings?: AppSettings) {
   useEffect(() => {
     if (!settings) return;
@@ -73,7 +88,7 @@ function MainWindow() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("captions");
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<RuntimeStatus>({ caption_running: false, caption_state: "stopped", selection_hotkey_registered: false, source_health: "unknown", last_caption_update_ms: 0, reader_restarts: 0, source_error_count: 0, translation_queue_depth: 0, last_translation_latency_ms: 0, last_translation_first_token_ms: 0, selected_source: previewSettings.captions.source, asr_latency_ms: 0 });
-  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>(builtInModels);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -92,12 +107,22 @@ function MainWindow() {
       setView(await getSettings());
     } catch (error) {
       if (!("__TAURI_INTERNALS__" in window)) {
-        setView({ settings: previewSettings, api_key_configured: false });
+        setView({ settings: previewSettings, api_key_configured: false, model_directory: "E:\\Personal\\个人兴趣\\Livecaption\\Model" });
       } else {
         setBootError(`读取配置失败：${String(error)}`);
       }
     } finally {
       clearTimeout(watchdog);
+    }
+  }, []);
+
+  const refreshModels = useCallback(async (showError = false) => {
+    try {
+      setModels(await listModels());
+      return true;
+    } catch (error) {
+      if (showError) setMessage(`检查本地模型失败：${String(error)}`);
+      return false;
     }
   }, []);
 
@@ -122,18 +147,19 @@ function MainWindow() {
       listen<ModelProgressEvent>("model:progress", e => {
         const p = e.payload;
         setModels(items => items.map(item => item.id === p.model_id ? { ...item, status: p.status, downloaded_bytes: p.downloaded_bytes, error: p.error } : item));
-        if (p.status === "available" || p.status === "corrupt" || p.status === "failed" || p.status === "incompatible") void listModels().then(setModels);
+        if (p.status === "available" || p.status === "corrupt" || p.status === "failed" || p.status === "incompatible") void refreshModels();
       }),
       listen<void>("caption:session-reset", () => setCaptionResults([])),
       listen<string>("runtime:error", e => setMessage(e.payload)),
     ];
     const interval = window.setInterval(() => void getRuntimeStatus().then(setStatus).catch(() => undefined), 1200);
-    void listModels().then(setModels).catch(() => undefined);
+    void refreshModels();
+    const modelRefreshRetries = [600, 2_000].map(delay => window.setTimeout(() => void refreshModels(), delay));
     const closeRequested = "__TAURI_INTERNALS__" in window
       ? currentWindow.onCloseRequested(event => { event.preventDefault(); void currentWindow.hide(); })
       : undefined;
-    return () => { clearInterval(interval); unsubs.forEach(p => void p.then(u => u())); if (closeRequested) void closeRequested.then(u => u()); };
-  }, [loadInitialSettings]);
+    return () => { clearInterval(interval); modelRefreshRetries.forEach(clearTimeout); unsubs.forEach(p => void p.then(u => u())); if (closeRequested) void closeRequested.then(u => u()); };
+  }, [loadInitialSettings, refreshModels]);
 
   useEffect(() => {
     if (settingsTab !== "logs" || page !== "settings") return;
@@ -191,7 +217,7 @@ function MainWindow() {
       }
       if (selected.status !== "available" && selected.status !== "active") {
         const size = (selected.expected_size_bytes / 1024 / 1024 / 1024).toFixed(2);
-        if (window.confirm(`未找到可用的 ${selected.display_name}（${size} GB）。\n\n状态：${modelStatusText(selected.status)}\n保存位置：%LOCALAPPDATA%\\com.dimfi.livecaption\\models\n来源：Hugging Face 官方源（失败后使用镜像）\n\n现在开始下载吗？`)) {
+        if (window.confirm(`未找到可用的 ${selected.display_name}（${size} GB）。\n\n状态：${modelStatusText(selected.status)}\n保存位置：${view.model_directory}\n来源：Hugging Face 官方源（失败后使用镜像）\n\n现在开始下载吗？`)) {
           try { await downloadModel(modelId); setMessage("模型下载已开始，可在设置 → 字幕中查看进度"); }
           catch (error) { setMessage(String(error)); }
         }
@@ -245,7 +271,7 @@ function MainWindow() {
         {page === "settings" && (
           <SettingsPage tab={settingsTab} setTab={setSettingsTab} view={view} apiKey={apiKey} setApiKey={setApiKey}
             update={update} onSave={persist} saving={saving} testing={testing} onTest={runTest}
-            models={models} status={status} onSelectSource={selectSource} refreshModels={() => void listModels().then(setModels)} onMessage={setMessage}
+            models={models} status={status} onSelectSource={selectSource} refreshModels={() => void refreshModels(true)} onMessage={setMessage}
             logs={logs} logQuery={logQuery} setLogQuery={setLogQuery}
             onClearLogs={async () => { await clearRuntimeLogs(); setLogs([]); }} />
         )}
@@ -322,7 +348,7 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
     <section className="settings-sheet">
       {tab === "selection" && <>
         <SettingRow title="启用划词翻译" description="在其他应用中选中文字后提供轻量翻译工具。"><Toggle label="启用划词翻译" checked={s.selection.enabled} onChange={enabled => update({ ...s, selection: { ...s.selection, enabled } })} /></SettingRow>
-        <SettingRow title="划词触发方式" description="自动模式会在拖选结束后立即显示按钮，无需按键。"><Segmented value={s.selection.trigger_mode} options={[{ label: "快捷键", value: "hotkey" }, { label: "自动出现", value: "automatic" }]} onChange={trigger_mode => update({ ...s, selection: { ...s.selection, trigger_mode } })} /></SettingRow>
+        <SettingRow title="划词触发方式" description="自动模式只在明确拖选结束后显示按钮；双击选词不会触发。"><Segmented value={s.selection.trigger_mode} options={[{ label: "快捷键", value: "hotkey" }, { label: "自动出现", value: "automatic" }]} onChange={trigger_mode => update({ ...s, selection: { ...s.selection, trigger_mode } })} /></SettingRow>
         {s.selection.trigger_mode === "hotkey" && <SettingRow title="划词触发快捷键" description="至少包含一个修饰键；Ctrl+Win+L 保留给 Windows 实时字幕。"><HotkeyRecorder value={s.selection.hotkey} onChange={hotkey => update({ ...s, selection: { ...s.selection, hotkey } })} /></SettingRow>}
         <SettingRow title="剪贴板回退" description="无法通过 UI Automation 读取选区时，允许短暂读取剪贴板。"><Toggle label="启用回退" checked={s.selection.clipboard_fallback_enabled} onChange={clipboard_fallback_enabled => update({ ...s, selection: { ...s.selection, clipboard_fallback_enabled } })} /></SettingRow>
       </>}
@@ -333,7 +359,7 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
             {props.models.map(model => <SourceCard key={model.id} title={model.display_name} description={model.recommended ? "日语优化、速度优先，推荐默认使用。" : "复杂音频精度优先，显存占用更高。"} state={modelStatusText(model.status)} badge={model.recommended ? "推荐" : undefined} selected={s.captions.source.type === "local_asr" && s.captions.source.model_id === model.id} onClick={() => void props.onSelectSource({ type: "local_asr", model_id: model.id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode })} />)}
           </div>
         </div>
-        <ModelManager models={props.models} activeModel={props.status.active_model} refresh={props.refreshModels} message={props.onMessage} />
+        <ModelManager models={props.models} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
         <SettingRow title="翻译上下文" description="上下文来自已接受的 final 原文，不受上一条 LLM 成败影响。"><Segmented value={String(s.captions.context_segments)} options={[0, 1, 2, 4].map(value => ({ label: `${value} 条`, value: String(value) }))} onChange={value => update({ ...s, captions: { ...s.captions, context_segments: Number(value) } })} /></SettingRow>
         {s.captions.source.type === "local_asr" && <>
           <SettingRow title="音频模式" description="ASMR 会降低 VAD 阈值、延长静音提交时间，保留更多轻声。"><Segmented value={s.captions.audio_mode} options={[{ label: "普通", value: "normal" }, { label: "ASMR", value: "asmr" }]} onChange={audio_mode => update({ ...s, captions: { ...s.captions, audio_mode, source: { type: "local_asr", model_id: s.captions.source.type === "local_asr" ? s.captions.source.model_id : "kotoba-whisper-v2.0-faster", device: "cuda", compute_type: "int8_float16", vad_profile: audio_mode } } })} /></SettingRow>
@@ -387,7 +413,7 @@ function formatBytes(bytes: number) {
   return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
-function ModelManager({ models, activeModel, refresh, message }: { models: ModelInfo[]; activeModel?: string; refresh: () => void; message: (text: string) => void }) {
+function ModelManager({ models, activeModel, modelDirectory, refresh, message }: { models: ModelInfo[]; activeModel?: string; modelDirectory: string; refresh: () => void; message: (text: string) => void }) {
   const [busy, setBusy] = useState<Record<string, string>>({});
   const action = async (modelId: string, label: string, run: () => Promise<unknown>) => {
     setBusy(current => ({ ...current, [modelId]: label }));
@@ -401,7 +427,7 @@ function ModelManager({ models, activeModel, refresh, message }: { models: Model
     finally { setBusy(current => { const next = { ...current }; delete next[modelId]; return next; }); }
   };
   return <div className="settings-group model-manager">
-    <div className="settings-group-title"><div><h2>模型管理</h2><p>固定 revision、断点续传并强制校验 SHA-256。</p></div><div><button className="ghost" onClick={() => void openModelsDir()}><ExternalLink />模型目录</button><button className="ghost" onClick={refresh}><RefreshCw />重新检查</button></div></div>
+    <div className="settings-group-title"><div><h2>模型管理</h2><p title={modelDirectory}>模型存放于工作区 Model；启动时自动检查可用状态。</p></div><div><button className="ghost" onClick={() => void openModelsDir()}><ExternalLink />模型目录</button><button className="ghost" onClick={refresh}><RefreshCw />重新检查</button></div></div>
     {models.map(model => {
       const progress = model.expected_size_bytes ? Math.min(100, model.downloaded_bytes / model.expected_size_bytes * 100) : 0;
       const installed = model.status === "available" || model.status === "active";

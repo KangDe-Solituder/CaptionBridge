@@ -28,7 +28,7 @@ export interface AppSettings {
   schema_version: number; llm: LlmProviderSettings; selection: SelectionSettings;
   captions: CaptionSettings; overlay: OverlaySettings; visual: VisualSettings;
 }
-export interface SettingsView { settings: AppSettings; api_key_configured: boolean; }
+export interface SettingsView { settings: AppSettings; api_key_configured: boolean; model_directory: string; }
 export interface TranslationRequest {
   mode: TranslationMode; source_text: string; source_language: string; target_language: string; context?: string[];
 }
