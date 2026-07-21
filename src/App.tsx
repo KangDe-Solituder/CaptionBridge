@@ -15,9 +15,10 @@ import {
   getRuntimeStatus, getSettings, openLogsDir, refreshCaption, saveOverlayPosition, saveSettings,
   setCaptionRunning, testLlm, translateSelection, listModels, downloadModel, cancelModelDownload,
   verifyModel, testModel, deleteModel, openModelsDir, switchCaptionSource,
+  checkAsrDependencies, openAsrDependencyUrl,
 } from "./lib/api";
 import type {
-  AppSettings, CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth, CaptionTranslatedEvent,
+  AppSettings, AsrDependencyReport, CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth, CaptionTranslatedEvent,
   ModelInfo, ModelProgressEvent, RuntimeLogEntry, RuntimeStatus, SelectionReadyEvent, SettingsView, TranslationResult,
 } from "./lib/contracts";
 
@@ -340,6 +341,16 @@ function CaptionPage({ status, items, exportFormat, setExportFormat, onToggle, o
 
 function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => void; view: SettingsView; apiKey: string; setApiKey: (v: string) => void; update: (v: AppSettings) => void; onSave: () => void; saving: boolean; testing: boolean; onTest: () => void; logs: RuntimeLogEntry[]; logQuery: string; setLogQuery: (v: string) => void; onClearLogs: () => void; models: ModelInfo[]; status: RuntimeStatus; onSelectSource: (source: CaptionSourceConfig) => Promise<void>; refreshModels: () => void; onMessage: (message: string) => void }) {
   const { tab, setTab, view, apiKey, setApiKey, update } = props; const s = view.settings;
+  const [dependencyReport, setDependencyReport] = useState<AsrDependencyReport>();
+  const [dependencyDialogOpen, setDependencyDialogOpen] = useState(false);
+  const [checkingDependencies, setCheckingDependencies] = useState(false);
+  const [dependencyError, setDependencyError] = useState("");
+  const runDependencyCheck = async () => {
+    setDependencyDialogOpen(true); setCheckingDependencies(true); setDependencyError("");
+    try { setDependencyReport(await checkAsrDependencies()); }
+    catch (error) { setDependencyError(String(error)); }
+    finally { setCheckingDependencies(false); }
+  };
   const tabs: { id: SettingsTab; label: string }[] = [{ id: "selection", label: "划词" }, { id: "captions", label: "字幕" }, { id: "llm", label: "LLM" }, { id: "appearance", label: "外观" }, { id: "logs", label: "日志" }];
   const filteredLogs = props.logs.filter(l => `${l.level} ${l.message}`.toLowerCase().includes(props.logQuery.toLowerCase()));
   return <div className="page settings-page">
@@ -359,6 +370,9 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
             {props.models.map(model => <SourceCard key={model.id} title={model.display_name} description={model.recommended ? "日语优化、速度优先，推荐默认使用。" : "复杂音频精度优先，显存占用更高。"} state={modelStatusText(model.status)} badge={model.recommended ? "推荐" : undefined} selected={s.captions.source.type === "local_asr" && s.captions.source.model_id === model.id} onClick={() => void props.onSelectSource({ type: "local_asr", model_id: model.id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode })} />)}
           </div>
         </div>
+        <SettingRow title="本地 ASR 运行环境" description="检查 Worker、NVIDIA 驱动、CUDA 12、cuDNN 9 和 CTranslate2 GPU 可用性。">
+          <button className="ghost" onClick={() => void runDependencyCheck()} disabled={checkingDependencies}>{checkingDependencies ? <Loader2 className="spin" /> : <Activity />}检查依赖</button>
+        </SettingRow>
         <ModelManager models={props.models} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
         <SettingRow title="翻译上下文" description="上下文来自已接受的 final 原文，不受上一条 LLM 成败影响。"><Segmented value={String(s.captions.context_segments)} options={[0, 1, 2, 4].map(value => ({ label: `${value} 条`, value: String(value) }))} onChange={value => update({ ...s, captions: { ...s.captions, context_segments: Number(value) } })} /></SettingRow>
         {s.captions.source.type === "local_asr" && <>
@@ -392,6 +406,23 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
         <div className="log-toolbar"><label><Search /><input value={props.logQuery} onChange={e => props.setLogQuery(e.target.value)} placeholder="搜索日志" /></label><button className="ghost" onClick={() => void openLogsDir()}><ExternalLink />目录</button><button className="ghost" onClick={props.onClearLogs}><Eraser />清空</button></div>
         <div className="log-view">{filteredLogs.length ? [...filteredLogs].reverse().map((l, i) => <div className="log-line" key={`${l.timestamp}-${i}`}><span data-level={l.level}>{l.level.toUpperCase()}</span><time>{new Date(l.timestamp).toLocaleTimeString()}</time><p>{l.message}</p></div>) : <EmptyState icon={<FileText />} title="日志很安静" text="运行状态和错误信息会显示在这里。" />}</div>
       </>}
+    </section>
+    {dependencyDialogOpen && <DependencyDialog report={dependencyReport} checking={checkingDependencies} error={dependencyError} onClose={() => setDependencyDialogOpen(false)} onCheck={() => void runDependencyCheck()} />}
+  </div>;
+}
+
+function DependencyDialog({ report, checking, error, onClose, onCheck }: { report?: AsrDependencyReport; checking: boolean; error: string; onClose: () => void; onCheck: () => void }) {
+  return <div className="dependency-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="dependency-dialog" role="dialog" aria-modal="true" aria-labelledby="dependency-title">
+      <header><div><span>LOCAL ASR</span><h2 id="dependency-title">运行环境检查</h2><p>{checking ? "正在调用 ASR Worker 验证 GPU 运行环境…" : report?.ready ? "本地 ASR 所需依赖已完整安装。" : "发现未安装或不可用的依赖，请通过对应官网处理。"}</p></div><button className="dialog-close" aria-label="关闭" onClick={onClose}><X /></button></header>
+      {checking && !report ? <div className="dependency-loading"><Loader2 className="spin" /><span>正在检查，请稍候</span></div> : error ? <div className="dependency-error">{error}</div> : <div className="dependency-list">
+        {report?.dependencies.map(item => <article key={item.id} data-installed={item.installed}>
+          <div className="dependency-state">{item.installed ? <Check /> : <X />}</div>
+          <div className="dependency-copy"><strong>{item.name}</strong><p>{item.detail}</p>{item.detected_path && <code title={item.detected_path}>{item.detected_path}</code>}</div>
+          {!item.installed && <button className="ghost" onClick={() => void openAsrDependencyUrl(item.id)}><ExternalLink />打开官网</button>}
+        </article>)}
+      </div>}
+      <footer><button className="ghost" onClick={onClose}>关闭</button><button className="primary" onClick={onCheck} disabled={checking}>{checking ? <Loader2 className="spin" /> : <RefreshCw />}重新检查</button></footer>
     </section>
   </div>;
 }

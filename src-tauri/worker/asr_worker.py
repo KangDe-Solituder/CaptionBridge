@@ -78,6 +78,13 @@ class Worker:
         )[0])
         emit("health", healthy=True, latency_ms=int((time.perf_counter() - started) * 1000), detail="dry_run_ok")
 
+    def probe_dependencies(self) -> None:
+        import ctranslate2
+
+        device_count = ctranslate2.get_cuda_device_count()
+        compute_types = sorted(ctranslate2.get_supported_compute_types("cuda")) if device_count else []
+        emit("dependency_probe", device_count=device_count, compute_types=compute_types)
+
     def start(self) -> None:
         if self.model is None:
             raise RuntimeError("model_not_loaded")
@@ -218,6 +225,7 @@ def main() -> None:
             name = command.get("command")
             if name == "load": worker.load(command)
             elif name == "dry_run": worker.dry_run()
+            elif name == "probe_dependencies": worker.probe_dependencies()
             elif name == "start": worker.start()
             elif name == "stop": worker.stop()
             elif name == "flush": worker.commit()

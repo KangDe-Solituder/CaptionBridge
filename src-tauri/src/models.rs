@@ -1,6 +1,22 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsrDependencyStatus {
+    pub id: String,
+    pub name: String,
+    pub installed: bool,
+    pub detail: String,
+    pub detected_path: Option<String>,
+    pub official_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsrDependencyReport {
+    pub ready: bool,
+    pub dependencies: Vec<AsrDependencyStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranslationMode {
     Selection,

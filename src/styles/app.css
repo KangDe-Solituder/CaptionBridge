@@ -159,7 +159,28 @@ select { min-height: 39px; padding: 0 30px 0 11px; border: 1px solid var(--line)
 .setting-row:last-child { border-bottom: 0; }
 .setting-row h3 { margin-bottom: 5px; font-size: 14px; font-weight: 650; }
 .setting-row p { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.dependency-backdrop { position: fixed; z-index: 1000; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(20,16,24,.55); backdrop-filter: blur(5px); }
+.dependency-dialog { width: min(680px, 100%); max-height: min(760px, calc(100vh - 48px)); overflow: auto; padding: 22px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); box-shadow: 0 24px 80px rgba(16,10,20,.32); animation: rise 180ms ease both; }
+.dependency-dialog > header { display: flex; justify-content: space-between; gap: 18px; padding-bottom: 17px; border-bottom: 1px solid var(--line); }
+.dependency-dialog > header span { color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .15em; }
+.dependency-dialog > header h2 { margin-top: 5px; font-size: 20px; }
+.dependency-dialog > header p { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.dialog-close { display: grid; width: 34px; height: 34px; flex: none; place-items: center; border-radius: 9px; cursor: pointer; color: var(--muted); background: var(--surface-2); }
+.dependency-list { display: grid; }
+.dependency-list article { display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 12px; min-height: 78px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.dependency-state { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 9px; color: var(--danger); background: color-mix(in srgb, var(--danger) 11%, transparent); }
+.dependency-state svg { width: 16px; height: 16px; }
+.dependency-list article[data-installed="true"] .dependency-state { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
+.dependency-copy { min-width: 0; }
+.dependency-copy strong { font-size: 13px; }
+.dependency-copy p { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.dependency-copy code { display: block; margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.dependency-list .ghost { min-height: 34px; padding: 0 10px; font-size: 11px; }
+.dependency-loading, .dependency-error { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 190px; color: var(--muted); font-size: 12px; }
+.dependency-error { color: var(--danger); }
+.dependency-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding-top: 18px; }
 @media (max-width: 900px) { .source-grid { grid-template-columns: 1fr; } .model-row { align-items: flex-start; flex-direction: column; } .three-cols { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .dependency-list article { grid-template-columns: 34px minmax(0,1fr); } .dependency-list article > button { grid-column: 2; justify-self: start; } }
 .field { display: grid; gap: 8px; padding: 14px 0; color: var(--text); font-size: 13px; }
 .field > span { display: flex; justify-content: space-between; align-items: center; }
 .field small { color: var(--success); font-size: 11px; font-weight: 500; }

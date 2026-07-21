@@ -59,3 +59,7 @@ export interface ModelInfo {
 export interface ModelProgressEvent {
   model_id: string; status: ModelStatus; downloaded_bytes: number; total_bytes: number; error?: string;
 }
+export interface AsrDependencyStatus {
+  id: string; name: string; installed: boolean; detail: string; detected_path?: string; official_url: string;
+}
+export interface AsrDependencyReport { ready: boolean; dependencies: AsrDependencyStatus[]; }

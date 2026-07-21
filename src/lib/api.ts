@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, CaptionSourceConfig, ModelInfo, RuntimeLogEntry, RuntimeStatus, SettingsView, TranslationRequest, TranslationResult } from "./contracts";
+import type { AppSettings, AsrDependencyReport, CaptionSourceConfig, ModelInfo, RuntimeLogEntry, RuntimeStatus, SettingsView, TranslationRequest, TranslationResult } from "./contracts";
 
 export const getSettings = () => invoke<SettingsView>("get_settings");
 export const saveSettings = (settings: AppSettings, apiKey?: string) =>
@@ -23,3 +23,5 @@ export const testModel = (modelId: string) => invoke<number>("test_model", { mod
 export const deleteModel = (modelId: string) => invoke<void>("delete_model", { modelId });
 export const openModelsDir = () => invoke<void>("open_models_dir");
 export const switchCaptionSource = (source: CaptionSourceConfig) => invoke<void>("switch_caption_source", { source });
+export const checkAsrDependencies = () => invoke<AsrDependencyReport>("check_asr_dependencies");
+export const openAsrDependencyUrl = (dependencyId: string) => invoke<void>("open_asr_dependency_url", { dependencyId });

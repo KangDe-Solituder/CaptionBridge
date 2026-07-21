@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod asr_dependencies;
 mod asr_worker;
 mod captions;
 mod llm;
@@ -25,9 +26,9 @@ use std::{
 
 use captions::CaptionController;
 use models::{
-    AppSettings, CaptionExportEntry, CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth,
-    ModelInfo, RuntimeLogEntry, RuntimeStatus, SettingsSaveRequest, SettingsView, TranslationMode,
-    TranslationRequest, TranslationResult,
+    AppSettings, AsrDependencyReport, CaptionExportEntry, CaptionRuntimeState, CaptionSourceConfig,
+    CaptionSourceHealth, ModelInfo, RuntimeLogEntry, RuntimeStatus, SettingsSaveRequest,
+    SettingsView, TranslationMode, TranslationRequest, TranslationResult,
 };
 use settings::AppPaths;
 use tauri::{
@@ -733,6 +734,22 @@ fn open_logs_dir(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn check_asr_dependencies(state: State<'_, AppState>) -> Result<AsrDependencyReport, String> {
+    Ok(asr_dependencies::check(&state.paths).await)
+}
+
+#[tauri::command]
+fn open_asr_dependency_url(dependency_id: String) -> Result<(), String> {
+    let url = asr_dependencies::official_url(&dependency_id)
+        .ok_or_else(|| "未知的 ASR 依赖项".to_string())?;
+    Command::new("explorer")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new().build())
@@ -759,7 +776,9 @@ fn main() {
             test_model,
             delete_model,
             open_models_dir,
-            switch_caption_source
+            switch_caption_source,
+            check_asr_dependencies,
+            open_asr_dependency_url
         ])
         .setup(|app| {
             // Use one explicit data directory for dev, raw release binaries,

@@ -30,6 +30,7 @@ enum WorkerCommand<'a> {
         vad: VadParameters,
     },
     DryRun,
+    ProbeDependencies,
     Start,
     Stop,
     Shutdown,
@@ -65,6 +66,10 @@ pub enum WorkerEvent {
         latency_ms: Option<u64>,
         detail: String,
     },
+    DependencyProbe {
+        device_count: u32,
+        compute_types: Vec<String>,
+    },
     Error {
         code: String,
         message: String,
@@ -95,6 +100,16 @@ impl AsrWorker {
             .stderr(Stdio::from(stderr_file))
             .env("PYTHONUTF8", "1")
             .env("PYTHONIOENCODING", "utf-8");
+        let runtime_dirs = crate::asr_dependencies::runtime_library_dirs();
+        if !runtime_dirs.is_empty() {
+            let mut path_entries = runtime_dirs;
+            if let Some(current_path) = std::env::var_os("PATH") {
+                path_entries.extend(std::env::split_paths(&current_path));
+            }
+            if let Ok(worker_path) = std::env::join_paths(path_entries) {
+                command.env("PATH", worker_path);
+            }
+        }
         command.kill_on_drop(true);
         #[cfg(windows)]
         command.as_std_mut().creation_flags(0x08000000);
@@ -193,6 +208,23 @@ impl AsrWorker {
         }
     }
 
+    pub async fn probe_dependencies(&mut self) -> Result<(u32, Vec<String>), String> {
+        self.send(WorkerCommand::ProbeDependencies).await?;
+        loop {
+            match tokio::time::timeout(Duration::from_secs(30), self.next())
+                .await
+                .map_err(|_| "ASR 运行环境检查超时".to_string())??
+            {
+                WorkerEvent::DependencyProbe {
+                    device_count,
+                    compute_types,
+                } => return Ok((device_count, compute_types)),
+                WorkerEvent::Error { message, .. } => return Err(message),
+                _ => {}
+            }
+        }
+    }
+
     pub async fn start(&mut self) -> Result<(), String> {
         self.send(WorkerCommand::Start).await
     }
@@ -240,7 +272,7 @@ fn decode_protocol_line(raw: &[u8]) -> Result<Option<WorkerEvent>, String> {
         .map_err(|error| format!("无效 ASR Worker 协议：{error}"))
 }
 
-fn worker_executable(paths: &AppPaths) -> Result<PathBuf, String> {
+pub(crate) fn worker_executable(paths: &AppPaths) -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("LIVECAPTION_ASR_WORKER").map(PathBuf::from) {
         if path.is_file() {
             return Ok(path);

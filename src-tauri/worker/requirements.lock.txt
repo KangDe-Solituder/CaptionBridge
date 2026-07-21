@@ -6,3 +6,4 @@ SoundCard==0.4.4
 pyinstaller==6.11.1
 backports.tarfile==1.2.0
 requests==2.32.3
+setuptools==80.9.0
