@@ -138,8 +138,12 @@ mod tests {
     #[test]
     fn shared_path_is_stable_across_build_profiles() {
         let paths = AppPaths::shared().unwrap();
+        let expected_models_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("Model");
         assert!(paths.data_dir.ends_with("com.dimfi.livecaption"));
-        assert!(paths.models_dir.ends_with("Livecaption\\Model"));
+        assert_eq!(paths.models_dir, expected_models_dir);
         assert_eq!(paths.downloads_dir, paths.models_dir.join(".downloads"));
     }
 
