@@ -135,6 +135,12 @@ pub enum CaptionSourceConfig {
         compute_type: String,
         #[serde(default)]
         vad_profile: VadProfile,
+        #[serde(default)]
+        channel_mode: AudioChannelMode,
+        #[serde(default)]
+        channel_switch_sensitivity: ChannelSwitchSensitivity,
+        #[serde(default = "default_true")]
+        suppress_non_speech_segments: bool,
     },
 }
 
@@ -145,6 +151,9 @@ impl Default for CaptionSourceConfig {
             device: default_asr_device(),
             compute_type: default_compute_type(),
             vad_profile: VadProfile::Normal,
+            channel_mode: AudioChannelMode::Auto,
+            channel_switch_sensitivity: ChannelSwitchSensitivity::Standard,
+            suppress_non_speech_segments: true,
         }
     }
 }
@@ -161,6 +170,33 @@ impl CaptionSourceConfig {
         match self {
             Self::WindowsLiveCaption => None,
             Self::LocalAsr { model_id, .. } => Some(model_id),
+        }
+    }
+
+    pub fn channel_mode(&self) -> Option<AudioChannelMode> {
+        match self {
+            Self::WindowsLiveCaption => None,
+            Self::LocalAsr { channel_mode, .. } => Some(*channel_mode),
+        }
+    }
+
+    pub fn channel_switch_sensitivity(&self) -> Option<ChannelSwitchSensitivity> {
+        match self {
+            Self::WindowsLiveCaption => None,
+            Self::LocalAsr {
+                channel_switch_sensitivity,
+                ..
+            } => Some(*channel_switch_sensitivity),
+        }
+    }
+
+    pub fn suppress_non_speech_segments(&self) -> Option<bool> {
+        match self {
+            Self::WindowsLiveCaption => None,
+            Self::LocalAsr {
+                suppress_non_speech_segments,
+                ..
+            } => Some(*suppress_non_speech_segments),
         }
     }
 }
@@ -181,20 +217,54 @@ pub enum VadProfile {
     Asmr,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioChannelMode {
+    Mono,
+    #[default]
+    Auto,
+    Mix,
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelSwitchSensitivity {
+    Stable,
+    #[default]
+    Standard,
+    Responsive,
+}
+
 impl VadProfile {
-    pub fn parameters(self) -> VadParameters {
+    pub fn parameters(
+        self,
+        requested_channel_mode: AudioChannelMode,
+        channel_switch_sensitivity: ChannelSwitchSensitivity,
+        suppress_non_speech_segments: bool,
+    ) -> VadParameters {
         match self {
             Self::Normal => VadParameters {
                 threshold: 0.5,
                 silence_commit_ms: 500,
                 max_segment_ms: 8_000,
                 partial_interval_ms: 800,
+                channel_mode: AudioChannelMode::Mono,
+                channel_switch_sensitivity: ChannelSwitchSensitivity::Standard,
+                suppress_non_speech_segments: false,
             },
             Self::Asmr => VadParameters {
                 threshold: 0.3,
                 silence_commit_ms: 1_000,
                 max_segment_ms: 12_000,
                 partial_interval_ms: 1_200,
+                channel_mode: match requested_channel_mode {
+                    AudioChannelMode::Mono => AudioChannelMode::Auto,
+                    mode => mode,
+                },
+                channel_switch_sensitivity,
+                suppress_non_speech_segments,
             },
         }
     }
@@ -206,6 +276,9 @@ pub struct VadParameters {
     pub silence_commit_ms: u64,
     pub max_segment_ms: u64,
     pub partial_interval_ms: u64,
+    pub channel_mode: AudioChannelMode,
+    pub channel_switch_sensitivity: ChannelSwitchSensitivity,
+    pub suppress_non_speech_segments: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -312,7 +385,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            schema_version: 6,
+            schema_version: 8,
             llm: LlmProviderSettings::default(),
             selection: SelectionSettings::default(),
             captions: CaptionSettings::default(),
@@ -422,6 +495,21 @@ pub struct RuntimeStatus {
     pub active_source: Option<CaptionSourceConfig>,
     pub active_model: Option<String>,
     pub asr_latency_ms: u64,
+    pub asmr_channel_state: AsmrChannelState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AsmrChannelState {
+    #[default]
+    Inactive,
+    Searching,
+    LockedLeft,
+    LockedRight,
+    LockedMix,
+    PendingLeft,
+    PendingRight,
+    FallbackMono,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

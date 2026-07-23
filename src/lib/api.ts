@@ -9,6 +9,7 @@ export const testLlm = (apiKey?: string) => invoke<TranslationResult>("test_llm"
 export const translateSelection = (request: TranslationRequest) => invoke<TranslationResult>("translate_selection", { request });
 export const setCaptionRunning = (running: boolean) => invoke<void>("set_caption_running", { running });
 export const refreshCaption = () => invoke<void>("refresh_caption");
+export const resetAsrChannelRouting = () => invoke<void>("reset_asr_channel_routing");
 export const getRuntimeStatus = () => invoke<RuntimeStatus>("get_runtime_status");
 export const saveOverlayPosition = (x: number, y: number) => invoke<void>("save_overlay_position", { x, y });
 export const exportCaptionSession = (path: string, format: string) => invoke<void>("export_caption_session", { path, format });

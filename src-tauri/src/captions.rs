@@ -17,9 +17,10 @@ use crate::{
     asr_worker::{AsrWorker, WorkerEvent},
     llm, model_manager,
     models::{
-        CaptionExportEntry, CaptionRuntimeState, CaptionSegment, CaptionSourceConfig,
-        CaptionSourceHealth, CaptionSourceKind, CaptionTimeSource, CaptionTranslatedEvent,
-        TranslationMode, TranslationRequest, TranslationResult,
+        AsmrChannelState, AudioChannelMode, CaptionExportEntry, CaptionRuntimeState,
+        CaptionSegment, CaptionSourceConfig, CaptionSourceHealth, CaptionSourceKind,
+        CaptionTimeSource, CaptionTranslatedEvent, TranslationMode, TranslationRequest,
+        TranslationResult, VadProfile,
     },
     secrets,
     segmenter::BasicSegmenter,
@@ -127,6 +128,17 @@ async fn run_session(app: AppHandle, state: AppState, stop: Arc<AtomicBool>) -> 
     if let Ok(mut active) = state.active_source.write() {
         *active = Some(source.clone());
     }
+    state.set_asmr_channel_state(
+        &app,
+        match &source {
+            CaptionSourceConfig::LocalAsr {
+                vad_profile: VadProfile::Asmr,
+                channel_mode: AudioChannelMode::Auto,
+                ..
+            } => AsmrChannelState::Searching,
+            _ => AsmrChannelState::Inactive,
+        },
+    );
     let translator = spawn_translator(
         app.clone(),
         state.clone(),
@@ -174,6 +186,7 @@ async fn run_session(app: AppHandle, state: AppState, stop: Arc<AtomicBool>) -> 
     if let Ok(mut active) = state.active_source.write() {
         *active = None;
     }
+    state.set_asmr_channel_state(&app, AsmrChannelState::Inactive);
     if source_result.is_ok() {
         state.set_caption_state(&app, CaptionRuntimeState::Stopped);
     }
@@ -408,11 +421,19 @@ async fn run_local_source(
     };
     if !reused {
         worker.load(&state.paths, source).await?;
+    } else {
+        worker.configure(source).await?;
     }
     worker.start().await?;
+    let mut reset_generation = state.asmr_reset_generation.load(Ordering::Relaxed);
     state.set_caption_state(app, CaptionRuntimeState::Running);
     state.set_source_health(app, CaptionSourceHealth::Ready);
     while !stop.load(Ordering::Relaxed) {
+        let requested_reset = state.asmr_reset_generation.load(Ordering::Relaxed);
+        if requested_reset != reset_generation {
+            worker.reset_routing().await?;
+            reset_generation = requested_reset;
+        }
         match tokio::time::timeout(Duration::from_millis(250), worker.next()).await {
             Ok(Ok(WorkerEvent::Partial {
                 text,
@@ -475,6 +496,9 @@ async fn run_local_source(
             Ok(Ok(WorkerEvent::Health {
                 healthy, detail, ..
             })) => {
+                if let Some(channel_state) = asmr_channel_state_from_detail(&detail) {
+                    state.set_asmr_channel_state(app, channel_state);
+                }
                 state.set_source_health(
                     app,
                     if healthy {
@@ -527,6 +551,19 @@ async fn run_local_source(
         }
     });
     Ok(())
+}
+
+fn asmr_channel_state_from_detail(detail: &str) -> Option<AsmrChannelState> {
+    match detail {
+        "asmr_searching" | "capture_started_stereo_auto" => Some(AsmrChannelState::Searching),
+        "asmr_locked_left" => Some(AsmrChannelState::LockedLeft),
+        "asmr_locked_right" => Some(AsmrChannelState::LockedRight),
+        "asmr_locked_mix" => Some(AsmrChannelState::LockedMix),
+        "asmr_switch_pending_left" => Some(AsmrChannelState::PendingLeft),
+        "asmr_switch_pending_right" => Some(AsmrChannelState::PendingRight),
+        "asmr_stereo_unavailable_fallback_mono" => Some(AsmrChannelState::FallbackMono),
+        _ => None,
+    }
 }
 
 fn accept_caption_snapshot(
@@ -597,8 +634,16 @@ mod tests {
 
     #[test]
     fn vad_presets_match_product_defaults() {
-        let normal = crate::models::VadProfile::Normal.parameters();
-        let asmr = crate::models::VadProfile::Asmr.parameters();
+        let normal = crate::models::VadProfile::Normal.parameters(
+            crate::models::AudioChannelMode::Auto,
+            crate::models::ChannelSwitchSensitivity::Stable,
+            true,
+        );
+        let asmr = crate::models::VadProfile::Asmr.parameters(
+            crate::models::AudioChannelMode::Auto,
+            crate::models::ChannelSwitchSensitivity::Standard,
+            true,
+        );
         assert_eq!(
             (
                 normal.threshold,
@@ -617,5 +662,33 @@ mod tests {
             ),
             (0.3, 1000, 12000, 1200)
         );
+        assert_eq!(normal.channel_mode, crate::models::AudioChannelMode::Mono);
+        assert_eq!(asmr.channel_mode, crate::models::AudioChannelMode::Auto);
+        assert_eq!(
+            crate::models::VadProfile::Normal
+                .parameters(
+                    crate::models::AudioChannelMode::Right,
+                    crate::models::ChannelSwitchSensitivity::Responsive,
+                    true,
+                )
+                .channel_mode,
+            crate::models::AudioChannelMode::Mono
+        );
+        assert_eq!(
+            crate::models::VadProfile::Asmr
+                .parameters(
+                    crate::models::AudioChannelMode::Left,
+                    crate::models::ChannelSwitchSensitivity::Stable,
+                    false,
+                )
+                .channel_mode,
+            crate::models::AudioChannelMode::Left
+        );
+        assert_eq!(
+            normal.channel_switch_sensitivity,
+            crate::models::ChannelSwitchSensitivity::Standard
+        );
+        assert!(!normal.suppress_non_speech_segments);
+        assert!(asmr.suppress_non_speech_segments);
     }
 }

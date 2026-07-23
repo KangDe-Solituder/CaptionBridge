@@ -29,10 +29,14 @@ enum WorkerCommand<'a> {
         compute_type: &'a str,
         vad: VadParameters,
     },
+    Configure {
+        vad: VadParameters,
+    },
     DryRun,
     ProbeDependencies,
     Start,
     Stop,
+    ResetRouting,
     Shutdown,
 }
 
@@ -172,6 +176,9 @@ impl AsrWorker {
             device,
             compute_type,
             vad_profile,
+            channel_mode,
+            channel_switch_sensitivity,
+            suppress_non_speech_segments,
         } = source
         else {
             return Err("不是本地 ASR 来源".to_string());
@@ -181,7 +188,11 @@ impl AsrWorker {
             model_path: &paths.models_dir.join(model_id),
             device,
             compute_type,
-            vad: vad_profile.parameters(),
+            vad: vad_profile.parameters(
+                *channel_mode,
+                *channel_switch_sensitivity,
+                *suppress_non_speech_segments,
+            ),
         })
         .await?;
         loop {
@@ -222,7 +233,9 @@ impl AsrWorker {
                     healthy: true,
                     latency_ms,
                     detail,
-                } if detail == "dry_run_ok" => return Ok(latency_ms.unwrap_or(0)),
+                } if detail == "dry_run_ok" || detail == "gpu_encoder_dry_run_ok" => {
+                    return Ok(latency_ms.unwrap_or(0))
+                }
                 WorkerEvent::Error { message, .. } => return Err(message),
                 _ => {}
             }
@@ -266,6 +279,30 @@ impl AsrWorker {
     }
     pub async fn stop(&mut self) -> Result<(), String> {
         self.send(WorkerCommand::Stop).await
+    }
+
+    pub async fn configure(&mut self, source: &CaptionSourceConfig) -> Result<(), String> {
+        let CaptionSourceConfig::LocalAsr {
+            vad_profile,
+            channel_mode,
+            channel_switch_sensitivity,
+            suppress_non_speech_segments,
+            ..
+        } = source
+        else {
+            return Err("不是本地 ASR 来源".to_string());
+        };
+        self.send(WorkerCommand::Configure {
+            vad: vad_profile.parameters(
+                *channel_mode,
+                *channel_switch_sensitivity,
+                *suppress_non_speech_segments,
+            ),
+        })
+        .await
+    }
+    pub async fn reset_routing(&mut self) -> Result<(), String> {
+        self.send(WorkerCommand::ResetRouting).await
     }
 
     pub async fn next(&mut self) -> Result<WorkerEvent, String> {

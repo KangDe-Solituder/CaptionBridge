@@ -6,7 +6,10 @@ use std::{
 
 use crate::{
     asr_worker::{worker_executable, AsrDependencyProbe, AsrWorker},
-    models::{AsrDependencyReport, AsrDependencyStatus, CaptionSourceConfig, VadProfile},
+    models::{
+        AsrDependencyReport, AsrDependencyStatus, AudioChannelMode, CaptionSourceConfig,
+        ChannelSwitchSensitivity, VadProfile,
+    },
     settings::AppPaths,
 };
 
@@ -15,13 +18,30 @@ const DRIVER_URL: &str = "https://www.nvidia.com/en-us/drivers/";
 const CUDA_URL: &str = "https://developer.nvidia.com/cuda-toolkit-archive";
 const CUDNN_URL: &str = "https://developer.nvidia.com/cudnn-downloads";
 const CUDA_FILES: &[&str] = &["cublas64_12.dll", "cublasLt64_12.dll"];
-const CUDNN_FILES: &[&str] = &["cudnn64_9.dll"];
+const CUDNN_FILES: &[&str] = &[
+    "cudnn64_9.dll",
+    "cudnn_adv64_9.dll",
+    "cudnn_cnn64_9.dll",
+    "cudnn_engines_precompiled64_9.dll",
+    "cudnn_engines_runtime_compiled64_9.dll",
+    "cudnn_graph64_9.dll",
+    "cudnn_heuristic64_9.dll",
+    "cudnn_ops64_9.dll",
+];
 const MODEL_IDS: &[&str] = &["kotoba-whisper-v2.0-faster", "whisper-large-v3-turbo"];
 
 #[derive(Debug)]
 enum DependencyProbeOutcome {
     Lightweight(AsrDependencyProbe),
-    ModelDryRun { model_id: String, latency_ms: u64 },
+    ModelDryRun {
+        model_id: String,
+        latency_ms: u64,
+    },
+    Verified {
+        probe: AsrDependencyProbe,
+        model_id: String,
+        latency_ms: u64,
+    },
 }
 
 pub fn official_url(id: &str) -> Option<&'static str> {
@@ -115,7 +135,32 @@ pub async fn check(
         match AsrWorker::spawn(paths).await {
             Ok(mut worker) => {
                 let result = match worker.probe_dependencies().await {
-                    Ok(probe) => Ok(DependencyProbeOutcome::Lightweight(probe)),
+                    Ok(probe) => {
+                        let runtimes_loaded = probe.cuda_runtime_loaded == Some(true)
+                            && probe.cudnn_runtime_loaded == Some(true)
+                            && probe.device_count > 0;
+                        if runtimes_loaded {
+                            match legacy_probe_source(paths, configured_source) {
+                                Some(source) => {
+                                    let model_id =
+                                        source.model_id().unwrap_or("未知模型").to_string();
+                                    match worker.load(paths, &source).await {
+                                        Ok(()) => worker.dry_run().await.map(|latency_ms| {
+                                            DependencyProbeOutcome::Verified {
+                                                probe,
+                                                model_id,
+                                                latency_ms,
+                                            }
+                                        }),
+                                        Err(error) => Err(error),
+                                    }
+                                }
+                                None => Ok(DependencyProbeOutcome::Lightweight(probe)),
+                            }
+                        } else {
+                            Ok(DependencyProbeOutcome::Lightweight(probe))
+                        }
+                    }
                     Err(error) if is_unsupported_probe(&error) => {
                         match legacy_probe_source(paths, configured_source) {
                             Some(source) => {
@@ -156,9 +201,10 @@ pub async fn check(
         probe_result.as_ref().ok().and_then(runtime_loaded_cudnn),
         cudnn_path.is_some(),
     );
-    let legacy_validated = matches!(
+    let model_validated = matches!(
         &probe_result,
         Ok(DependencyProbeOutcome::ModelDryRun { .. })
+            | Ok(DependencyProbeOutcome::Verified { .. })
     );
 
     let mut dependencies = vec![
@@ -166,8 +212,8 @@ pub async fn check(
             "worker",
             "ASR Worker",
             worker_path.is_some(),
-            if legacy_validated {
-                "识别进程已安装；旧版诊断协议已通过真实模型推理兼容验证".to_string()
+            if model_validated {
+                "识别进程已安装；已通过真实 GPU encoder 推理验证".to_string()
             } else if worker_path.is_some() {
                 "识别进程已安装".to_string()
             } else {
@@ -221,6 +267,19 @@ pub async fn check(
     ];
 
     let (probe_ready, probe_detail) = match &probe_result {
+        Ok(DependencyProbeOutcome::Verified {
+            probe,
+            model_id,
+            latency_ms,
+        }) => (
+            true,
+            format!(
+                "CTranslate2 {} 检测到 {} 个 CUDA 设备；已用 {model_id} 完成真实 GPU encoder 推理（{latency_ms} ms）；支持 {}",
+                probe.ctranslate2_version.as_deref().unwrap_or("未知版本"),
+                probe.device_count,
+                probe.compute_types.join("、")
+            ),
+        ),
         Ok(DependencyProbeOutcome::Lightweight(probe)) if probe.device_count > 0 => (
             true,
             format!(
@@ -267,6 +326,7 @@ fn runtime_loaded_cuda(outcome: &DependencyProbeOutcome) -> Option<bool> {
     match outcome {
         DependencyProbeOutcome::Lightweight(probe) => probe.cuda_runtime_loaded,
         DependencyProbeOutcome::ModelDryRun { .. } => Some(true),
+        DependencyProbeOutcome::Verified { probe, .. } => probe.cuda_runtime_loaded,
     }
 }
 
@@ -274,6 +334,7 @@ fn runtime_loaded_cudnn(outcome: &DependencyProbeOutcome) -> Option<bool> {
     match outcome {
         DependencyProbeOutcome::Lightweight(probe) => probe.cudnn_runtime_loaded,
         DependencyProbeOutcome::ModelDryRun { .. } => Some(true),
+        DependencyProbeOutcome::Verified { probe, .. } => probe.cudnn_runtime_loaded,
     }
 }
 
@@ -295,6 +356,12 @@ fn runtime_detail(
             }
             DependencyProbeOutcome::ModelDryRun { .. } => {
                 return format!("{loaded}（已由真实模型推理验证）")
+            }
+            DependencyProbeOutcome::Verified { probe, .. } if cuda => {
+                (probe.cuda_runtime_loaded, probe.cuda_error.as_deref())
+            }
+            DependencyProbeOutcome::Verified { probe, .. } => {
+                (probe.cudnn_runtime_loaded, probe.cudnn_error.as_deref())
             }
         };
         if state == Some(true) {
@@ -337,6 +404,9 @@ fn legacy_probe_source(
                 device: "cuda".to_string(),
                 compute_type: "int8_float16".to_string(),
                 vad_profile: VadProfile::Normal,
+                channel_mode: AudioChannelMode::Auto,
+                channel_switch_sensitivity: ChannelSwitchSensitivity::Standard,
+                suppress_non_speech_segments: true,
             })
     })
 }
@@ -415,7 +485,9 @@ mod tests {
         assert!(runtime_ready(Some(true), false));
         assert!(!runtime_ready(Some(false), true));
         assert!(runtime_ready(None, true));
-        assert_eq!(CUDNN_FILES, &["cudnn64_9.dll"]);
+        assert_eq!(CUDNN_FILES.len(), 8);
+        assert!(CUDNN_FILES.contains(&"cudnn_ops64_9.dll"));
+        assert!(CUDNN_FILES.contains(&"cudnn_graph64_9.dll"));
     }
 
     #[test]

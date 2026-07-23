@@ -112,7 +112,7 @@ pub fn save(paths: &AppPaths, settings: &AppSettings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::OverlayDragMode;
+    use crate::models::{AudioChannelMode, ChannelSwitchSensitivity, OverlayDragMode};
 
     #[test]
     fn settings_roundtrip_preserves_release_sensitive_values() {
@@ -150,10 +150,22 @@ mod tests {
     #[test]
     fn new_install_defaults_to_kotoba() {
         let settings = AppSettings::default();
-        assert_eq!(settings.schema_version, 6);
+        assert_eq!(settings.schema_version, 8);
         assert_eq!(
             settings.captions.source.model_id(),
             Some("kotoba-whisper-v2.0-faster")
+        );
+        assert_eq!(
+            settings.captions.source.channel_mode(),
+            Some(AudioChannelMode::Auto)
+        );
+        assert_eq!(
+            settings.captions.source.channel_switch_sensitivity(),
+            Some(ChannelSwitchSensitivity::Standard)
+        );
+        assert_eq!(
+            settings.captions.source.suppress_non_speech_segments(),
+            Some(true)
         );
     }
 
@@ -177,7 +189,56 @@ mod tests {
             migrated.captions.source,
             crate::models::CaptionSourceConfig::WindowsLiveCaption
         ));
-        assert_eq!(migrated.schema_version, 6);
+        assert_eq!(migrated.schema_version, 8);
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn v6_defaults_to_automatic_asmr_channel_routing() {
+        let test_dir =
+            std::env::temp_dir().join(format!("livecaption-v6-{}", uuid::Uuid::new_v4()));
+        let paths = AppPaths::new(test_dir.clone());
+        paths.ensure().unwrap();
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["schema_version"] = serde_json::json!(6);
+        value["captions"]["source"]
+            .as_object_mut()
+            .unwrap()
+            .remove("channel_mode");
+        fs::write(&paths.settings_file, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let migrated = load(&paths).unwrap();
+        assert_eq!(
+            migrated.captions.source.channel_mode(),
+            Some(AudioChannelMode::Auto)
+        );
+        assert_eq!(migrated.schema_version, 8);
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn v7_defaults_to_standard_sticky_routing() {
+        let test_dir =
+            std::env::temp_dir().join(format!("livecaption-v7-{}", uuid::Uuid::new_v4()));
+        let paths = AppPaths::new(test_dir.clone());
+        paths.ensure().unwrap();
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["schema_version"] = serde_json::json!(7);
+        let source = value["captions"]["source"].as_object_mut().unwrap();
+        source.remove("channel_switch_sensitivity");
+        source.remove("suppress_non_speech_segments");
+        fs::write(&paths.settings_file, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let migrated = load(&paths).unwrap();
+        assert_eq!(
+            migrated.captions.source.channel_switch_sensitivity(),
+            Some(ChannelSwitchSensitivity::Standard)
+        );
+        assert_eq!(
+            migrated.captions.source.suppress_non_speech_segments(),
+            Some(true)
+        );
+        assert_eq!(migrated.schema_version, 8);
         let _ = fs::remove_dir_all(test_dir);
     }
 }

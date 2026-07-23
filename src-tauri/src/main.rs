@@ -26,9 +26,10 @@ use std::{
 
 use captions::CaptionController;
 use models::{
-    AppSettings, AsrDependencyReport, CaptionExportEntry, CaptionRuntimeState, CaptionSourceConfig,
-    CaptionSourceHealth, ModelInfo, RuntimeLogEntry, RuntimeStatus, SettingsSaveRequest,
-    SettingsView, TranslationMode, TranslationRequest, TranslationResult,
+    AppSettings, AsmrChannelState, AsrDependencyReport, AudioChannelMode, CaptionExportEntry,
+    CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth, ModelInfo, RuntimeLogEntry,
+    RuntimeStatus, SettingsSaveRequest, SettingsView, TranslationMode, TranslationRequest,
+    TranslationResult, VadProfile,
 };
 use settings::AppPaths;
 use tauri::{
@@ -58,6 +59,8 @@ pub struct AppState {
     pub api_key_configured: Arc<AtomicBool>,
     pub active_source: Arc<RwLock<Option<CaptionSourceConfig>>>,
     pub asr_latency_ms: Arc<AtomicU64>,
+    pub asmr_channel_state: Arc<RwLock<AsmrChannelState>>,
+    pub asmr_reset_generation: Arc<AtomicU64>,
     pub model_downloads: model_manager::DownloadRegistry,
     pub idle_asr_worker: Arc<Mutex<Option<(String, asr_worker::AsrWorker)>>>,
     pub idle_worker_generation: Arc<AtomicU64>,
@@ -84,6 +87,8 @@ impl AppState {
             api_key_configured: Arc::new(AtomicBool::new(false)),
             active_source: Arc::new(RwLock::new(None)),
             asr_latency_ms: Arc::new(AtomicU64::new(0)),
+            asmr_channel_state: Arc::new(RwLock::new(AsmrChannelState::Inactive)),
+            asmr_reset_generation: Arc::new(AtomicU64::new(0)),
             model_downloads: model_manager::DownloadRegistry::default(),
             idle_asr_worker: Arc::new(Mutex::new(None)),
             idle_worker_generation: Arc::new(AtomicU64::new(0)),
@@ -138,6 +143,24 @@ impl AppState {
             let _ = app.emit("caption:health-changed", &next);
         }
     }
+
+    pub fn set_asmr_channel_state(&self, app: &AppHandle, next: AsmrChannelState) {
+        let changed = self
+            .asmr_channel_state
+            .write()
+            .map(|mut current| {
+                if *current == next {
+                    false
+                } else {
+                    *current = next.clone();
+                    true
+                }
+            })
+            .unwrap_or(false);
+        if changed {
+            let _ = app.emit("caption:asmr-channel-changed", &next);
+        }
+    }
 }
 
 #[tauri::command]
@@ -166,7 +189,7 @@ fn save_settings(
         request.settings.llm.timeout_milliseconds.clamp(500, 5_000);
     request.settings.captions.context_segments = request.settings.captions.context_segments.min(4);
     request.settings.overlay.opacity = request.settings.overlay.opacity.clamp(0.2, 1.0);
-    request.settings.schema_version = 6;
+    request.settings.schema_version = 8;
     if !request.settings.llm.extra_body_json.trim().is_empty() {
         let value: serde_json::Value = serde_json::from_str(&request.settings.llm.extra_body_json)
             .map_err(|e| e.to_string())?;
@@ -395,7 +418,35 @@ async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus,
             .as_ref()
             .and_then(|source| source.model_id().map(str::to_string)),
         asr_latency_ms: state.asr_latency_ms.load(Ordering::Relaxed),
+        asmr_channel_state: state
+            .asmr_channel_state
+            .read()
+            .map_err(|e| e.to_string())?
+            .clone(),
     })
+}
+
+#[tauri::command]
+fn reset_asr_channel_routing(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let active = state
+        .active_source
+        .read()
+        .map_err(|error| error.to_string())?
+        .clone();
+    if !matches!(
+        active,
+        Some(CaptionSourceConfig::LocalAsr {
+            vad_profile: VadProfile::Asmr,
+            channel_mode: AudioChannelMode::Auto,
+            ..
+        })
+    ) {
+        return Err("仅能在运行中的 ASMR 智能锁定模式下重新检测声道".to_string());
+    }
+    state.asmr_reset_generation.fetch_add(1, Ordering::Relaxed);
+    state.set_asmr_channel_state(&app, AsmrChannelState::Searching);
+    state.log("info", "已请求重新检测 ASMR 人声声道");
+    Ok(())
 }
 
 #[tauri::command]
@@ -499,16 +550,31 @@ async fn test_model(
     if let Some((_, worker)) = idle_worker {
         worker.shutdown().await;
     }
+    let (vad_profile, channel_mode, channel_switch_sensitivity, suppress_non_speech_segments) = {
+        let settings = state.settings.read().map_err(|e| e.to_string())?;
+        (
+            settings.captions.audio_mode,
+            settings.captions.source.channel_mode().unwrap_or_default(),
+            settings
+                .captions
+                .source
+                .channel_switch_sensitivity()
+                .unwrap_or_default(),
+            settings
+                .captions
+                .source
+                .suppress_non_speech_segments()
+                .unwrap_or(true),
+        )
+    };
     let source = CaptionSourceConfig::LocalAsr {
         model_id: model_id.clone(),
         device: "cuda".to_string(),
         compute_type: "int8_float16".to_string(),
-        vad_profile: state
-            .settings
-            .read()
-            .map_err(|e| e.to_string())?
-            .captions
-            .audio_mode,
+        vad_profile,
+        channel_mode,
+        channel_switch_sensitivity,
+        suppress_non_speech_segments,
     };
     let mut worker = asr_worker::AsrWorker::spawn(&state.paths).await?;
     let result = async {
@@ -771,6 +837,7 @@ fn main() {
             translate_selection,
             set_caption_running,
             refresh_caption,
+            reset_asr_channel_routing,
             get_runtime_status,
             save_overlay_position,
             export_caption_session,
