@@ -7,6 +7,8 @@ default speaker through WASAPI loopback and normalized to 16 kHz mono float32.
 from __future__ import annotations
 
 import json
+import ctypes
+import os
 import queue
 import sys
 import threading
@@ -81,9 +83,43 @@ class Worker:
     def probe_dependencies(self) -> None:
         import ctranslate2
 
+        def load_runtime(name: str) -> tuple[bool, str | None]:
+            if sys.platform != "win32":
+                return False, "GPU worker currently supports Windows only"
+            candidates = [Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))]
+            candidates.extend(Path(entry) for entry in os.environ.get("PATH", "").split(os.pathsep) if entry)
+            errors: list[str] = []
+            for directory in candidates:
+                library = directory / name
+                if not library.is_file():
+                    continue
+                try:
+                    with os.add_dll_directory(str(directory)):
+                        ctypes.WinDLL(str(library))
+                    return True, None
+                except OSError as error:
+                    errors.append(f"{library}: {error}")
+            try:
+                ctypes.WinDLL(name)
+                return True, None
+            except OSError as error:
+                errors.append(str(error))
+            return False, " | ".join(errors)
+
+        cuda_runtime_loaded, cuda_error = load_runtime("cublas64_12.dll")
+        cudnn_runtime_loaded, cudnn_error = load_runtime("cudnn64_9.dll")
         device_count = ctranslate2.get_cuda_device_count()
         compute_types = sorted(ctranslate2.get_supported_compute_types("cuda")) if device_count else []
-        emit("dependency_probe", device_count=device_count, compute_types=compute_types)
+        emit(
+            "dependency_probe",
+            device_count=device_count,
+            compute_types=compute_types,
+            ctranslate2_version=ctranslate2.__version__,
+            cuda_runtime_loaded=cuda_runtime_loaded,
+            cudnn_runtime_loaded=cudnn_runtime_loaded,
+            cuda_error=cuda_error,
+            cudnn_error=cudnn_error,
+        )
 
     def start(self) -> None:
         if self.model is None:

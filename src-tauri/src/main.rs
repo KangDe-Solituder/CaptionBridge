@@ -165,6 +165,7 @@ fn save_settings(
     request.settings.llm.timeout_milliseconds =
         request.settings.llm.timeout_milliseconds.clamp(500, 5_000);
     request.settings.captions.context_segments = request.settings.captions.context_segments.min(4);
+    request.settings.overlay.opacity = request.settings.overlay.opacity.clamp(0.2, 1.0);
     request.settings.schema_version = 6;
     if !request.settings.llm.extra_body_json.trim().is_empty() {
         let value: serde_json::Value = serde_json::from_str(&request.settings.llm.extra_body_json)
@@ -736,7 +737,14 @@ fn open_logs_dir(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn check_asr_dependencies(state: State<'_, AppState>) -> Result<AsrDependencyReport, String> {
-    Ok(asr_dependencies::check(&state.paths).await)
+    let source = state
+        .settings
+        .read()
+        .map_err(|error| error.to_string())?
+        .captions
+        .source
+        .clone();
+    Ok(asr_dependencies::check(&state.paths, Some(&source)).await)
 }
 
 #[tauri::command]

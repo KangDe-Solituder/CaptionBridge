@@ -58,4 +58,12 @@ if ($BundleGpuRuntime) {
 } else {
   Write-Host 'GPU runtime libraries excluded. The installed app will use system CUDA 12 and cuDNN 9.'
 }
-Write-Host "Worker built at $WorkerDir\dist\livecaption-asr-worker\livecaption-asr-worker.exe"
+$WorkerExe = Join-Path $WorkerDir 'dist\livecaption-asr-worker\livecaption-asr-worker.exe'
+$ProbeOutput = @(
+  '{"command":"probe_dependencies"}',
+  '{"command":"shutdown"}'
+) | & $WorkerExe
+if ($LASTEXITCODE -ne 0 -or -not ($ProbeOutput -match '"type": "dependency_probe"')) {
+  throw 'Worker build completed, but its dependency-probe protocol check failed.'
+}
+Write-Host "Worker built and protocol-checked at $WorkerExe"

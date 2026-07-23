@@ -370,7 +370,7 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
             {props.models.map(model => <SourceCard key={model.id} title={model.display_name} description={model.recommended ? "日语优化、速度优先，推荐默认使用。" : "复杂音频精度优先，显存占用更高。"} state={modelStatusText(model.status)} badge={model.recommended ? "推荐" : undefined} selected={s.captions.source.type === "local_asr" && s.captions.source.model_id === model.id} onClick={() => void props.onSelectSource({ type: "local_asr", model_id: model.id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode })} />)}
           </div>
         </div>
-        <SettingRow title="本地 ASR 运行环境" description="检查 Worker、NVIDIA 驱动、CUDA 12、cuDNN 9 和 CTranslate2 GPU 可用性。">
+        <SettingRow title="本地 ASR 运行环境" description="检查 Worker、NVIDIA 驱动、CUDA/cuDNN 实际加载状态和 CTranslate2 GPU 可用性；旧 Worker 会自动改用模型推理验证。">
           <button className="ghost" onClick={() => void runDependencyCheck()} disabled={checkingDependencies}>{checkingDependencies ? <Loader2 className="spin" /> : <Activity />}检查依赖</button>
         </SettingRow>
         <ModelManager models={props.models} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
@@ -400,6 +400,7 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
         <SettingRow title="减少动画" description="关闭页面切换和浮窗展开动画。"><Toggle label="减少动画" checked={s.visual.reduce_motion} onChange={reduce_motion => update({ ...s, visual: { ...s.visual, reduce_motion } })} /></SettingRow>
         <Field label={`字幕字号 · ${s.overlay.font_size}px`}><input type="range" min="14" max="34" value={s.overlay.font_size} onChange={e => update({ ...s, overlay: { ...s.overlay, font_size: Number(e.target.value) } })} /></Field>
         <SettingRow title="字幕背景" description="透明模式只保留字幕文字和悬浮控制区。"><Toggle label="透明字幕背景" checked={s.overlay.transparent} onChange={transparent => update({ ...s, overlay: { ...s.overlay, transparent } })} /></SettingRow>
+        <Field label={`字幕浮窗透明度 · ${Math.round(s.overlay.opacity * 100)}%`} hint="同时调整文字与背景的整体透明度"><input type="range" min="0.2" max="1" step="0.05" value={s.overlay.opacity} onChange={e => update({ ...s, overlay: { ...s.overlay, opacity: Number(e.target.value) } })} /></Field>
         <SettingRow title="字幕颜色" description="也可以直接在字幕浮窗右下角随时更换。"><label className="color-control"><input type="color" value={s.overlay.caption_color} onChange={e => update({ ...s, overlay: { ...s.overlay, caption_color: e.target.value } })} /><span>{s.overlay.caption_color.toUpperCase()}</span></label></SettingRow>
       </>}
       {tab === "logs" && <>
@@ -483,7 +484,7 @@ function OverlayWindow() {
   const refresh = async () => { if (refreshing) return; setRefreshing(true); try { await refreshCaption(); } finally { setRefreshing(false); } };
   const drag = (e: React.MouseEvent, fromHandle = false) => { if (e.button !== 0 || (e.target as HTMLElement).closest("button,input")) return; const mode = settings?.overlay.drag_mode ?? "alt"; if ((mode === "alt" && e.altKey) || mode === "anywhere" || (mode === "handle" && fromHandle)) void currentWindow.startDragging(); };
   const dragHint = settings?.overlay.drag_mode === "anywhere" ? "拖动任意位置" : settings?.overlay.drag_mode === "handle" ? "拖动此处" : "ALT + 拖动";
-  return <main className="overlay-window floating" data-expanded={expanded} data-transparent={settings?.overlay.transparent} style={{ fontSize: settings?.overlay.font_size, "--caption-color": settings?.overlay.caption_color } as React.CSSProperties} onMouseDown={e => drag(e)}>
+  return <main className="overlay-window floating" data-expanded={expanded} data-transparent={settings?.overlay.transparent} style={{ fontSize: settings?.overlay.font_size, opacity: settings?.overlay.opacity, "--caption-color": settings?.overlay.caption_color } as React.CSSProperties} onMouseDown={e => drag(e)}>
     <header className="overlay-bar" onMouseDown={e => drag(e, true)}><span><i data-health={health} />实时翻译</span><div><small><GripHorizontal />{dragHint}</small><button title="刷新字幕连接" disabled={refreshing} onClick={() => void refresh()}>{refreshing ? <Loader2 className="spin" /> : <RefreshCw />}</button><button title={expanded ? "收起字幕记录" : "展开字幕记录"} onClick={() => void toggleExpanded()}>{expanded ? <ChevronUp /> : <ChevronDown />}</button><button className="overlay-close" title="结束实时字幕" onClick={() => void setCaptionRunning(false)}><X /></button></div></header>
     <div className="caption-feed" ref={feedRef}>
       {items.map(item => <section key={item.segment.id}><span>{item.segment.source_text}</span><p>{item.result.translated_text || item.result.error}</p></section>)}

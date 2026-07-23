@@ -69,6 +69,16 @@ pub enum WorkerEvent {
     DependencyProbe {
         device_count: u32,
         compute_types: Vec<String>,
+        #[serde(default)]
+        ctranslate2_version: Option<String>,
+        #[serde(default)]
+        cuda_runtime_loaded: Option<bool>,
+        #[serde(default)]
+        cudnn_runtime_loaded: Option<bool>,
+        #[serde(default)]
+        cuda_error: Option<String>,
+        #[serde(default)]
+        cudnn_error: Option<String>,
     },
     Error {
         code: String,
@@ -77,6 +87,17 @@ pub enum WorkerEvent {
     },
     Unloaded,
     Shutdown,
+}
+
+#[derive(Debug)]
+pub struct AsrDependencyProbe {
+    pub device_count: u32,
+    pub compute_types: Vec<String>,
+    pub ctranslate2_version: Option<String>,
+    pub cuda_runtime_loaded: Option<bool>,
+    pub cudnn_runtime_loaded: Option<bool>,
+    pub cuda_error: Option<String>,
+    pub cudnn_error: Option<String>,
 }
 
 pub struct AsrWorker {
@@ -208,7 +229,7 @@ impl AsrWorker {
         }
     }
 
-    pub async fn probe_dependencies(&mut self) -> Result<(u32, Vec<String>), String> {
+    pub async fn probe_dependencies(&mut self) -> Result<AsrDependencyProbe, String> {
         self.send(WorkerCommand::ProbeDependencies).await?;
         loop {
             match tokio::time::timeout(Duration::from_secs(30), self.next())
@@ -218,7 +239,22 @@ impl AsrWorker {
                 WorkerEvent::DependencyProbe {
                     device_count,
                     compute_types,
-                } => return Ok((device_count, compute_types)),
+                    ctranslate2_version,
+                    cuda_runtime_loaded,
+                    cudnn_runtime_loaded,
+                    cuda_error,
+                    cudnn_error,
+                } => {
+                    return Ok(AsrDependencyProbe {
+                        device_count,
+                        compute_types,
+                        ctranslate2_version,
+                        cuda_runtime_loaded,
+                        cudnn_runtime_loaded,
+                        cuda_error,
+                        cudnn_error,
+                    })
+                }
                 WorkerEvent::Error { message, .. } => return Err(message),
                 _ => {}
             }

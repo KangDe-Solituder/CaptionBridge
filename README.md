@@ -71,9 +71,9 @@ Windows Live Captions ┤
 - Node.js 24 LTS；
 - pnpm 11.15.1，版本已通过 `package.json` 的 `packageManager` 字段固定；
 - Rust stable、MSVC 工具链，以及 Visual Studio Build Tools 的“使用 C++ 的桌面开发”组件；
-- 构建本地 ASR worker 时需要 Python 3.12 x64；运行 GPU 本地 ASR 时需要 NVIDIA 驱动、CUDA 12.x 和 cuDNN 9。
+- 构建本地 ASR worker 时只需要 Python 3.12 x64；运行 GPU 本地 ASR 时，CTranslate2 仍会实际使用 CUDA 12.x 和 cuDNN 9。它们可以来自系统环境，也可以打包进自包含 worker。
 
-本项目已在 Node.js 24.18.0、pnpm 11.15.1、Python 3.12.10、CUDA 12.8 和 cuDNN 9.24 上完成验证。其他 CUDA 12.x/cuDNN 9 组合也可以使用，但应确认 CUDA 目录包含 `cublas64_12.dll` 和 `cublasLt64_12.dll`。
+本项目已在 Node.js 24.18.0、pnpm 11.15.1、Python 3.12.10、CUDA 12.8 和 cuDNN 9.24 上完成验证。其他 CUDA 12.x/cuDNN 9 组合也可以使用，但应确认运行时能加载 `cublas64_12.dll`、`cublasLt64_12.dll` 和 `cudnn64_9.dll`。CTranslate2 是 faster-whisper 的推理后端，不是可删除的“探测专用依赖”；cuDNN 也会被 GPU 推理实际调用。
 
 LLM 翻译需要一个 OpenAI-compatible endpoint 和 API Key。实时使用 Windows Live Captions 时，需要系统已启用对应功能；使用本地 ASR 时则需要下载约 1.5–1.6 GB 的模型文件。
 
@@ -125,7 +125,7 @@ pnpm tauri build
 
 两个本地模型 `Kotoba Whisper v2.0 Faster` 和 `Whisper large-v3-turbo` 都通过同一个 faster-whisper worker 运行，因此依赖相同。Windows Live Captions 来源本身不需要 Python、CUDA 或模型，但当前 Tauri 配置会把 worker 作为应用资源打包，所以执行 `pnpm tauri dev` 或 `pnpm tauri build` 前仍需生成一次 worker；仅运行 `pnpm build` 构建前端则不需要。
 
-worker 的 Python 依赖版本记录在 [`src-tauri/worker/requirements.lock.txt`](src-tauri/worker/requirements.lock.txt) 中，其中也固定了与 CTranslate2 4.6.0 兼容的 `setuptools` 版本。默认构建不会复制 CUDA/cuDNN 系统运行库，worker 当前约为 228 MB；它与虚拟环境、Rust `target` 和模型文件都不会提交到 Git，每台开发机需要单独生成。
+worker 的 Python 依赖版本记录在 [`src-tauri/worker/requirements.lock.txt`](src-tauri/worker/requirements.lock.txt) 中，其中也固定了与 CTranslate2 4.6.0 兼容的 `setuptools` 版本。默认构建不会复制 CUDA/cuDNN 系统运行库，worker 当前约为 228 MB；它与虚拟环境、Rust `target` 和模型文件都不会提交到 Git，每台开发机需要单独生成。换句话说，`git pull` 会更新 worker 源码，但不会替换已经存在的本地 exe；worker 源码更新后应重新执行下面的构建命令。
 
 先安装 Python 3.12 x64，然后执行：
 
@@ -139,7 +139,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build-worker.ps1 `
   -Python $Python
 ```
 
-安装后的应用会从系统 `PATH`、`CUDA_PATH`、标准 NVIDIA 安装目录中查找 CUDA 12/cuDNN 9。可以在“设置 → 字幕 → 本地 ASR 运行环境”点击“检查依赖”，对话框会检查 Worker、NVIDIA 驱动、CUDA 12、cuDNN 9，并实际调用 CTranslate2 探测 GPU；缺失项会提供 NVIDIA 或项目 Releases 的官方网页，当前不会自动下载安装。
+安装后的应用会从 Worker 自身目录、系统 `PATH`、`CUDA_PATH` 和标准 NVIDIA 安装目录中查找 CUDA 12/cuDNN 9。可以在“设置 → 字幕 → 本地 ASR 运行环境”点击“检查依赖”：新版 Worker 会在进程内实际加载 CUDA/cuDNN DLL，并调用 CTranslate2 进行轻量 GPU 探测；旧版 Worker 不支持该诊断命令时，应用会自动改用已安装模型执行真实 CUDA dry-run。只要实际推理通过就会判定环境可用，不要求为了诊断接口升级 Worker。检查器也不会再把未被当前推理路径使用的可选 cuDNN 拆分 DLL 判为硬性缺失。
 
 如确实需要生成包含 GPU 运行库的自包含 worker，可以显式使用以下参数：
 
@@ -167,7 +167,8 @@ src-tauri\worker\dist\livecaption-asr-worker\livecaption-asr-worker.exe
 - **`pnpm.ps1` 被执行策略阻止**：可以直接使用 `pnpm.cmd`；不需要为了运行 pnpm 永久关闭 PowerShell 安全策略。
 - **`ERR_PNPM_IGNORED_BUILDS: esbuild`**：确认已检出 `pnpm-workspace.yaml`，然后重新执行 `pnpm install --frozen-lockfile`。
 - **`resource path worker\\dist\\livecaption-asr-worker doesn't exist`**：本地 ASR worker 尚未构建；按上面的步骤生成 `livecaption-asr-worker.exe`。
-- **本地 ASR 提示缺少 CUDA/cuDNN**：在“设置 → 字幕”运行依赖检查。当前 CTranslate2 版本需要 CUDA 12 的 `cublas64_12.dll`、`cublasLt64_12.dll` 和完整的 cuDNN 9 拆分运行库；不能直接使用只包含 `cublas64_13.dll` 的 CUDA 13 目录。
+- **旧 Worker 不支持轻量探测**：这是 `git pull` 后仍在使用被 Git 忽略的旧 exe，并不表示推理版本不兼容。检查器会自动用当前已安装模型执行真实 CUDA dry-run；验证成功即可继续使用。只有希望使用更快的轻量诊断时才需要重新执行 `build-worker.ps1`。
+- **本地 ASR 提示缺少 CUDA/cuDNN**：在“设置 → 字幕”运行依赖检查。当前 CTranslate2 版本需要 CUDA 12 的 cuBLAS 和 cuDNN 9；不能直接使用只包含 `cublas64_13.dll` 的 CUDA 13 目录。检查器显示的是 Worker 进程内的实际加载结果；模型管理中的“测试”还会执行一次真实的静音推理。
 - **NSIS 报 `Internal compiler error #12345: error mmapping datablock`**：通常是把约 2 GB 的 CUDA/cuDNN DLL 一并装入 worker 导致。重新使用不带 `-BundleGpuRuntime` 的默认命令构建 worker，再执行 `pnpm tauri build`。
 - **PowerShell 阻止 `build-worker.ps1`**：使用上面进程级的 `powershell.exe -ExecutionPolicy Bypass -File ...` 命令。
 - **Vite 报 `EBUSY ... src-tauri\\target\\...\\livecaption.exe`**：当前配置已从 Vite 监听中排除 `src-tauri`。拉取最新代码、结束旧的开发进程后重新执行 `pnpm tauri dev`。
@@ -176,7 +177,7 @@ src-tauri\worker\dist\livecaption-asr-worker\livecaption-asr-worker.exe
 
 Git 只同步源代码、锁文件和配置。`node_modules`、`.tools`、Python 虚拟环境、worker 构建产物、Rust `target`、本地模型、日志和会话数据均已忽略，不应提交。
 
-在另一台电脑首次检出后，需要分别安装 Node.js/pnpm、Rust/MSVC；需要本地 ASR 时还要安装 Python/CUDA/cuDNN 并重新构建 worker。日常开始工作前建议执行：
+在另一台电脑首次检出后，需要分别安装 Node.js/pnpm、Rust/MSVC；需要构建本地 ASR worker 时还要安装 Python。GPU 推理所需的 CUDA/cuDNN 可以安装在目标系统，也可以用 `-BundleGpuRuntime` 打包进 worker。日常开始工作前建议执行：
 
 ```powershell
 git pull --rebase
