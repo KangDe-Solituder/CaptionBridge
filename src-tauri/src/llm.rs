@@ -21,16 +21,18 @@ pub fn normalize_endpoint(endpoint: &str) -> String {
 }
 
 const LIVE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+const LIVE_FIRST_TOKEN_GRACE: Duration = Duration::from_millis(500);
 
-fn first_token_timeout(settings: &AppSettings, mode: &TranslationMode) -> Option<Duration> {
+fn first_token_target(settings: &AppSettings, mode: &TranslationMode) -> Option<Duration> {
     matches!(mode, TranslationMode::LiveCaption)
         .then(|| Duration::from_millis(settings.llm.timeout_milliseconds.clamp(500, 5_000)))
 }
 
-fn first_token_timeout_error(limit: Duration, elapsed: Duration) -> String {
+fn first_token_timeout_error(target: Duration, elapsed: Duration) -> String {
     format!(
-        "实时字幕等待首 token 超过 {:.1} 秒（实际 {}ms），已取消本次请求",
-        limit.as_secs_f64(),
+        "实时字幕等待首 token 超过目标 {:.1} 秒（判定容差 {:.1} 秒，实际 {}ms），已取消本次请求",
+        target.as_secs_f64(),
+        LIVE_FIRST_TOKEN_GRACE.as_secs_f64(),
         elapsed.as_millis()
     )
 }
@@ -132,8 +134,9 @@ where
             .build()
             .expect("valid shared HTTP client")
     });
-    let first_token_timeout = first_token_timeout(&settings, &request.mode);
-    let first_token_deadline = first_token_timeout.map(|limit| TokioInstant::now() + limit);
+    let first_token_target = first_token_target(&settings, &request.mode);
+    let first_token_deadline =
+        first_token_target.map(|target| TokioInstant::now() + target + LIVE_FIRST_TOKEN_GRACE);
     let is_live_caption = matches!(request.mode, TranslationMode::LiveCaption);
 
     let translation = async {
@@ -144,10 +147,10 @@ where
             .json(&payload)
             .send();
         let mut response =
-            if let (Some(limit), Some(deadline)) = (first_token_timeout, first_token_deadline) {
+            if let (Some(target), Some(deadline)) = (first_token_target, first_token_deadline) {
                 timeout_at(deadline, send)
                     .await
-                    .map_err(|_| first_token_timeout_error(limit, started.elapsed()))?
+                    .map_err(|_| first_token_timeout_error(target, started.elapsed()))?
                     .map_err(|error| error.to_string())?
             } else {
                 send.await.map_err(|error| error.to_string())?
@@ -155,12 +158,12 @@ where
         let status = response.status();
         if !status.is_success() {
             let read_error_body = response.json();
-            let body: Value = if let (Some(limit), Some(deadline)) =
-                (first_token_timeout, first_token_deadline)
+            let body: Value = if let (Some(target), Some(deadline)) =
+                (first_token_target, first_token_deadline)
             {
                 timeout_at(deadline, read_error_body)
                     .await
-                    .map_err(|_| first_token_timeout_error(limit, started.elapsed()))?
+                    .map_err(|_| first_token_timeout_error(target, started.elapsed()))?
                     .map_err(|error| error.to_string())?
             } else {
                 read_error_body.await.map_err(|error| error.to_string())?
@@ -179,10 +182,10 @@ where
         let mut stream_done = false;
         loop {
             let next_chunk = if translated.is_empty() {
-                if let (Some(limit), Some(deadline)) = (first_token_timeout, first_token_deadline) {
+                if let (Some(target), Some(deadline)) = (first_token_target, first_token_deadline) {
                     timeout_at(deadline, response.chunk())
                         .await
-                        .map_err(|_| first_token_timeout_error(limit, started.elapsed()))?
+                        .map_err(|_| first_token_timeout_error(target, started.elapsed()))?
                         .map_err(|error| error.to_string())?
                 } else {
                     response.chunk().await.map_err(|error| error.to_string())?
@@ -315,20 +318,24 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.llm.timeout_milliseconds = 9_000;
         assert_eq!(
-            first_token_timeout(&settings, &TranslationMode::LiveCaption),
+            first_token_target(&settings, &TranslationMode::LiveCaption),
             Some(Duration::from_secs(5))
         );
         assert_eq!(
-            first_token_timeout(&settings, &TranslationMode::Selection),
+            first_token_target(&settings, &TranslationMode::Selection),
             None
+        );
+        assert_eq!(
+            Duration::from_secs(5).saturating_add(LIVE_FIRST_TOKEN_GRACE),
+            Duration::from_millis(5_500)
         );
     }
 
     #[test]
     fn first_token_timeout_message_uses_the_configured_limit_and_elapsed_time() {
         assert_eq!(
-            first_token_timeout_error(Duration::from_millis(3_250), Duration::from_millis(3_257)),
-            "实时字幕等待首 token 超过 3.2 秒（实际 3257ms），已取消本次请求"
+            first_token_timeout_error(Duration::from_millis(3_250), Duration::from_millis(3_757)),
+            "实时字幕等待首 token 超过目标 3.2 秒（判定容差 0.5 秒，实际 3757ms），已取消本次请求"
         );
     }
 

@@ -14,7 +14,7 @@ Updated: 2026-07-19.
 - [x] Add overlay close, refresh, expand/collapse, transparent background, caption color, and font controls.
 - [x] Add Windows Live Captions launch, UI Automation reading, sentence segmentation, translation, and JSONL sessions.
 - [x] Add status-prompt filtering and snapshot-based pause/resume recovery.
-- [x] Add SSE streaming, first-token latency, five-second first-token timeout, post-token stream-idle timeout, direct no-proxy requests, and DeepSeek V4 thinking control.
+- [x] Add SSE streaming, first-token latency, a five-second nominal first-token cutoff with a uniform 500ms judgment tolerance, post-token stream-idle timeout, direct no-proxy requests, and DeepSeek V4 thinking control.
 - [x] Add bounded UI histories/queues, debounced position persistence, and duplicate source-event suppression.
 - [x] Add tray icon, open/toggle/quit menu, double-click restore, and close-to-tray main-window behavior.
 - [x] Add strict Rust tests, Unicode preview tests, snapshot recovery tests, frontend production builds, and Clippy checks.
