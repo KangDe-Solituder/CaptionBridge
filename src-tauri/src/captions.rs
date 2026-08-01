@@ -204,6 +204,7 @@ fn spawn_translator(
     tauri::async_runtime::spawn(async move {
         let session_started = Instant::now();
         let mut previous_end = 0_u64;
+        let mut consecutive_first_token_timeouts = 0_u32;
         while let Some(job) = queue.pop().await {
             state
                 .translation_queue_depth
@@ -216,18 +217,28 @@ fn spawn_translator(
                 target_language: settings.llm.target_language.clone(),
                 context: job.context,
             };
+            let translation_started = Instant::now();
             let result = match llm::translate(settings.clone(), api_key.clone(), request).await {
                 Ok(value) => value,
                 Err(error) => TranslationResult {
                     source_text: segment.source_text.clone(),
                     translated_text: String::new(),
                     model: settings.llm.model.clone(),
-                    latency_ms: 0,
+                    latency_ms: translation_started.elapsed().as_millis(),
                     first_token_ms: 0,
                     cached: false,
                     error: Some(error),
                 },
             };
+            let first_token_timed_out = result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("等待首 token 超过"));
+            if first_token_timed_out {
+                consecutive_first_token_timeouts += 1;
+            } else {
+                consecutive_first_token_timeouts = 0;
+            }
             state
                 .translation_queue_depth
                 .store(queue.depth().await, Ordering::Relaxed);
@@ -262,6 +273,16 @@ fn spawn_translator(
                 "caption:translated",
                 CaptionTranslatedEvent { segment, result },
             );
+            if consecutive_first_token_timeouts >= 2 {
+                let backoff_seconds = 1_u64 << (consecutive_first_token_timeouts - 2).min(3);
+                state.log(
+                    "warn",
+                    format!(
+                        "LLM 连续 {consecutive_first_token_timeouts} 次等待首 token 超时，退避 {backoff_seconds} 秒后重试"
+                    ),
+                );
+                tokio::time::sleep(Duration::from_secs(backoff_seconds)).await;
+            }
         }
     })
 }

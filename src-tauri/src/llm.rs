@@ -5,6 +5,7 @@ use std::{
 
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
+use tokio::time::{timeout, timeout_at, Instant as TokioInstant};
 
 use crate::models::{AppSettings, TranslationMode, TranslationRequest, TranslationResult};
 
@@ -19,9 +20,19 @@ pub fn normalize_endpoint(endpoint: &str) -> String {
     }
 }
 
-fn request_deadline(settings: &AppSettings, mode: &TranslationMode) -> Option<Duration> {
+const LIVE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn first_token_timeout(settings: &AppSettings, mode: &TranslationMode) -> Option<Duration> {
     matches!(mode, TranslationMode::LiveCaption)
         .then(|| Duration::from_millis(settings.llm.timeout_milliseconds.clamp(500, 5_000)))
+}
+
+fn first_token_timeout_error(limit: Duration, elapsed: Duration) -> String {
+    format!(
+        "实时字幕等待首 token 超过 {:.1} 秒（实际 {}ms），已取消本次请求",
+        limit.as_secs_f64(),
+        elapsed.as_millis()
+    )
 }
 
 pub fn create_payload(
@@ -121,20 +132,39 @@ where
             .build()
             .expect("valid shared HTTP client")
     });
-    let deadline = request_deadline(&settings, &request.mode);
+    let first_token_timeout = first_token_timeout(&settings, &request.mode);
+    let first_token_deadline = first_token_timeout.map(|limit| TokioInstant::now() + limit);
+    let is_live_caption = matches!(request.mode, TranslationMode::LiveCaption);
 
     let translation = async {
-        let mut response = client
+        let send = client
             .post(endpoint)
             .header(CONTENT_TYPE, "application/json")
             .header(AUTHORIZATION, format!("Bearer {api_key}"))
             .json(&payload)
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
+            .send();
+        let mut response =
+            if let (Some(limit), Some(deadline)) = (first_token_timeout, first_token_deadline) {
+                timeout_at(deadline, send)
+                    .await
+                    .map_err(|_| first_token_timeout_error(limit, started.elapsed()))?
+                    .map_err(|error| error.to_string())?
+            } else {
+                send.await.map_err(|error| error.to_string())?
+            };
         let status = response.status();
         if !status.is_success() {
-            let body: Value = response.json().await.map_err(|error| error.to_string())?;
+            let read_error_body = response.json();
+            let body: Value = if let (Some(limit), Some(deadline)) =
+                (first_token_timeout, first_token_deadline)
+            {
+                timeout_at(deadline, read_error_body)
+                    .await
+                    .map_err(|_| first_token_timeout_error(limit, started.elapsed()))?
+                    .map_err(|error| error.to_string())?
+            } else {
+                read_error_body.await.map_err(|error| error.to_string())?
+            };
             let message = body
                 .pointer("/error/message")
                 .and_then(Value::as_str)
@@ -145,7 +175,45 @@ where
         let mut pending = Vec::<u8>::new();
         let mut translated = String::new();
         let mut first_token_ms = 0;
-        while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        let mut stream_warning = None;
+        let mut stream_done = false;
+        loop {
+            let next_chunk = if translated.is_empty() {
+                if let (Some(limit), Some(deadline)) = (first_token_timeout, first_token_deadline) {
+                    timeout_at(deadline, response.chunk())
+                        .await
+                        .map_err(|_| first_token_timeout_error(limit, started.elapsed()))?
+                        .map_err(|error| error.to_string())?
+                } else {
+                    response.chunk().await.map_err(|error| error.to_string())?
+                }
+            } else if is_live_caption {
+                match timeout(LIVE_STREAM_IDLE_TIMEOUT, response.chunk()).await {
+                    Ok(Ok(chunk)) => chunk,
+                    Ok(Err(error)) => {
+                        stream_warning = Some(format!(
+                            "实时字幕流读取中断，已保留部分译文（首 token {}ms，总耗时 {}ms）：{error}",
+                            first_token_ms,
+                            started.elapsed().as_millis()
+                        ));
+                        break;
+                    }
+                    Err(_) => {
+                        stream_warning = Some(format!(
+                            "实时字幕流连续 {:.1} 秒没有新数据，已保留部分译文（首 token {}ms，总耗时 {}ms）",
+                            LIVE_STREAM_IDLE_TIMEOUT.as_secs_f64(),
+                            first_token_ms,
+                            started.elapsed().as_millis()
+                        ));
+                        break;
+                    }
+                }
+            } else {
+                response.chunk().await.map_err(|error| error.to_string())?
+            };
+            let Some(chunk) = next_chunk else {
+                break;
+            };
             pending.extend_from_slice(&chunk);
             while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
                 let mut line = pending.drain(..=newline).collect::<Vec<_>>();
@@ -159,6 +227,7 @@ where
                     continue;
                 };
                 if data == "[DONE]" {
+                    stream_done = true;
                     break;
                 }
                 let Ok(value) = serde_json::from_str::<Value>(data) else {
@@ -176,21 +245,20 @@ where
                     on_delta(delta.to_string());
                 }
             }
+            if stream_done {
+                break;
+            }
         }
         if translated.trim().is_empty() {
             return Err("LLM 流式响应没有返回翻译内容".to_string());
         }
-        Ok::<_, String>((translated.trim().to_string(), first_token_ms))
+        Ok::<_, String>((
+            translated.trim().to_string(),
+            first_token_ms,
+            stream_warning,
+        ))
     };
-    let (translated, first_token_ms) = if let Some(deadline) = deadline {
-        tokio::time::timeout(deadline, translation)
-            .await
-            .map_err(|_| "实时字幕翻译超过 5 秒，已取消本次请求".to_string())??
-    } else {
-        // Selected-text translation operates on static text. It may take as
-        // long as the provider needs; the realtime deadline does not apply.
-        translation.await?
-    };
+    let (translated, first_token_ms, stream_warning) = translation.await?;
 
     Ok(TranslationResult {
         source_text: request.source_text,
@@ -199,7 +267,7 @@ where
         latency_ms: started.elapsed().as_millis(),
         first_token_ms,
         cached: false,
-        error: None,
+        error: stream_warning,
     })
 }
 
@@ -243,16 +311,24 @@ mod tests {
     }
 
     #[test]
-    fn only_realtime_translation_has_a_total_deadline() {
+    fn only_realtime_translation_has_a_first_token_timeout() {
         let mut settings = AppSettings::default();
         settings.llm.timeout_milliseconds = 9_000;
         assert_eq!(
-            request_deadline(&settings, &TranslationMode::LiveCaption),
+            first_token_timeout(&settings, &TranslationMode::LiveCaption),
             Some(Duration::from_secs(5))
         );
         assert_eq!(
-            request_deadline(&settings, &TranslationMode::Selection),
+            first_token_timeout(&settings, &TranslationMode::Selection),
             None
+        );
+    }
+
+    #[test]
+    fn first_token_timeout_message_uses_the_configured_limit_and_elapsed_time() {
+        assert_eq!(
+            first_token_timeout_error(Duration::from_millis(3_250), Duration::from_millis(3_257)),
+            "实时字幕等待首 token 超过 3.2 秒（实际 3257ms），已取消本次请求"
         );
     }
 

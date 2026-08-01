@@ -14,13 +14,13 @@ Updated: 2026-07-19.
 - [x] Add overlay close, refresh, expand/collapse, transparent background, caption color, and font controls.
 - [x] Add Windows Live Captions launch, UI Automation reading, sentence segmentation, translation, and JSONL sessions.
 - [x] Add status-prompt filtering and snapshot-based pause/resume recovery.
-- [x] Add SSE streaming, first-token latency, five-second total deadline, direct no-proxy requests, and DeepSeek V4 thinking control.
+- [x] Add SSE streaming, first-token latency, five-second first-token timeout, post-token stream-idle timeout, direct no-proxy requests, and DeepSeek V4 thinking control.
 - [x] Add bounded UI histories/queues, debounced position persistence, and duplicate source-event suppression.
 - [x] Add tray icon, open/toggle/quit menu, double-click restore, and close-to-tray main-window behavior.
 - [x] Add strict Rust tests, Unicode preview tests, snapshot recovery tests, frontend production builds, and Clippy checks.
 - [x] Keep dev, raw release, and installed builds on one stable settings path without silent default fallback.
 - [x] Build release binaries as Windows GUI applications with hidden PowerShell helper processes.
-- [x] Limit only realtime captions to five seconds; allow selected-text translation to complete without a total deadline.
+- [x] Limit realtime captions to five seconds while waiting for the first token, preserve partial output after a stream-idle timeout, and allow selected-text translation to complete without a total deadline.
 - [x] Show the automatic-selection toolbar immediately, capture text in the background, and let the user's own Ctrl+C operation win.
 
 ## Phase 2 — Caption Engine 2.0 (recommended)
