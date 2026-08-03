@@ -176,6 +176,9 @@ select { min-height: 39px; padding: 0 30px 0 11px; border: 1px solid var(--line)
 .dependency-copy p { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .dependency-copy code { display: block; margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .dependency-list .ghost { min-height: 34px; padding: 0 10px; font-size: 11px; }
+.dependency-runtime { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.dependency-runtime .dependency-state { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.dependency-runtime .primary, .dependency-runtime .ghost { min-height: 34px; padding: 0 10px; font-size: 11px; }
 .dependency-loading, .dependency-error { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 190px; color: var(--muted); font-size: 12px; }
 .dependency-error { color: var(--danger); }
 .dependency-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding-top: 18px; }

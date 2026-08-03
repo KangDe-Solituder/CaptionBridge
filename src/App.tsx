@@ -15,10 +15,10 @@ import {
   getRuntimeStatus, getSettings, openLogsDir, refreshCaption, resetAsrChannelRouting, saveOverlayPosition, saveSettings,
   setCaptionRunning, testLlm, translateSelection, listModels, downloadModel, cancelModelDownload,
   verifyModel, testModel, deleteModel, openModelsDir, switchCaptionSource,
-  checkAsrDependencies, openAsrDependencyUrl,
+  checkAsrDependencies, openAsrDependencyUrl, downloadAsrGpuRuntime, cancelAsrGpuRuntime,
 } from "./lib/api";
 import type {
-  AppSettings, AsmrChannelState, AsrDependencyReport, CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth, CaptionTranslatedEvent,
+  AppSettings, AsmrChannelState, AsrDependencyReport, AsrGpuRuntimeInfo, AsrGpuRuntimeProgressEvent, CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth, CaptionTranslatedEvent,
   ModelInfo, ModelProgressEvent, RuntimeLogEntry, RuntimeStatus, SelectionReadyEvent, SettingsView, TranslationResult,
 } from "./lib/contracts";
 
@@ -353,14 +353,39 @@ function CaptionPage({ status, items, exportFormat, setExportFormat, onToggle, o
 function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => void; view: SettingsView; apiKey: string; setApiKey: (v: string) => void; update: (v: AppSettings) => void; onSave: () => void; saving: boolean; testing: boolean; onTest: () => void; logs: RuntimeLogEntry[]; logQuery: string; setLogQuery: (v: string) => void; onClearLogs: () => void; models: ModelInfo[]; status: RuntimeStatus; onSelectSource: (source: CaptionSourceConfig) => Promise<void>; refreshModels: () => void; onMessage: (message: string) => void }) {
   const { tab, setTab, view, apiKey, setApiKey, update } = props; const s = view.settings;
   const [dependencyReport, setDependencyReport] = useState<AsrDependencyReport>();
+  const [gpuRuntime, setGpuRuntime] = useState<AsrGpuRuntimeInfo>();
   const [dependencyDialogOpen, setDependencyDialogOpen] = useState(false);
   const [checkingDependencies, setCheckingDependencies] = useState(false);
   const [dependencyError, setDependencyError] = useState("");
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let unsubscribe: (() => void) | undefined;
+    void listen<AsrGpuRuntimeProgressEvent>("gpu-runtime:progress", event => {
+      setGpuRuntime(event.payload);
+      if (event.payload.status === "available" || event.payload.status === "failed") {
+        void checkAsrDependencies().then(report => {
+          setDependencyReport(report);
+          setGpuRuntime(report.gpu_runtime);
+        }).catch(() => undefined);
+      }
+    }).then(stop => { unsubscribe = stop; });
+    return () => unsubscribe?.();
+  }, []);
   const runDependencyCheck = async () => {
     setDependencyDialogOpen(true); setCheckingDependencies(true); setDependencyError("");
-    try { setDependencyReport(await checkAsrDependencies()); }
+    try { const report = await checkAsrDependencies(); setDependencyReport(report); setGpuRuntime(report.gpu_runtime); }
     catch (error) { setDependencyError(String(error)); }
     finally { setCheckingDependencies(false); }
+  };
+  const startGpuRuntimeDownload = async () => {
+    try {
+      await downloadAsrGpuRuntime();
+      setGpuRuntime(current => current ? { ...current, status: "downloading", error: undefined } : { id: "cuda12-cudnn9", status: "downloading", downloaded_bytes: 0, total_bytes: 0 });
+      setDependencyError("");
+    } catch (error) { setDependencyError(String(error)); }
+  };
+  const stopGpuRuntimeDownload = async () => {
+    try { await cancelAsrGpuRuntime(); } catch (error) { setDependencyError(String(error)); }
   };
   const tabs: { id: SettingsTab; label: string }[] = [{ id: "selection", label: "划词" }, { id: "captions", label: "字幕" }, { id: "llm", label: "LLM" }, { id: "appearance", label: "外观" }, { id: "logs", label: "日志" }];
   const filteredLogs = props.logs.filter(l => `${l.level} ${l.message}`.toLowerCase().includes(props.logQuery.toLowerCase()));
@@ -427,20 +452,27 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
         <div className="log-view">{filteredLogs.length ? [...filteredLogs].reverse().map((l, i) => <div className="log-line" key={`${l.timestamp}-${i}`}><span data-level={l.level}>{l.level.toUpperCase()}</span><time>{new Date(l.timestamp).toLocaleTimeString()}</time><p>{l.message}</p></div>) : <EmptyState icon={<FileText />} title="日志很安静" text="运行状态和错误信息会显示在这里。" />}</div>
       </>}
     </section>
-    {dependencyDialogOpen && <DependencyDialog report={dependencyReport} checking={checkingDependencies} error={dependencyError} onClose={() => setDependencyDialogOpen(false)} onCheck={() => void runDependencyCheck()} />}
+    {dependencyDialogOpen && <DependencyDialog report={dependencyReport} gpuRuntime={gpuRuntime} checking={checkingDependencies} error={dependencyError} onClose={() => setDependencyDialogOpen(false)} onCheck={() => void runDependencyCheck()} onDownload={() => void startGpuRuntimeDownload()} onCancel={() => void stopGpuRuntimeDownload()} />}
   </div>;
 }
 
-function DependencyDialog({ report, checking, error, onClose, onCheck }: { report?: AsrDependencyReport; checking: boolean; error: string; onClose: () => void; onCheck: () => void }) {
+function DependencyDialog({ report, gpuRuntime, checking, error, onClose, onCheck, onDownload, onCancel }: { report?: AsrDependencyReport; gpuRuntime?: AsrGpuRuntimeInfo; checking: boolean; error: string; onClose: () => void; onCheck: () => void; onDownload: () => void; onCancel: () => void }) {
+  const runtime = gpuRuntime ?? report?.gpu_runtime;
+  const runtimeProgress = runtime?.total_bytes ? Math.min(100, runtime.downloaded_bytes / runtime.total_bytes * 100) : 0;
   return <div className="dependency-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="dependency-dialog" role="dialog" aria-modal="true" aria-labelledby="dependency-title">
-      <header><div><span>LOCAL ASR</span><h2 id="dependency-title">运行环境检查</h2><p>{checking ? "正在调用 ASR Worker 验证 GPU 运行环境…" : report?.ready ? "本地 ASR 所需依赖已完整安装。" : "发现未安装或不可用的依赖，请通过对应官网处理。"}</p></div><button className="dialog-close" aria-label="关闭" onClick={onClose}><X /></button></header>
+      <header><div><span>LOCAL ASR</span><h2 id="dependency-title">运行环境检查</h2><p>{checking ? "正在调用 ASR Worker 验证 GPU 运行环境…" : runtime?.status === "downloading" ? "正在下载 GPU 运行库，完成后会自动重新验证。" : report?.ready ? "本地 ASR 所需依赖已完整安装。" : "发现未安装或不可用的依赖，可按需下载 GPU 运行库。"}</p></div><button className="dialog-close" aria-label="关闭" onClick={onClose}><X /></button></header>
       {checking && !report ? <div className="dependency-loading"><Loader2 className="spin" /><span>正在检查，请稍候</span></div> : error ? <div className="dependency-error">{error}</div> : <div className="dependency-list">
         {report?.dependencies.map(item => <article key={item.id} data-installed={item.installed}>
           <div className="dependency-state">{item.installed ? <Check /> : <X />}</div>
           <div className="dependency-copy"><strong>{item.name}</strong><p>{item.detail}</p>{item.detected_path && <code title={item.detected_path}>{item.detected_path}</code>}</div>
           {!item.installed && <button className="ghost" onClick={() => void openAsrDependencyUrl(item.id)}><ExternalLink />打开官网</button>}
         </article>)}
+        {runtime && runtime.status !== "available" && <article className="dependency-runtime" data-installed="false">
+          <div className="dependency-state"><Download /></div>
+          <div className="dependency-copy"><strong>GPU Runtime（CUDA 12 + cuDNN 9）</strong><p>从 PyPI 下载固定版本并校验后缓存到本机；安装包不再内置这些大型 DLL。</p>{runtime.status === "downloading" && <div className="download-progress"><i style={{ width: `${runtimeProgress}%` }} /><small>{runtime.total_bytes ? `${runtimeProgress.toFixed(1)}% · ` : ""}{formatBytes(runtime.downloaded_bytes)}</small></div>}{runtime.error && <small className="model-error">{runtime.error}</small>}</div>
+          {runtime.status === "downloading" ? <button className="ghost" onClick={onCancel}><Square />取消</button> : <button className="primary" onClick={onDownload}><Download />下载</button>}
+        </article>}
       </div>}
       <footer><button className="ghost" onClick={onClose}>关闭</button><button className="primary" onClick={onCheck} disabled={checking}>{checking ? <Loader2 className="spin" /> : <RefreshCw />}重新检查</button></footer>
     </section>

@@ -125,7 +125,11 @@ impl AsrWorker {
             .stderr(Stdio::from(stderr_file))
             .env("PYTHONUTF8", "1")
             .env("PYTHONIOENCODING", "utf-8");
-        let runtime_dirs = crate::asr_dependencies::runtime_library_dirs();
+        let runtime_dir = crate::gpu_runtime::runtime_dir(paths);
+        if runtime_dir.is_dir() {
+            command.env("LIVECAPTION_CUDA_RUNTIME_DIR", &runtime_dir);
+        }
+        let runtime_dirs = crate::asr_dependencies::runtime_library_dirs(paths);
         if !runtime_dirs.is_empty() {
             let mut path_entries = runtime_dirs;
             if let Some(current_path) = std::env::var_os("PATH") {

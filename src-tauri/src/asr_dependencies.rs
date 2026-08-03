@@ -6,6 +6,7 @@ use std::{
 
 use crate::{
     asr_worker::{worker_executable, AsrDependencyProbe, AsrWorker},
+    gpu_runtime,
     models::{
         AsrDependencyReport, AsrDependencyStatus, AudioChannelMode, CaptionSourceConfig,
         ChannelSwitchSensitivity, VadProfile,
@@ -54,8 +55,9 @@ pub fn official_url(id: &str) -> Option<&'static str> {
     }
 }
 
-pub fn runtime_library_dirs() -> Vec<PathBuf> {
+pub fn runtime_library_dirs(paths: &AppPaths) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
+    candidates.push(gpu_runtime::runtime_dir(paths));
     if let Some(path) = std::env::var_os("PATH") {
         candidates.extend(std::env::split_paths(&path));
     }
@@ -81,16 +83,19 @@ pub fn runtime_library_dirs() -> Vec<PathBuf> {
     );
 
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    candidates.push(
-        manifest
-            .join("worker")
-            .join(".venv-build")
-            .join("Lib")
-            .join("site-packages")
-            .join("nvidia")
-            .join("cudnn")
-            .join("bin"),
-    );
+    let worker_root = manifest.join("worker");
+    let build_venv = worker_root.join(".venv-build");
+    add_python_runtime_dirs(&mut candidates, &build_venv);
+    // Development and user-managed Python environments may keep the NVIDIA
+    // wheels outside the bundled Worker. Discover their DLL directories and
+    // prepend them to the Worker PATH without modifying the machine PATH.
+    for variable in ["VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME"] {
+        if let Some(root) = std::env::var_os(variable) {
+            add_python_runtime_dirs(&mut candidates, Path::new(&root));
+        }
+    }
+    collect_dirs_containing(&worker_root, "cublas64_12.dll", 8, &mut candidates);
+    collect_dirs_containing(&worker_root, "cudnn64_9.dll", 8, &mut candidates);
     candidates.push(
         manifest
             .join("worker")
@@ -121,13 +126,21 @@ pub fn runtime_library_dirs() -> Vec<PathBuf> {
     deduplicate_existing(candidates)
 }
 
+fn add_python_runtime_dirs(output: &mut Vec<PathBuf>, environment: &Path) {
+    let site_packages = environment.join("Lib").join("site-packages");
+    output.push(site_packages.join("nvidia").join("cublas").join("bin"));
+    output.push(site_packages.join("nvidia").join("cudnn").join("bin"));
+    output.push(site_packages.join("ctranslate2"));
+}
+
 pub async fn check(
     paths: &AppPaths,
     configured_source: Option<&CaptionSourceConfig>,
+    downloads: &gpu_runtime::DownloadRegistry,
 ) -> AsrDependencyReport {
     let worker_path = worker_executable(paths).ok();
     let driver_path = driver_path();
-    let runtime_dirs = runtime_library_dirs();
+    let runtime_dirs = runtime_library_dirs(paths);
     let cuda_path = find_complete_dir(&runtime_dirs, CUDA_FILES);
     let cudnn_path = find_complete_dir(&runtime_dirs, CUDNN_FILES);
 
@@ -312,9 +325,20 @@ pub async fn check(
         DRIVER_URL,
     ));
 
+    let externally_loaded = probe_result
+        .as_ref()
+        .ok()
+        .map(|outcome| {
+            runtime_loaded_cuda(outcome) == Some(true)
+                && runtime_loaded_cudnn(outcome) == Some(true)
+        })
+        .unwrap_or(false);
+    let runtime_status = gpu_runtime::status(paths, downloads, externally_loaded).await;
+
     AsrDependencyReport {
         ready: dependencies.iter().all(|item| item.installed),
         dependencies,
+        gpu_runtime: runtime_status,
     }
 }
 

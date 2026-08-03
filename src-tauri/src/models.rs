@@ -14,6 +14,25 @@ pub struct AsrDependencyStatus {
 pub struct AsrDependencyReport {
     pub ready: bool,
     pub dependencies: Vec<AsrDependencyStatus>,
+    pub gpu_runtime: AsrGpuRuntimeInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsrGpuRuntimeInfo {
+    pub id: String,
+    pub status: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsrGpuRuntimeProgressEvent {
+    pub id: String,
+    pub status: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

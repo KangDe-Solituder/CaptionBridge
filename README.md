@@ -72,7 +72,7 @@ Windows Live Captions ┤
 - Node.js 24 LTS；
 - pnpm 11.15.1，版本已通过 `package.json` 的 `packageManager` 字段固定；
 - Rust stable、MSVC 工具链，以及 Visual Studio Build Tools 的“使用 C++ 的桌面开发”组件；
-- 构建本地 ASR worker 时只需要 Python 3.12 x64；运行 GPU 本地 ASR 时，CTranslate2 仍会实际使用 CUDA 12.x 和 cuDNN 9。它们可以来自系统环境，也可以打包进自包含 worker。
+- 构建本地 ASR worker 时只需要 Python 3.12 x64；运行 GPU 本地 ASR 时，CTranslate2 仍会实际使用 CUDA 12.x 和 cuDNN 9。它们可以来自系统环境，也可以在应用“依赖检查”中按需下载到用户缓存目录。
 
 本项目已在 Node.js 24.18.0、pnpm 11.15.1、Python 3.12.10、CUDA 12.8 和 cuDNN 9.24 上完成验证。其他 CUDA 12.x/cuDNN 9 组合也可以使用，但必须提供完整的 cuDNN 9 运行库，而不只是入口文件 `cudnn64_9.dll`；CTranslate2 的 Whisper encoder 还会实际加载 `cudnn_ops64_9.dll`、`cudnn_graph64_9.dll` 等拆分 DLL。CTranslate2 是 faster-whisper 的推理后端，不是可删除的“探测专用依赖”。
 
@@ -128,7 +128,7 @@ pnpm tauri build
 
 两个本地模型 `Kotoba Whisper v2.0 Faster` 和 `Whisper large-v3-turbo` 都通过同一个 faster-whisper worker 运行，因此依赖相同。Windows Live Captions 来源本身不需要 Python、CUDA 或模型，但当前 Tauri 配置会把 worker 作为应用资源打包，所以执行 `pnpm tauri dev` 或 `pnpm tauri build` 前仍需生成一次 worker；仅运行 `pnpm build` 构建前端则不需要。
 
-worker 的 Python 依赖版本记录在 [`src-tauri/worker/requirements.lock.txt`](src-tauri/worker/requirements.lock.txt) 中，其中也固定了与 CTranslate2 4.6.0 兼容的 `setuptools` 版本。自包含 GPU 构建额外使用 [`src-tauri/worker/gpu-runtime-requirements.lock.txt`](src-tauri/worker/gpu-runtime-requirements.lock.txt) 中固定的 NVIDIA cuDNN 版本；普通构建不会下载或复制这套大型运行库。worker、虚拟环境、Rust `target` 和模型文件都不会提交到 Git，每台开发机需要单独生成。换句话说，`git pull` 会更新 worker 源码，但不会替换已经存在的本地 exe；worker 源码更新后应重新执行下面的构建命令。
+worker 的 Python 依赖版本记录在 [`src-tauri/worker/requirements.lock.txt`](src-tauri/worker/requirements.lock.txt) 中，其中也固定了与 CTranslate2 4.6.0 兼容的 `setuptools` 版本。默认构建不会下载或复制大型 CUDA/cuDNN 运行库；应用首次检查 GPU 依赖时，会从 PyPI 获取固定版本的 Windows x64 wheel，校验 SHA-256 后只提取需要的 DLL 到 `%LOCALAPPDATA%\com.dimfi.livecaption\runtimes\cuda12-cudnn9`。自包含 GPU 构建仍可额外使用 [`src-tauri/worker/gpu-runtime-requirements.lock.txt`](src-tauri/worker/gpu-runtime-requirements.lock.txt)，但不再是常规发布路径。worker、虚拟环境、Rust `target` 和模型文件都不会提交到 Git，每台开发机需要单独生成。换句话说，`git pull` 会更新 worker 源码，但不会替换已经存在的本地 exe；worker 源码更新后应重新执行下面的构建命令。
 
 先安装 Python 3.12 x64，然后执行：
 
@@ -142,7 +142,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build-worker.ps1 `
   -Python $Python
 ```
 
-安装后的应用会从 Worker 自身目录、系统 `PATH`、`CUDA_PATH` 和标准 NVIDIA 安装目录中查找 CUDA 12/cuDNN 9。可以在“设置 → 字幕 → 本地 ASR 运行环境”点击“检查依赖”：新版 Worker 会逐个加载 CUDA 12 cuBLAS 和完整的 8 个 cuDNN 9 DLL；如果已有模型，还会关闭 VAD 捷径并强制执行一次真实 Whisper GPU encoder dry-run。旧版 Worker 不支持诊断命令时，应用仍会改用已安装模型执行兼容验证。仅发现入口 DLL、仅加载模型或对静音执行被 VAD 跳过的检查，都不再判定为推理可用。
+安装后的应用会优先从用户缓存目录、Worker 自身目录、系统 `PATH`、`CUDA_PATH`、标准 NVIDIA 安装目录，以及项目/用户 Python 虚拟环境的 `nvidia-cublas`、`nvidia-cudnn` 目录中查找 CUDA 12/cuDNN 9。可以在“设置 → 字幕 → 本地 ASR 运行环境”点击“检查依赖”：新版 Worker 会逐个加载 CUDA 12 cuBLAS 和完整的 8 个 cuDNN 9 DLL，并把已发现的目录加入本次 Worker 的运行路径；如果已有模型，还会关闭 VAD 捷径并强制执行一次真实 Whisper GPU encoder dry-run。若运行库缺失或实际加载失败，检查窗口才会提供“下载 GPU Runtime”按钮，下载完成并校验后自动重新检查。旧版 Worker 不支持诊断命令时，应用仍会改用已安装模型执行兼容验证。仅发现入口 DLL、仅加载模型或对静音执行被 VAD 跳过的检查，都不再判定为推理可用。
 
 如确实需要生成包含 GPU 运行库的自包含 worker，可以显式使用以下参数：
 
@@ -154,7 +154,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build-worker.ps1 `
   -CudnnBin "C:\Program Files\NVIDIA\CUDNN\v9.0\bin\12.8"
 ```
 
-自包含 worker 约为 2 GB，可能再次触发 NSIS 的大数据块映射限制，因此正常安装包不建议使用该选项。
+自包含 worker 约为 2 GB，会显著增加 NSIS 压缩时间和安装包体积，因此正常发布不建议使用该选项；它只适合完全离线分发场景。
 
 成功后应存在：
 
@@ -171,7 +171,7 @@ src-tauri\worker\dist\livecaption-asr-worker\livecaption-asr-worker.exe
 - **`ERR_PNPM_IGNORED_BUILDS: esbuild`**：确认已检出 `pnpm-workspace.yaml`，然后重新执行 `pnpm install --frozen-lockfile`。
 - **`resource path worker\\dist\\livecaption-asr-worker doesn't exist`**：本地 ASR worker 尚未构建；按上面的步骤生成 `livecaption-asr-worker.exe`。
 - **旧 Worker 不支持轻量探测**：这是 `git pull` 后仍在使用被 Git 忽略的旧 exe，并不表示推理版本不兼容。检查器会自动用当前已安装模型执行真实 CUDA dry-run；验证成功即可继续使用。只有希望使用更快的轻量诊断时才需要重新执行 `build-worker.ps1`。
-- **本地 ASR 提示缺少 CUDA/cuDNN**：在“设置 → 字幕”运行依赖检查。当前 CTranslate2 版本需要 CUDA 12 的 cuBLAS 和完整 cuDNN 9 文件组；不能直接使用只包含 `cublas64_13.dll` 的 CUDA 13 目录，也不能只复制 `cudnn64_9.dll`。有可用模型时，检查器和模型测试都会实际进入 GPU encoder，而不是让 VAD 跳过静音。
+- **本地 ASR 提示缺少 CUDA/cuDNN**：在“设置 → 字幕”运行依赖检查并点击“下载 GPU Runtime”。当前 CTranslate2 版本需要 CUDA 12 的 cuBLAS 和完整 cuDNN 9 文件组；不能直接使用只包含 `cublas64_13.dll` 的 CUDA 13 目录，也不能只复制 `cudnn64_9.dll`。有可用模型时，检查器和模型测试都会实际进入 GPU encoder，而不是让 VAD 跳过静音。
 - **NSIS 报 `Internal compiler error #12345: error mmapping datablock`**：通常是把约 2 GB 的 CUDA/cuDNN DLL 一并装入 worker 导致。重新使用不带 `-BundleGpuRuntime` 的默认命令构建 worker，再执行 `pnpm tauri build`。
 - **PowerShell 阻止 `build-worker.ps1`**：使用上面进程级的 `powershell.exe -ExecutionPolicy Bypass -File ...` 命令。
 - **Vite 报 `EBUSY ... src-tauri\\target\\...\\livecaption.exe`**：当前配置已从 Vite 监听中排除 `src-tauri`。拉取最新代码、结束旧的开发进程后重新执行 `pnpm tauri dev`。

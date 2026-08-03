@@ -69,4 +69,9 @@ export interface ModelProgressEvent {
 export interface AsrDependencyStatus {
   id: string; name: string; installed: boolean; detail: string; detected_path?: string; official_url: string;
 }
-export interface AsrDependencyReport { ready: boolean; dependencies: AsrDependencyStatus[]; }
+export type AsrGpuRuntimeStatus = "not_installed" | "downloading" | "available" | "failed";
+export interface AsrGpuRuntimeInfo {
+  id: string; status: AsrGpuRuntimeStatus; downloaded_bytes: number; total_bytes: number; error?: string;
+}
+export interface AsrGpuRuntimeProgressEvent extends AsrGpuRuntimeInfo {}
+export interface AsrDependencyReport { ready: boolean; dependencies: AsrDependencyStatus[]; gpu_runtime: AsrGpuRuntimeInfo; }

@@ -3,6 +3,7 @@
 mod asr_dependencies;
 mod asr_worker;
 mod captions;
+mod gpu_runtime;
 mod llm;
 mod model_manager;
 mod models;
@@ -62,6 +63,7 @@ pub struct AppState {
     pub asmr_channel_state: Arc<RwLock<AsmrChannelState>>,
     pub asmr_reset_generation: Arc<AtomicU64>,
     pub model_downloads: model_manager::DownloadRegistry,
+    pub gpu_runtime_downloads: gpu_runtime::DownloadRegistry,
     pub idle_asr_worker: Arc<Mutex<Option<(String, asr_worker::AsrWorker)>>>,
     pub idle_worker_generation: Arc<AtomicU64>,
 }
@@ -90,6 +92,7 @@ impl AppState {
             asmr_channel_state: Arc::new(RwLock::new(AsmrChannelState::Inactive)),
             asmr_reset_generation: Arc::new(AtomicU64::new(0)),
             model_downloads: model_manager::DownloadRegistry::default(),
+            gpu_runtime_downloads: gpu_runtime::DownloadRegistry::default(),
             idle_asr_worker: Arc::new(Mutex::new(None)),
             idle_worker_generation: Arc::new(AtomicU64::new(0)),
         }
@@ -485,6 +488,32 @@ async fn cancel_model_download(model_id: String, state: State<'_, AppState>) -> 
 }
 
 #[tauri::command]
+async fn download_asr_gpu_runtime(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let paths = state.paths.clone();
+    let downloads = state.gpu_runtime_downloads.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = gpu_runtime::download(app, paths, downloads).await;
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_asr_gpu_runtime(state: State<'_, AppState>) -> Result<(), String> {
+    if state
+        .gpu_runtime_downloads
+        .cancel(gpu_runtime::RUNTIME_ID)
+        .await
+    {
+        Ok(())
+    } else {
+        Err("GPU 运行库当前未在下载".to_string())
+    }
+}
+
+#[tauri::command]
 async fn verify_model(
     model_id: String,
     app: AppHandle,
@@ -578,6 +607,27 @@ async fn test_model(
     };
     let mut worker = asr_worker::AsrWorker::spawn(&state.paths).await?;
     let result = async {
+        let probe = worker.probe_dependencies().await?;
+        let mut missing_runtime = Vec::new();
+        if probe.cuda_runtime_loaded != Some(true) {
+            missing_runtime.push("CUDA");
+        }
+        if probe.cudnn_runtime_loaded != Some(true) {
+            missing_runtime.push("cuDNN");
+        }
+        if !missing_runtime.is_empty() {
+            let detail = probe
+                .cudnn_error
+                .as_deref()
+                .or(probe.cuda_error.as_deref())
+                .map(|error| format!(" 详细信息：{error}"))
+                .unwrap_or_default();
+            return Err(format!(
+                "GPU 运行库未就绪（{} 缺失或无法加载）。请打开“设置 → 字幕 → 检查依赖”，在 GPU Runtime 卡片中点击“下载”，完成后重新测试。{}",
+                missing_runtime.join("、"),
+                detail
+            ));
+        }
         worker.load(&state.paths, &source).await?;
         worker.dry_run().await
     }
@@ -810,7 +860,7 @@ async fn check_asr_dependencies(state: State<'_, AppState>) -> Result<AsrDepende
         .captions
         .source
         .clone();
-    Ok(asr_dependencies::check(&state.paths, Some(&source)).await)
+    Ok(asr_dependencies::check(&state.paths, Some(&source), &state.gpu_runtime_downloads).await)
 }
 
 #[tauri::command]
@@ -847,6 +897,8 @@ fn main() {
             list_models,
             download_model,
             cancel_model_download,
+            download_asr_gpu_runtime,
+            cancel_asr_gpu_runtime,
             verify_model,
             test_model,
             delete_model,

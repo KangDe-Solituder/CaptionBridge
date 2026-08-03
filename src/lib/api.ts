@@ -26,3 +26,5 @@ export const openModelsDir = () => invoke<void>("open_models_dir");
 export const switchCaptionSource = (source: CaptionSourceConfig) => invoke<void>("switch_caption_source", { source });
 export const checkAsrDependencies = () => invoke<AsrDependencyReport>("check_asr_dependencies");
 export const openAsrDependencyUrl = (dependencyId: string) => invoke<void>("open_asr_dependency_url", { dependencyId });
+export const downloadAsrGpuRuntime = () => invoke<void>("download_asr_gpu_runtime");
+export const cancelAsrGpuRuntime = () => invoke<void>("cancel_asr_gpu_runtime");

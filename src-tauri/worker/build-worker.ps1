@@ -29,18 +29,26 @@ if ($BundleGpuRuntime -and -not $CudnnBin) {
   (Join-Path $WorkerDir 'asr_worker.py')
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed (exit $LASTEXITCODE)." }
 $InternalDir = Join-Path $WorkerDir 'dist\livecaption-asr-worker\_internal'
+$CudaFiles = @('cublas64_12.dll', 'cublasLt64_12.dll')
+$CudnnFiles = @(
+  'cudnn64_9.dll',
+  'cudnn_adv64_9.dll',
+  'cudnn_cnn64_9.dll',
+  'cudnn_engines_precompiled64_9.dll',
+  'cudnn_engines_runtime_compiled64_9.dll',
+  'cudnn_graph64_9.dll',
+  'cudnn_heuristic64_9.dll',
+  'cudnn_ops64_9.dll'
+)
+$GpuRuntimeFiles = $CudaFiles + $CudnnFiles
+# PyInstaller can collect the small ctranslate2 entry DLL even when the
+# optional GPU runtime is not requested. Remove all native GPU files first so
+# the default installer stays lightweight and always uses the cached/system
+# runtime selected by the Rust launcher.
+Get-ChildItem -LiteralPath $InternalDir -Recurse -File -ErrorAction SilentlyContinue |
+  Where-Object { $GpuRuntimeFiles -contains $_.Name } |
+  Remove-Item -Force
 if ($BundleGpuRuntime) {
-  $CudaFiles = @('cublas64_12.dll', 'cublasLt64_12.dll')
-  $CudnnFiles = @(
-    'cudnn64_9.dll',
-    'cudnn_adv64_9.dll',
-    'cudnn_cnn64_9.dll',
-    'cudnn_engines_precompiled64_9.dll',
-    'cudnn_engines_runtime_compiled64_9.dll',
-    'cudnn_graph64_9.dll',
-    'cudnn_heuristic64_9.dll',
-    'cudnn_ops64_9.dll'
-  )
   if (-not $CudaBin) {
     $CudaRoot = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
     if (Test-Path -LiteralPath $CudaRoot) {
@@ -94,17 +102,29 @@ if ($BundleGpuRuntime) {
   }
   Write-Host 'Bundled CUDA 12 and cuDNN 9 runtime libraries.'
 } else {
-  Write-Host 'GPU runtime libraries excluded. The installed app will use system CUDA 12 and cuDNN 9.'
+  Write-Host 'GPU runtime libraries excluded. The installed app will use the downloaded or system CUDA 12/cuDNN 9 runtime.'
+  # Tauri copies resources into target/release and target/debug without
+  # clearing files removed from the source directory. Remove stale native
+  # runtime files from previous -BundleGpuRuntime builds so a later package
+  # cannot accidentally include the old 1+ GB payload.
+  $TargetRoot = Join-Path (Split-Path $WorkerDir -Parent) 'target'
+  foreach ($Profile in @('debug', 'release')) {
+    $TargetWorkerDir = Join-Path $TargetRoot "$Profile\asr-worker"
+    if (Test-Path -LiteralPath $TargetWorkerDir) {
+      Get-ChildItem -LiteralPath $TargetWorkerDir -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $GpuRuntimeFiles -contains $_.Name } |
+        Remove-Item -Force
+    }
+  }
 }
 $WorkerExe = Join-Path $WorkerDir 'dist\livecaption-asr-worker\livecaption-asr-worker.exe'
 $ProbeOutput = @(
   '{"command":"probe_dependencies"}',
   '{"command":"shutdown"}'
 ) | & $WorkerExe
-if ($LASTEXITCODE -ne 0 -or
-    -not ($ProbeOutput -match '"type": "dependency_probe"') -or
-    -not ($ProbeOutput -match '"cuda_runtime_loaded": true') -or
-    -not ($ProbeOutput -match '"cudnn_runtime_loaded": true')) {
+if ($LASTEXITCODE -ne 0 -or -not ($ProbeOutput -match '"type": "dependency_probe"') -or
+    ($BundleGpuRuntime -and (-not ($ProbeOutput -match '"cuda_runtime_loaded": true') -or
+      -not ($ProbeOutput -match '"cudnn_runtime_loaded": true')))) {
   throw 'Worker build completed, but its dependency-probe protocol check failed.'
 }
 Write-Host "Worker built and protocol-checked at $WorkerExe"

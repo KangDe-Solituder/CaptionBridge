@@ -314,12 +314,14 @@ class Worker:
         self.routing_reset.clear()
 
     def probe_dependencies(self) -> None:
-        import ctranslate2
-
         def load_runtime(name: str) -> tuple[bool, str | None]:
             if sys.platform != "win32":
                 return False, "GPU worker currently supports Windows only"
-            candidates = [Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))]
+            candidates: list[Path] = []
+            cached_runtime = os.environ.get("LIVECAPTION_CUDA_RUNTIME_DIR")
+            if cached_runtime:
+                candidates.append(Path(cached_runtime))
+            candidates.append(Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)))
             candidates.extend(Path(entry) for entry in os.environ.get("PATH", "").split(os.pathsep) if entry)
             errors: list[str] = []
             for directory in candidates:
@@ -349,13 +351,43 @@ class Worker:
 
         cuda_runtime_loaded, cuda_error = load_runtime_group(CUDA_RUNTIME_FILES)
         cudnn_runtime_loaded, cudnn_error = load_runtime_group(CUDNN_RUNTIME_FILES)
-        device_count = ctranslate2.get_cuda_device_count()
-        compute_types = sorted(ctranslate2.get_supported_compute_types("cuda")) if device_count else []
+        try:
+            from importlib.metadata import version
+
+            ctranslate2_version = version("ctranslate2")
+        except Exception:
+            ctranslate2_version = None
+        # ctranslate2's frozen native library links against CUDA/cuDNN on
+        # Windows and can fail during import when the optional runtime is not
+        # installed. Emit a normal probe response first so the UI can offer
+        # the download button instead of treating this as a dead Worker.
+        if not (cuda_runtime_loaded and cudnn_runtime_loaded):
+            emit(
+                "dependency_probe",
+                device_count=0,
+                compute_types=[],
+                ctranslate2_version=ctranslate2_version,
+                cuda_runtime_loaded=cuda_runtime_loaded,
+                cudnn_runtime_loaded=cudnn_runtime_loaded,
+                cuda_error=cuda_error,
+                cudnn_error=cudnn_error,
+            )
+            return
+        try:
+            import ctranslate2
+
+            device_count = ctranslate2.get_cuda_device_count()
+            compute_types = sorted(ctranslate2.get_supported_compute_types("cuda")) if device_count else []
+            ctranslate2_version = ctranslate2.__version__
+        except Exception as error:
+            cudnn_error = f"CTranslate2 import failed: {error}"
+            device_count = 0
+            compute_types = []
         emit(
             "dependency_probe",
             device_count=device_count,
             compute_types=compute_types,
-            ctranslate2_version=ctranslate2.__version__,
+            ctranslate2_version=ctranslate2_version,
             cuda_runtime_loaded=cuda_runtime_loaded,
             cudnn_runtime_loaded=cudnn_runtime_loaded,
             cuda_error=cuda_error,
