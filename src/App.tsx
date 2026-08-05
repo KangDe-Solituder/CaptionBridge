@@ -8,6 +8,7 @@ import {
   RefreshCw, RotateCcw, Search, Settings, Sparkles, Square, Trash2, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Segmented } from "./components/Segmented";
 import { Toggle } from "./components/Toggle";
 import {
@@ -98,6 +99,12 @@ function MainWindow() {
   const [logs, setLogs] = useState<RuntimeLogEntry[]>([]);
   const [logQuery, setLogQuery] = useState("");
   const [exportFormat, setExportFormat] = useState("srt");
+
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => setMessage(""), 5_000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
 
   const loadInitialSettings = useCallback(async () => {
     setBootError("");
@@ -277,7 +284,7 @@ function MainWindow() {
             logs={logs} logQuery={logQuery} setLogQuery={setLogQuery}
             onClearLogs={async () => { await clearRuntimeLogs(); setLogs([]); }} />
         )}
-        {message && <button className="toast" onClick={() => setMessage("")}><span>{message}</span><X size={15} /></button>}
+        {message && <div className="toast" role="status" aria-live="polite"><span>{message}</span><button aria-label="关闭提示" onClick={() => setMessage("")}><X size={15} /></button></div>}
       </section>
     </main>
   );
@@ -336,13 +343,14 @@ const asmrChannelStateText: Record<AsmrChannelState, string> = {
 function CaptionPage({ status, items, exportFormat, setExportFormat, onToggle, onExport }: { status: RuntimeStatus; items: CaptionTranslatedEvent[]; exportFormat: string; setExportFormat: (v: string) => void; onToggle: () => void; onExport: () => void }) {
   const busy = status.caption_state === "starting" || status.caption_state === "stopping" || status.caption_state === "switching" || status.caption_state === "loading_model";
   const activeName = sourceName(status.active_source ?? status.selected_source);
+  const actionText = busy ? stateText[status.caption_state] : status.caption_running ? "停止字幕" : "启动字幕";
   return <div className="page">
     <PageHeader eyebrow="LIVE CAPTIONS" title="实时字幕" description={`当前字幕来源：${activeName}。识别结果按顺序交给 LLM 翻译。`}
       action={<StatusDot on={status.caption_state === "running"} text={stateText[status.caption_state]} />} />
     <section className="caption-launcher" data-running={status.caption_running}>
       <div className="caption-pulse">{busy ? <Loader2 className="spin" /> : <Captions />}</div>
       <div className="caption-copy"><span className="overline">{status.caption_running ? "正在监听" : "准备就绪"}</span><h2>{status.caption_running ? `${activeName} 正在识别` : "让声音变成看得懂的字幕"}</h2><p>{status.caption_running ? "partial 会即时更新原文预览，final 结果才会进入翻译和导出。" : `启动后使用 ${activeName}；本地模型会捕获当前默认输出设备。`}</p></div>
-      <button className={status.caption_running ? "danger action" : "primary action"} disabled={busy} onClick={onToggle}>{status.caption_running ? <Square /> : <Play />}{stateText[status.caption_state]}</button>
+      <button className={status.caption_running ? "danger action" : "primary action"} disabled={busy} onClick={onToggle}>{busy ? <Loader2 className="spin" /> : status.caption_running ? <Square /> : <Play />}{actionText}</button>
     </section>
     <CaptionHealth status={status} />
     <div className="section-heading"><div><h2>本次转录</h2><p>{items.length ? `${items.length} 条字幕，最新内容在最上方` : "启动后记录会自动出现在这里"}</p></div><div className="export-row"><select value={exportFormat} onChange={e => setExportFormat(e.target.value)}><option value="srt">SRT</option><option value="vtt">WebVTT</option><option value="txt">TXT</option><option value="json">JSON</option></select><button className="ghost" disabled={!items.length} onClick={onExport}><Download />导出</button></div></div>
@@ -362,7 +370,7 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
     let unsubscribe: (() => void) | undefined;
     void listen<AsrGpuRuntimeProgressEvent>("gpu-runtime:progress", event => {
       setGpuRuntime(event.payload);
-      if (event.payload.status === "available" || event.payload.status === "failed") {
+      if (["available", "failed", "not_installed"].includes(event.payload.status)) {
         void checkAsrDependencies().then(report => {
           setDependencyReport(report);
           setGpuRuntime(report.gpu_runtime);
@@ -391,7 +399,7 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
   const filteredLogs = props.logs.filter(l => `${l.level} ${l.message}`.toLowerCase().includes(props.logQuery.toLowerCase()));
   return <div className="page settings-page">
     <PageHeader eyebrow="PREFERENCES" title="设置" description="配置连接、快捷键和视觉体验。" action={tab !== "logs" && <button className="primary" onClick={props.onSave} disabled={props.saving}>{props.saving ? <Loader2 className="spin" /> : <Check />}保存设置</button>} />
-    <div className="settings-tabs">{tabs.map(t => <button data-active={tab === t.id} onClick={() => setTab(t.id)} key={t.id}>{t.label}</button>)}</div>
+    <div className="settings-tabs" role="tablist" aria-label="设置分类">{tabs.map(t => <button role="tab" aria-selected={tab === t.id} data-active={tab === t.id} onClick={() => setTab(t.id)} key={t.id}>{t.label}</button>)}</div>
     <section className="settings-sheet">
       {tab === "selection" && <>
         <SettingRow title="启用划词翻译" description="在其他应用中选中文字后提供轻量翻译工具。"><Toggle label="启用划词翻译" checked={s.selection.enabled} onChange={enabled => update({ ...s, selection: { ...s.selection, enabled } })} /></SettingRow>
@@ -452,16 +460,23 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
         <div className="log-view">{filteredLogs.length ? [...filteredLogs].reverse().map((l, i) => <div className="log-line" key={`${l.timestamp}-${i}`}><span data-level={l.level}>{l.level.toUpperCase()}</span><time>{new Date(l.timestamp).toLocaleTimeString()}</time><p>{l.message}</p></div>) : <EmptyState icon={<FileText />} title="日志很安静" text="运行状态和错误信息会显示在这里。" />}</div>
       </>}
     </section>
-    {dependencyDialogOpen && <DependencyDialog report={dependencyReport} gpuRuntime={gpuRuntime} checking={checkingDependencies} error={dependencyError} onClose={() => setDependencyDialogOpen(false)} onCheck={() => void runDependencyCheck()} onDownload={() => void startGpuRuntimeDownload()} onCancel={() => void stopGpuRuntimeDownload()} />}
+    {dependencyDialogOpen && createPortal(<DependencyDialog report={dependencyReport} gpuRuntime={gpuRuntime} checking={checkingDependencies} error={dependencyError} onClose={() => setDependencyDialogOpen(false)} onCheck={() => void runDependencyCheck()} onDownload={() => void startGpuRuntimeDownload()} onCancel={() => void stopGpuRuntimeDownload()} />, document.body)}
   </div>;
 }
 
 function DependencyDialog({ report, gpuRuntime, checking, error, onClose, onCheck, onDownload, onCancel }: { report?: AsrDependencyReport; gpuRuntime?: AsrGpuRuntimeInfo; checking: boolean; error: string; onClose: () => void; onCheck: () => void; onDownload: () => void; onCancel: () => void }) {
   const runtime = gpuRuntime ?? report?.gpu_runtime;
   const runtimeProgress = runtime?.total_bytes ? Math.min(100, runtime.downloaded_bytes / runtime.total_bytes * 100) : 0;
+  const runtimeBusy = runtime ? ["downloading", "verifying", "installing"].includes(runtime.status) : false;
+  const phaseText = runtime?.status === "verifying" ? "正在校验完整性" : runtime?.status === "installing" ? "正在安装运行库" : "正在下载运行库";
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
   return <div className="dependency-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="dependency-dialog" role="dialog" aria-modal="true" aria-labelledby="dependency-title">
-      <header><div><span>LOCAL ASR</span><h2 id="dependency-title">运行环境检查</h2><p>{checking ? "正在调用 ASR Worker 验证 GPU 运行环境…" : runtime?.status === "downloading" ? "正在下载 GPU 运行库，完成后会自动重新验证。" : report?.ready ? "本地 ASR 所需依赖已完整安装。" : "发现未安装或不可用的依赖，可按需下载 GPU 运行库。"}</p></div><button className="dialog-close" aria-label="关闭" onClick={onClose}><X /></button></header>
+      <header><div><span>LOCAL ASR</span><h2 id="dependency-title">运行环境检查</h2><p>{checking ? "正在调用 ASR Worker 验证 GPU 运行环境…" : runtimeBusy ? `${phaseText}，完成后会自动重新验证。` : report?.ready ? "本地 ASR 所需依赖已完整安装。" : "发现未安装或不可用的依赖，可按需下载 GPU 运行库。"}</p></div><button className="dialog-close" aria-label="关闭" onClick={onClose}><X /></button></header>
       {checking && !report ? <div className="dependency-loading"><Loader2 className="spin" /><span>正在检查，请稍候</span></div> : error ? <div className="dependency-error">{error}</div> : <div className="dependency-list">
         {report?.dependencies.map(item => <article key={item.id} data-installed={item.installed}>
           <div className="dependency-state">{item.installed ? <Check /> : <X />}</div>
@@ -470,8 +485,8 @@ function DependencyDialog({ report, gpuRuntime, checking, error, onClose, onChec
         </article>)}
         {runtime && runtime.status !== "available" && <article className="dependency-runtime" data-installed="false">
           <div className="dependency-state"><Download /></div>
-          <div className="dependency-copy"><strong>GPU Runtime（CUDA 12 + cuDNN 9）</strong><p>从 PyPI 下载固定版本并校验后缓存到本机；安装包不再内置这些大型 DLL。</p>{runtime.status === "downloading" && <div className="download-progress"><i style={{ width: `${runtimeProgress}%` }} /><small>{runtime.total_bytes ? `${runtimeProgress.toFixed(1)}% · ` : ""}{formatBytes(runtime.downloaded_bytes)}</small></div>}{runtime.error && <small className="model-error">{runtime.error}</small>}</div>
-          {runtime.status === "downloading" ? <button className="ghost" onClick={onCancel}><Square />取消</button> : <button className="primary" onClick={onDownload}><Download />下载</button>}
+          <div className="dependency-copy"><strong>GPU Runtime（CUDA 12 + cuDNN 9）</strong><p>从 PyPI 下载固定版本并校验后缓存到本机；安装包不再内置这些大型 DLL。</p>{runtimeBusy && <div className="download-progress" role="progressbar" aria-label={phaseText} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(runtimeProgress)} data-phase={runtime.status}><i style={{ width: `${runtimeProgress}%` }} /><small>{phaseText} · {runtime.total_bytes ? `${runtimeProgress.toFixed(1)}% · ` : ""}{formatBytes(runtime.downloaded_bytes)}</small></div>}{runtime.error && <small className="model-error">{runtime.error}</small>}</div>
+          {runtimeBusy ? <button className="ghost" onClick={onCancel}><Square />取消</button> : <button className="primary" onClick={onDownload}><Download />下载</button>}
         </article>}
       </div>}
       <footer><button className="ghost" onClick={onClose}>关闭</button><button className="primary" onClick={onCheck} disabled={checking}>{checking ? <Loader2 className="spin" /> : <RefreshCw />}重新检查</button></footer>
@@ -577,7 +592,7 @@ function ToolbarWindow() {
 }
 
 function Logo() { return <div className="logo" title="LiveCaption"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 9h25a7 7 0 0 1 7 7v12a7 7 0 0 1-7 7H21l-8 7v-7H8a6 6 0 0 1-6-6V15a6 6 0 0 1 6-6Z" /><path d="M16 18h15M16 25h10" /></svg></div>; }
-function RailButton({ active, label, onClick, children }: { active: boolean; label: string; onClick: () => void; children: React.ReactNode }) { return <button className="rail-button" data-active={active} title={label} onClick={onClick}>{children}<span>{label}</span></button>; }
+function RailButton({ active, label, onClick, children }: { active: boolean; label: string; onClick: () => void; children: React.ReactNode }) { return <button className="rail-button" data-active={active} aria-current={active ? "page" : undefined} title={label} onClick={onClick}>{children}<span>{label}</span></button>; }
 function StatusDot({ on, text }: { on: boolean; text: string }) { return <div className="status-dot" data-on={on}><i />{text}</div>; }
 function SettingRow({ title, description, children }: { title: string; description: string; children: React.ReactNode }) { return <div className="setting-row"><div><h3>{title}</h3><p>{description}</p></div>{children}</div>; }
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) { return <label className="field"><span>{label}{hint && <small>{hint}</small>}</span>{children}</label>; }

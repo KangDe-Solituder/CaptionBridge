@@ -188,11 +188,7 @@ fn save_settings(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SettingsView, String> {
-    request.settings.llm.timeout_milliseconds =
-        request.settings.llm.timeout_milliseconds.clamp(500, 5_000);
-    request.settings.captions.context_segments = request.settings.captions.context_segments.min(4);
-    request.settings.overlay.opacity = request.settings.overlay.opacity.clamp(0.2, 1.0);
-    request.settings.schema_version = 8;
+    settings::normalize(&mut request.settings);
     if !request.settings.llm.extra_body_json.trim().is_empty() {
         let value: serde_json::Value = serde_json::from_str(&request.settings.llm.extra_body_json)
             .map_err(|e| e.to_string())?;
@@ -606,32 +602,13 @@ async fn test_model(
         suppress_non_speech_segments,
     };
     let mut worker = asr_worker::AsrWorker::spawn(&state.paths).await?;
+    let probe_result = worker.probe_dependencies().await;
     let result = async {
-        let probe = worker.probe_dependencies().await?;
-        let mut missing_runtime = Vec::new();
-        if probe.cuda_runtime_loaded != Some(true) {
-            missing_runtime.push("CUDA");
-        }
-        if probe.cudnn_runtime_loaded != Some(true) {
-            missing_runtime.push("cuDNN");
-        }
-        if !missing_runtime.is_empty() {
-            let detail = probe
-                .cudnn_error
-                .as_deref()
-                .or(probe.cuda_error.as_deref())
-                .map(|error| format!(" 详细信息：{error}"))
-                .unwrap_or_default();
-            return Err(format!(
-                "GPU 运行库未就绪（{} 缺失或无法加载）。请打开“设置 → 字幕 → 检查依赖”，在 GPU Runtime 卡片中点击“下载”，完成后重新测试。{}",
-                missing_runtime.join("、"),
-                detail
-            ));
-        }
         worker.load(&state.paths, &source).await?;
         worker.dry_run().await
     }
-    .await;
+    .await
+    .map_err(|error| asr_model_test_error(&probe_result, &error));
     worker.shutdown().await;
     let (status, error) = match &result {
         Ok(_) => (models::ModelStatus::Available, None),
@@ -648,6 +625,24 @@ async fn test_model(
         },
     );
     result
+}
+
+fn asr_model_test_error(
+    probe_result: &Result<asr_worker::AsrDependencyProbe, String>,
+    inference_error: &str,
+) -> String {
+    let probe_detail = match probe_result {
+        Ok(probe) => probe
+            .cudnn_error
+            .as_deref()
+            .or(probe.cuda_error.as_deref())
+            .map(|error| format!("；依赖探测详情：{error}"))
+            .unwrap_or_default(),
+        Err(error) => format!("；依赖轻量探测也失败：{error}"),
+    };
+    format!(
+        "ASR GPU 推理失败：{inference_error}{probe_detail}。请打开“设置 → 字幕 → 检查依赖”查看详情"
+    )
 }
 
 #[tauri::command]

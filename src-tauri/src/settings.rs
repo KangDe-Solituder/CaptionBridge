@@ -1,4 +1,8 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::PathBuf,
+};
 
 use crate::models::AppSettings;
 
@@ -34,14 +38,18 @@ impl AppPaths {
             .map(PathBuf::from)
             .ok_or_else(|| "Windows LOCALAPPDATA 路径不可用".to_string())?;
         let data_dir = local_app_data.join("com.dimfi.livecaption");
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace_dir = manifest_dir
+        let local_models_dir = data_dir.join("models");
+        let configured_models_dir = std::env::var_os("LIVECAPTION_MODEL_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let legacy_models_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .ok_or_else(|| "无法确定应用工作区目录".to_string())?;
-        Ok(Self::new_with_models_dir(
-            data_dir,
-            workspace_dir.join("Model"),
-        ))
+            .map(|workspace| workspace.join("Model"))
+            .filter(|path| path.is_dir());
+        let models_dir = configured_models_dir
+            .or(legacy_models_dir)
+            .unwrap_or(local_models_dir);
+        Ok(Self::new_with_models_dir(data_dir, models_dir))
     }
 
     pub fn ensure(&self) -> Result<(), String> {
@@ -97,16 +105,107 @@ pub fn load(paths: &AppPaths) -> Result<AppSettings, String> {
     if previous_schema < 5 {
         settings.captions.context_segments = 2;
     }
-    if crate::windows_integration::validate_hotkey(&settings.selection.hotkey).is_err() {
-        settings.selection.hotkey = AppSettings::default().selection.hotkey;
-    }
+    normalize(&mut settings);
     Ok(settings)
 }
 
 pub fn save(paths: &AppPaths, settings: &AppSettings) -> Result<(), String> {
     paths.ensure()?;
-    let raw = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
-    fs::write(&paths.settings_file, raw).map_err(|error| error.to_string())
+    let mut normalized = settings.clone();
+    normalize(&mut normalized);
+    let raw = serde_json::to_vec_pretty(&normalized).map_err(|error| error.to_string())?;
+    let temporary = paths.settings_file.with_extension("json.tmp");
+    let backup = paths.settings_file.with_extension("json.bak");
+    let mut output = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary)
+        .map_err(|error| error.to_string())?;
+    output.write_all(&raw).map_err(|error| error.to_string())?;
+    output.sync_all().map_err(|error| error.to_string())?;
+    drop(output);
+
+    if backup.exists() {
+        fs::remove_file(&backup).map_err(|error| error.to_string())?;
+    }
+    if paths.settings_file.exists() {
+        fs::rename(&paths.settings_file, &backup)
+            .map_err(|error| format!("无法备份旧设置：{error}"))?;
+    }
+    if let Err(error) = fs::rename(&temporary, &paths.settings_file) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, &paths.settings_file);
+        }
+        return Err(format!("无法保存设置：{error}"));
+    }
+    if backup.exists() {
+        let _ = fs::remove_file(&backup);
+    }
+    Ok(())
+}
+
+pub fn normalize(settings: &mut AppSettings) {
+    let defaults = AppSettings::default();
+    settings.schema_version = defaults.schema_version;
+    settings.llm.endpoint = settings
+        .llm
+        .endpoint
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    if settings.llm.endpoint.is_empty() {
+        settings.llm.endpoint = defaults.llm.endpoint;
+    }
+    settings.llm.model = settings.llm.model.trim().to_string();
+    if settings.llm.model.is_empty() {
+        settings.llm.model = defaults.llm.model;
+    }
+    settings.llm.target_language = settings.llm.target_language.trim().to_string();
+    if settings.llm.target_language.is_empty() {
+        settings.llm.target_language = defaults.llm.target_language;
+    }
+    settings.llm.timeout_milliseconds = settings.llm.timeout_milliseconds.clamp(500, 5_000);
+    settings.llm.max_tokens = settings.llm.max_tokens.clamp(1, 4_096);
+    settings.llm.temperature = if settings.llm.temperature.is_finite() {
+        settings.llm.temperature.clamp(0.0, 2.0)
+    } else {
+        defaults.llm.temperature
+    };
+    settings.captions.poll_milliseconds = settings.captions.poll_milliseconds.clamp(80, 2_000);
+    settings.captions.stable_milliseconds =
+        settings.captions.stable_milliseconds.clamp(100, 10_000);
+    settings.captions.max_duration_milliseconds = settings
+        .captions
+        .max_duration_milliseconds
+        .clamp(500, 30_000);
+    settings.captions.max_chars = settings.captions.max_chars.clamp(16, 512);
+    settings.captions.context_segments = settings.captions.context_segments.min(4);
+    settings.captions.model_mirror_url = settings
+        .captions
+        .model_mirror_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    settings.overlay.opacity = if settings.overlay.opacity.is_finite() {
+        settings.overlay.opacity.clamp(0.2, 1.0)
+    } else {
+        defaults.overlay.opacity
+    };
+    settings.overlay.font_size = settings.overlay.font_size.clamp(14, 72);
+    settings.overlay.width = settings.overlay.width.clamp(320, 1_920);
+    if !is_hex_color(&settings.overlay.caption_color) {
+        settings.overlay.caption_color = defaults.overlay.caption_color;
+    }
+    if crate::windows_integration::validate_hotkey(&settings.selection.hotkey).is_err() {
+        settings.selection.hotkey = defaults.selection.hotkey;
+    }
+}
+
+fn is_hex_color(value: &str) -> bool {
+    value.len() == 7
+        && value.starts_with('#')
+        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -138,12 +237,16 @@ mod tests {
     #[test]
     fn shared_path_is_stable_across_build_profiles() {
         let paths = AppPaths::shared().unwrap();
-        let expected_models_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let legacy_models_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .join("Model");
         assert!(paths.data_dir.ends_with("com.dimfi.livecaption"));
-        assert_eq!(paths.models_dir, expected_models_dir);
+        if legacy_models_dir.is_dir() {
+            assert_eq!(paths.models_dir, legacy_models_dir);
+        } else {
+            assert_eq!(paths.models_dir, paths.data_dir.join("models"));
+        }
         assert_eq!(paths.downloads_dir, paths.models_dir.join(".downloads"));
     }
 
@@ -167,6 +270,29 @@ mod tests {
             settings.captions.source.suppress_non_speech_segments(),
             Some(true)
         );
+    }
+
+    #[test]
+    fn normalization_clamps_unsafe_manual_values() {
+        let mut settings = AppSettings::default();
+        settings.llm.endpoint = "  ".to_string();
+        settings.llm.max_tokens = u32::MAX;
+        settings.captions.poll_milliseconds = 0;
+        settings.captions.max_chars = usize::MAX;
+        settings.overlay.opacity = f32::NAN;
+        settings.overlay.caption_color = "transparent".to_string();
+
+        normalize(&mut settings);
+
+        assert_eq!(settings.llm.endpoint, AppSettings::default().llm.endpoint);
+        assert_eq!(settings.llm.max_tokens, 4_096);
+        assert_eq!(settings.captions.poll_milliseconds, 80);
+        assert_eq!(settings.captions.max_chars, 512);
+        assert_eq!(
+            settings.overlay.opacity,
+            AppSettings::default().overlay.opacity
+        );
+        assert_eq!(settings.overlay.caption_color, "#ffffff");
     }
 
     #[test]

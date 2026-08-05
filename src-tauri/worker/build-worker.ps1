@@ -22,6 +22,17 @@ if ($BundleGpuRuntime -and -not $CudnnBin) {
   & $VenvPython -m pip install --requirement (Join-Path $WorkerDir 'gpu-runtime-requirements.lock.txt')
   if ($LASTEXITCODE -ne 0) { throw "Failed to install pinned cuDNN build runtime (exit $LASTEXITCODE)." }
 }
+$WorkerOutputDir = Join-Path $DistDir 'livecaption-asr-worker'
+$WorkerBuildCache = Join-Path $BuildDir 'livecaption-asr-worker'
+foreach ($GeneratedDir in @($WorkerBuildCache, $WorkerOutputDir)) {
+  if (Test-Path -LiteralPath $GeneratedDir) {
+    try {
+      Remove-Item -LiteralPath $GeneratedDir -Recurse -Force
+    } catch {
+      throw "Cannot clean $GeneratedDir. Close any running LiveCaption/ASR Worker process, then retry. $($_.Exception.Message)"
+    }
+  }
+}
 & $VenvPython -m PyInstaller --noconfirm --clean --onedir --console --name livecaption-asr-worker `
   --workpath $BuildDir --distpath $DistDir --specpath $WorkerDir `
   --hidden-import pkg_resources `
@@ -118,13 +129,29 @@ if ($BundleGpuRuntime) {
   }
 }
 $WorkerExe = Join-Path $WorkerDir 'dist\livecaption-asr-worker\livecaption-asr-worker.exe'
-$ProbeOutput = @(
-  '{"command":"probe_dependencies"}',
-  '{"command":"shutdown"}'
-) | & $WorkerExe
-if ($LASTEXITCODE -ne 0 -or -not ($ProbeOutput -match '"type": "dependency_probe"') -or
-    ($BundleGpuRuntime -and (-not ($ProbeOutput -match '"cuda_runtime_loaded": true') -or
-      -not ($ProbeOutput -match '"cudnn_runtime_loaded": true')))) {
-  throw 'Worker build completed, but its dependency-probe protocol check failed.'
+$WorkerBuildManifest = Join-Path (Split-Path $WorkerExe -Parent) 'worker-build.json'
+$SourceHashes = [ordered]@{}
+foreach ($SourceName in @('asr_worker.py', 'requirements.lock.txt')) {
+  $SourcePath = Join-Path $WorkerDir $SourceName
+  $SourceHashes[$SourceName] = (Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+@{
+  schema = 1
+  generated_utc = [DateTime]::UtcNow.ToString('o')
+  files = $SourceHashes
+} | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $WorkerBuildManifest -Encoding UTF8
+& (Join-Path $WorkerDir 'verify-worker.ps1') -WorkerExe $WorkerExe
+if ($LASTEXITCODE -ne 0) {
+  throw 'Worker build completed, but its ASMR protocol check failed.'
+}
+if ($BundleGpuRuntime) {
+  $ProbeOutput = @(
+    '{"command":"probe_dependencies"}',
+    '{"command":"shutdown"}'
+  ) | & $WorkerExe
+  if (-not ($ProbeOutput -match '"cuda_runtime_loaded": true') -or
+      -not ($ProbeOutput -match '"cudnn_runtime_loaded": true')) {
+    throw 'Worker build completed, but its bundled GPU runtime check failed.'
+  }
 }
 Write-Host "Worker built and protocol-checked at $WorkerExe"

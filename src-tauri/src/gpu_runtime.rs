@@ -159,7 +159,18 @@ pub async fn download(
     let result = download_inner(&app, &paths, &cancel).await;
     downloads.finish(RUNTIME_ID).await;
     if let Err(error) = &result {
-        emit_progress(&app, "failed", 0, 0, Some(error.clone()));
+        let status = if cancel.load(Ordering::Relaxed) {
+            "not_installed"
+        } else {
+            "failed"
+        };
+        emit_progress(
+            &app,
+            status,
+            partial_download_size(&paths),
+            0,
+            Some(error.clone()),
+        );
     }
     result
 }
@@ -192,21 +203,23 @@ async fn download_inner(
             return Err("GPU 运行库下载已取消，可稍后继续".to_string());
         }
         let part = downloads.join(format!("{}.part", asset.filename));
-        let existing = fs::metadata(&part)
-            .map(|metadata| metadata.len().min(asset.size))
-            .unwrap_or(0);
-        if !verify_sha256(&part, &asset.digests.sha256).unwrap_or(false) {
+        let already_verified = fs::metadata(&part)
+            .is_ok_and(|metadata| metadata.len() == asset.size)
+            && verify_sha256(&part, &asset.digests.sha256).unwrap_or(false);
+        if !already_verified {
             let base = completed;
             download_file(&client, &asset.url, &part, asset.size, cancel, |current| {
                 emit_progress(app, "downloading", base + current, total, None);
             })
             .await?;
-        } else if existing != asset.size {
-            return Err(format!("{} 的下载文件大小不完整", asset.filename));
+            emit_progress(app, "verifying", completed + asset.size, total, None);
+            if !verify_sha256(&part, &asset.digests.sha256)? {
+                return Err(format!("{} 的 SHA-256 校验失败", asset.filename));
+            }
+        } else {
+            emit_progress(app, "verifying", completed + asset.size, total, None);
         }
-        if !verify_sha256(&part, &asset.digests.sha256)? {
-            return Err(format!("{} 的 SHA-256 校验失败", asset.filename));
-        }
+        emit_progress(app, "installing", completed + asset.size, total, None);
         extract_runtime_files(&part, &staging)?;
         completed += asset.size;
         emit_progress(app, "downloading", completed, total, None);
@@ -221,11 +234,23 @@ async fn download_inner(
         return Err(format!("GPU 运行库包缺少文件：{}", missing.join(", ")));
     }
 
-    let target = runtime_dir(paths);
-    if target.exists() {
-        fs::remove_dir_all(&target).map_err(|error| format!("无法替换旧 GPU 运行库：{error}"))?;
+    emit_progress(app, "installing", total, total, None);
+    install_staging(&staging, &runtime_dir(paths))?;
+    for asset in PACKAGES {
+        let prefix = format!("{}-{}", asset.name.replace('-', "_"), asset.version);
+        if let Ok(entries) = fs::read_dir(&downloads) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let matches_package = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".part"));
+                if matches_package {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
     }
-    fs::rename(&staging, &target).map_err(|error| error.to_string())?;
     emit_progress(app, "available", total, total, None);
     Ok(())
 }
@@ -234,16 +259,16 @@ async fn fetch_assets(client: &reqwest::Client) -> Result<Vec<PackageFile>, Stri
     let mut assets = Vec::with_capacity(PACKAGES.len());
     for package in PACKAGES {
         let url = format!("{PYPI_API}/{}/{}/json", package.name, package.version);
-        let metadata = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|error| format!("获取 {} 运行库信息失败：{error}", package.name))?
-            .error_for_status()
-            .map_err(|error| format!("获取 {} 运行库信息失败：{error}", package.name))?
-            .json::<PackageMetadata>()
-            .await
-            .map_err(|error| format!("解析 {} 运行库信息失败：{error}", package.name))?;
+        let metadata =
+            tokio::time::timeout(std::time::Duration::from_secs(30), client.get(url).send())
+                .await
+                .map_err(|_| format!("获取 {} 运行库信息超时", package.name))?
+                .map_err(|error| format!("获取 {} 运行库信息失败：{error}", package.name))?
+                .error_for_status()
+                .map_err(|error| format!("获取 {} 运行库信息失败：{error}", package.name))?
+                .json::<PackageMetadata>()
+                .await
+                .map_err(|error| format!("解析 {} 运行库信息失败：{error}", package.name))?;
         let asset = metadata
             .urls
             .into_iter()
@@ -297,10 +322,7 @@ async fn download_file<F: Fn(u64)>(
     cancel: &AtomicBool,
     progress: F,
 ) -> Result<(), String> {
-    let existing = fs::metadata(path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0)
-        .min(expected);
+    let existing = resumable_size(path, expected)?;
     let mut request = client.get(url);
     if existing > 0 {
         request = request.header(RANGE, format!("bytes={existing}-"));
@@ -344,6 +366,38 @@ async fn download_file<F: Fn(u64)>(
         return Err(format!(
             "GPU 运行库文件大小不符：需要 {expected}，实际 {current}"
         ));
+    }
+    Ok(())
+}
+
+fn resumable_size(path: &Path, expected: u64) -> Result<u64, String> {
+    let size = fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if size >= expected && size > 0 {
+        File::create(path).map_err(|error| error.to_string())?;
+        Ok(0)
+    } else {
+        Ok(size)
+    }
+}
+
+fn install_staging(staging: &Path, target: &Path) -> Result<(), String> {
+    let backup = target.with_extension("backup");
+    if backup.exists() {
+        fs::remove_dir_all(&backup).map_err(|error| error.to_string())?;
+    }
+    if target.exists() {
+        fs::rename(target, &backup).map_err(|error| format!("无法备份旧 GPU 运行库：{error}"))?;
+    }
+    if let Err(error) = fs::rename(staging, target) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, target);
+        }
+        return Err(format!("无法安装 GPU 运行库：{error}"));
+    }
+    if backup.exists() {
+        let _ = fs::remove_dir_all(&backup);
     }
     Ok(())
 }
@@ -411,5 +465,18 @@ mod tests {
         assert_eq!(RUNTIME_FILES.len(), 10);
         assert!(RUNTIME_FILES.contains(&"cudnn_ops64_9.dll"));
         assert!(RUNTIME_FILES.contains(&"cublasLt64_12.dll"));
+    }
+
+    #[test]
+    fn complete_but_invalid_partial_is_restarted_instead_of_resumed() {
+        let dir = std::env::temp_dir().join(format!("gpu-resume-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let part = dir.join("runtime.whl.part");
+        fs::write(&part, [1_u8; 8]).unwrap();
+
+        assert_eq!(resumable_size(&part, 8).unwrap(), 0);
+        assert_eq!(fs::metadata(&part).unwrap().len(), 0);
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

@@ -11,11 +11,13 @@ interface SegmentedProps<T extends string> {
 
 export function Segmented<T extends string>({ value, options, onChange }: SegmentedProps<T>) {
   return (
-    <div className="segmented">
+    <div className="segmented" role="radiogroup">
       {options.map((option) => (
         <button
           key={option.value}
           type="button"
+          role="radio"
+          aria-checked={value === option.value}
           data-active={value === option.value}
           onClick={() => onChange(option.value)}
         >

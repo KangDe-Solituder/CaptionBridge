@@ -19,6 +19,9 @@ coverage/
 *.local.json
 *.secret
 *.secrets
+settings.json
+credentials.json
+secrets.json
 *.pem
 *.key
 

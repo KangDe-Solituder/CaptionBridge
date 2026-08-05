@@ -82,35 +82,36 @@ pub fn runtime_library_dirs(paths: &AppPaths) -> Vec<PathBuf> {
         &mut candidates,
     );
 
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let worker_root = manifest.join("worker");
-    let build_venv = worker_root.join(".venv-build");
-    add_python_runtime_dirs(&mut candidates, &build_venv);
-    // Development and user-managed Python environments may keep the NVIDIA
-    // wheels outside the bundled Worker. Discover their DLL directories and
-    // prepend them to the Worker PATH without modifying the machine PATH.
-    for variable in ["VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME"] {
-        if let Some(root) = std::env::var_os(variable) {
-            add_python_runtime_dirs(&mut candidates, Path::new(&root));
+    #[cfg(debug_assertions)]
+    {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let worker_root = manifest.join("worker");
+        let build_venv = worker_root.join(".venv-build");
+        add_python_runtime_dirs(&mut candidates, &build_venv);
+        // Development environments may keep optional GPU wheels outside the
+        // bundled Worker. Release builds intentionally never search these
+        // source-tree paths, otherwise a packaged Worker can mix DLL versions.
+        for variable in ["VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME"] {
+            if let Some(root) = std::env::var_os(variable) {
+                add_python_runtime_dirs(&mut candidates, Path::new(&root));
+            }
         }
+        collect_dirs_containing(&worker_root, "cublas64_12.dll", 8, &mut candidates);
+        collect_dirs_containing(&worker_root, "cudnn64_9.dll", 8, &mut candidates);
+        candidates.push(
+            worker_root
+                .join("dist")
+                .join("livecaption-asr-worker")
+                .join("_internal"),
+        );
+        candidates.push(
+            worker_root
+                .join("dist")
+                .join("livecaption-asr-worker")
+                .join("_internal")
+                .join("ctranslate2"),
+        );
     }
-    collect_dirs_containing(&worker_root, "cublas64_12.dll", 8, &mut candidates);
-    collect_dirs_containing(&worker_root, "cudnn64_9.dll", 8, &mut candidates);
-    candidates.push(
-        manifest
-            .join("worker")
-            .join("dist")
-            .join("livecaption-asr-worker")
-            .join("_internal"),
-    );
-    candidates.push(
-        manifest
-            .join("worker")
-            .join("dist")
-            .join("livecaption-asr-worker")
-            .join("_internal")
-            .join("ctranslate2"),
-    );
     if let Ok(executable) = std::env::current_exe() {
         if let Some(parent) = executable.parent() {
             candidates.push(parent.join("asr-worker").join("_internal"));
@@ -126,6 +127,7 @@ pub fn runtime_library_dirs(paths: &AppPaths) -> Vec<PathBuf> {
     deduplicate_existing(candidates)
 }
 
+#[cfg(debug_assertions)]
 fn add_python_runtime_dirs(output: &mut Vec<PathBuf>, environment: &Path) {
     let site_packages = environment.join("Lib").join("site-packages");
     output.push(site_packages.join("nvidia").join("cublas").join("bin"));
@@ -148,55 +150,43 @@ pub async fn check(
         match AsrWorker::spawn(paths).await {
             Ok(mut worker) => {
                 let result = match worker.probe_dependencies().await {
-                    Ok(probe) => {
-                        let runtimes_loaded = probe.cuda_runtime_loaded == Some(true)
-                            && probe.cudnn_runtime_loaded == Some(true)
-                            && probe.device_count > 0;
-                        if runtimes_loaded {
-                            match legacy_probe_source(paths, configured_source) {
-                                Some(source) => {
-                                    let model_id =
-                                        source.model_id().unwrap_or("未知模型").to_string();
-                                    match worker.load(paths, &source).await {
-                                        Ok(()) => worker.dry_run().await.map(|latency_ms| {
-                                            DependencyProbeOutcome::Verified {
-                                                probe,
-                                                model_id,
-                                                latency_ms,
-                                            }
-                                        }),
-                                        Err(error) => Err(error),
+                    Ok(probe) => match legacy_probe_source(paths, configured_source) {
+                        Some(source) => {
+                            let model_id = source.model_id().unwrap_or("未知模型").to_string();
+                            match worker.load(paths, &source).await {
+                                Ok(()) => worker.dry_run().await.map(|latency_ms| {
+                                    DependencyProbeOutcome::Verified {
+                                        probe,
+                                        model_id,
+                                        latency_ms,
                                     }
-                                }
-                                None => Ok(DependencyProbeOutcome::Lightweight(probe)),
+                                }),
+                                Err(error) => Err(format!("真实 ASR 模型验证失败：{error}")),
                             }
-                        } else {
-                            Ok(DependencyProbeOutcome::Lightweight(probe))
                         }
-                    }
-                    Err(error) if is_unsupported_probe(&error) => {
-                        match legacy_probe_source(paths, configured_source) {
-                            Some(source) => {
-                                let model_id = source.model_id().unwrap_or("未知模型").to_string();
-                                match worker.load(paths, &source).await {
-                                    Ok(()) => worker.dry_run().await.map(|latency_ms| {
-                                        DependencyProbeOutcome::ModelDryRun {
-                                            model_id,
-                                            latency_ms,
-                                        }
-                                    }),
-                                    Err(load_error) => Err(format!(
-                                        "旧版 Worker 不支持轻量探测，模型兼容性验证失败：{load_error}"
-                                    )),
-                                }
+                        None => Ok(DependencyProbeOutcome::Lightweight(probe)),
+                    },
+                    Err(probe_error) => match legacy_probe_source(paths, configured_source) {
+                        Some(source) => {
+                            let model_id = source.model_id().unwrap_or("未知模型").to_string();
+                            match worker.load(paths, &source).await {
+                                Ok(()) => worker.dry_run().await.map(|latency_ms| {
+                                    DependencyProbeOutcome::ModelDryRun {
+                                        model_id,
+                                        latency_ms,
+                                    }
+                                }),
+                                Err(load_error) => Err(format!(
+                                    "依赖轻量探测失败：{probe_error}；真实 ASR 模型验证也失败：{load_error}"
+                                )),
                             }
-                            None => Err(
-                                "旧版 Worker 不支持轻量探测，且没有已安装模型可用于兼容性验证"
-                                    .to_string(),
-                            ),
                         }
-                    }
-                    Err(error) => Err(error),
+                        None if is_unsupported_probe(&probe_error) => Err(
+                            "旧版 Worker 不支持轻量探测，且没有已安装模型可用于真实 ASR 验证"
+                                .to_string(),
+                        ),
+                        None => Err(probe_error),
+                    },
                 };
                 worker.shutdown().await;
                 result
@@ -349,16 +339,18 @@ fn runtime_ready(probed: Option<bool>, found_on_disk: bool) -> bool {
 fn runtime_loaded_cuda(outcome: &DependencyProbeOutcome) -> Option<bool> {
     match outcome {
         DependencyProbeOutcome::Lightweight(probe) => probe.cuda_runtime_loaded,
-        DependencyProbeOutcome::ModelDryRun { .. } => Some(true),
-        DependencyProbeOutcome::Verified { probe, .. } => probe.cuda_runtime_loaded,
+        DependencyProbeOutcome::ModelDryRun { .. } | DependencyProbeOutcome::Verified { .. } => {
+            Some(true)
+        }
     }
 }
 
 fn runtime_loaded_cudnn(outcome: &DependencyProbeOutcome) -> Option<bool> {
     match outcome {
         DependencyProbeOutcome::Lightweight(probe) => probe.cudnn_runtime_loaded,
-        DependencyProbeOutcome::ModelDryRun { .. } => Some(true),
-        DependencyProbeOutcome::Verified { probe, .. } => probe.cudnn_runtime_loaded,
+        DependencyProbeOutcome::ModelDryRun { .. } | DependencyProbeOutcome::Verified { .. } => {
+            Some(true)
+        }
     }
 }
 
@@ -378,14 +370,9 @@ fn runtime_detail(
             DependencyProbeOutcome::Lightweight(probe) => {
                 (probe.cudnn_runtime_loaded, probe.cudnn_error.as_deref())
             }
-            DependencyProbeOutcome::ModelDryRun { .. } => {
+            DependencyProbeOutcome::ModelDryRun { .. }
+            | DependencyProbeOutcome::Verified { .. } => {
                 return format!("{loaded}（已由真实模型推理验证）")
-            }
-            DependencyProbeOutcome::Verified { probe, .. } if cuda => {
-                (probe.cuda_runtime_loaded, probe.cuda_error.as_deref())
-            }
-            DependencyProbeOutcome::Verified { probe, .. } => {
-                (probe.cudnn_runtime_loaded, probe.cudnn_error.as_deref())
             }
         };
         if state == Some(true) {
@@ -498,6 +485,18 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(debug_assertions))]
+    fn release_runtime_search_never_uses_source_worker_directories() {
+        let paths = AppPaths::new(
+            std::env::temp_dir().join(format!("runtime-paths-{}", uuid::Uuid::new_v4())),
+        );
+        let source_worker = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("worker");
+        assert!(runtime_library_dirs(&paths)
+            .iter()
+            .all(|candidate| !candidate.starts_with(&source_worker)));
+    }
+
+    #[test]
     fn only_whitelists_known_official_links() {
         assert_eq!(official_url("cuda_12"), Some(CUDA_URL));
         assert_eq!(official_url("cudnn_9"), Some(CUDNN_URL));
@@ -512,6 +511,29 @@ mod tests {
         assert_eq!(CUDNN_FILES.len(), 8);
         assert!(CUDNN_FILES.contains(&"cudnn_ops64_9.dll"));
         assert!(CUDNN_FILES.contains(&"cudnn_graph64_9.dll"));
+    }
+
+    #[test]
+    fn successful_model_inference_overrides_lightweight_runtime_flags() {
+        let outcome = DependencyProbeOutcome::Verified {
+            probe: AsrDependencyProbe {
+                device_count: 1,
+                compute_types: vec!["int8_float16".to_string()],
+                ctranslate2_version: Some("test".to_string()),
+                cuda_runtime_loaded: None,
+                cudnn_runtime_loaded: Some(false),
+                cuda_error: None,
+                cudnn_error: Some("legacy probe mismatch".to_string()),
+            },
+            model_id: "test-model".to_string(),
+            latency_ms: 42,
+        };
+        assert_eq!(runtime_loaded_cuda(&outcome), Some(true));
+        assert_eq!(runtime_loaded_cudnn(&outcome), Some(true));
+        assert_eq!(
+            runtime_detail(&Ok(outcome), false, false, "loaded", "found", "missing"),
+            "loaded（已由真实模型推理验证）"
+        );
     }
 
     #[test]

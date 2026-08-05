@@ -364,13 +364,16 @@ pub(crate) fn worker_executable(paths: &AppPaths) -> Result<PathBuf, String> {
     if installed.is_file() {
         return Ok(installed);
     }
-    let local = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("worker")
-        .join("dist")
-        .join("livecaption-asr-worker")
-        .join("livecaption-asr-worker.exe");
-    if local.is_file() {
-        return Ok(local);
+    #[cfg(debug_assertions)]
+    {
+        let local = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("worker")
+            .join("dist")
+            .join("livecaption-asr-worker")
+            .join("livecaption-asr-worker.exe");
+        if local.is_file() {
+            return Ok(local);
+        }
     }
     Err(format!(
         "未找到随应用分发的 ASR Worker。模型目录：{}",

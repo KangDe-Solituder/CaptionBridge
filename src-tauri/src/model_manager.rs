@@ -372,10 +372,7 @@ async fn download_file<F: Fn(u64)>(
     cancel: &AtomicBool,
     progress: F,
 ) -> Result<(), String> {
-    let existing = fs::metadata(path)
-        .map(|m| m.len())
-        .unwrap_or(0)
-        .min(expected);
+    let existing = resumable_size(path, expected)?;
     let mut request = client.get(url);
     if existing > 0 {
         request = request.header(RANGE, format!("bytes={existing}-"));
@@ -417,6 +414,18 @@ async fn download_file<F: Fn(u64)>(
         return Err(format!("文件大小不符：需要 {expected}，实际 {current}"));
     }
     Ok(())
+}
+
+fn resumable_size(path: &Path, expected: u64) -> Result<u64, String> {
+    let size = fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if size >= expected && size > 0 {
+        File::create(path).map_err(|error| error.to_string())?;
+        Ok(0)
+    } else {
+        Ok(size)
+    }
 }
 
 pub fn verify_model(paths: &AppPaths, id: &str) -> Result<(), String> {
@@ -471,5 +480,18 @@ mod tests {
                 .iter()
                 .all(|f| f.sha256.len() == 64 && f.size > 0));
         }
+    }
+
+    #[test]
+    fn complete_but_invalid_partial_is_restarted_instead_of_resumed() {
+        let dir = std::env::temp_dir().join(format!("model-resume-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let part = dir.join("model.bin.part");
+        fs::write(&part, [1_u8; 8]).unwrap();
+
+        assert_eq!(resumable_size(&part, 8).unwrap(), 0);
+        assert_eq!(fs::metadata(&part).unwrap().len(), 0);
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

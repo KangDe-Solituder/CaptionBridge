@@ -1,9 +1,14 @@
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from asr_worker import (
     AcousticEvidenceTracker,
+    CUDA_RUNTIME_FILES,
     CUDNN_RUNTIME_FILES,
     StereoChunk,
     StereoRouter,
@@ -135,6 +140,29 @@ class DependencyProbeTests(unittest.TestCase):
         self.assertEqual(len(CUDNN_RUNTIME_FILES), 8)
         self.assertIn("cudnn_ops64_9.dll", CUDNN_RUNTIME_FILES)
         self.assertIn("cudnn_graph64_9.dll", CUDNN_RUNTIME_FILES)
+
+    @patch("asr_worker.ctypes.WinDLL", side_effect=lambda path: path)
+    @patch("asr_worker.os.add_dll_directory", side_effect=lambda path: path)
+    def test_gpu_runtime_is_preloaded_before_ctranslate2_import(
+        self,
+        add_dll_directory,
+        win_dll,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary)
+            for name in CUDA_RUNTIME_FILES + CUDNN_RUNTIME_FILES:
+                runtime.joinpath(name).touch()
+            with patch.dict(
+                os.environ,
+                {"LIVECAPTION_CUDA_RUNTIME_DIR": str(runtime), "PATH": ""},
+            ):
+                worker = Worker()
+                worker.preload_gpu_runtime()
+
+        self.assertTrue(worker.gpu_runtime_preloaded)
+        self.assertEqual(len(worker.runtime_dll_handles), 10)
+        add_dll_directory.assert_called()
+        self.assertEqual(win_dll.call_count, 10)
 
 
 class WorkerRoutingTests(unittest.TestCase):

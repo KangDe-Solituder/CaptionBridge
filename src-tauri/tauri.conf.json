@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File src-tauri\\worker\\before-tauri-build.ps1",
     "frontendDist": "../dist"
   },
   "app": {

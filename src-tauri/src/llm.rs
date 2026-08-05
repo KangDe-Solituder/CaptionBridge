@@ -22,6 +22,8 @@ pub fn normalize_endpoint(endpoint: &str) -> String {
 
 const LIVE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
 const LIVE_FIRST_TOKEN_GRACE: Duration = Duration::from_millis(500);
+const SELECTION_FIRST_TOKEN_TIMEOUT: Duration = Duration::from_secs(30);
+const SELECTION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn first_token_target(settings: &AppSettings, mode: &TranslationMode) -> Option<Duration> {
     matches!(mode, TranslationMode::LiveCaption)
@@ -50,6 +52,13 @@ pub fn create_payload(
         TranslationMode::LiveCaption => settings.llm.max_tokens.min(256),
         TranslationMode::Selection => settings.llm.max_tokens.min(768),
     };
+    let source_hint = if request.source_language.trim().is_empty()
+        || request.source_language.eq_ignore_ascii_case("auto")
+    {
+        "Detect the source language automatically.".to_string()
+    } else {
+        format!("The source language is {}.", request.source_language.trim())
+    };
     let context_hint = if request.context.is_empty() {
         String::new()
     } else {
@@ -70,7 +79,7 @@ pub fn create_payload(
         "messages": [
             {
                 "role": "system",
-                "content": format!("You are doing {task}. Translate into {}. Keep the result {style}. Return only the translation.{context_hint}", request.target_language)
+                "content": format!("You are doing {task}. {source_hint} Translate into {}. Keep the result {style}. Return only the translation.{context_hint}", request.target_language)
             },
             {
                 "role": "user",
@@ -138,6 +147,8 @@ where
     let first_token_deadline =
         first_token_target.map(|target| TokioInstant::now() + target + LIVE_FIRST_TOKEN_GRACE);
     let is_live_caption = matches!(request.mode, TranslationMode::LiveCaption);
+    let selection_first_token_deadline =
+        (!is_live_caption).then(|| TokioInstant::now() + SELECTION_FIRST_TOKEN_TIMEOUT);
 
     let translation = async {
         let send = client
@@ -152,26 +163,44 @@ where
                     .await
                     .map_err(|_| first_token_timeout_error(target, started.elapsed()))?
                     .map_err(|error| error.to_string())?
+            } else if let Some(deadline) = selection_first_token_deadline {
+                timeout_at(deadline, send)
+                    .await
+                    .map_err(|_| "划词翻译连接超时（30 秒）".to_string())?
+                    .map_err(|error| error.to_string())?
             } else {
-                send.await.map_err(|error| error.to_string())?
+                unreachable!()
             };
         let status = response.status();
         if !status.is_success() {
-            let read_error_body = response.json();
-            let body: Value = if let (Some(target), Some(deadline)) =
+            let read_error_body = response.text();
+            let body = if let (Some(target), Some(deadline)) =
                 (first_token_target, first_token_deadline)
             {
                 timeout_at(deadline, read_error_body)
                     .await
                     .map_err(|_| first_token_timeout_error(target, started.elapsed()))?
                     .map_err(|error| error.to_string())?
+            } else if let Some(deadline) = selection_first_token_deadline {
+                timeout_at(deadline, read_error_body)
+                    .await
+                    .map_err(|_| "读取 LLM 错误响应超时（30 秒）".to_string())?
+                    .map_err(|error| error.to_string())?
             } else {
-                read_error_body.await.map_err(|error| error.to_string())?
+                unreachable!()
             };
-            let message = body
-                .pointer("/error/message")
+            let parsed = serde_json::from_str::<Value>(&body).ok();
+            let message = parsed
+                .as_ref()
+                .and_then(|value| value.pointer("/error/message"))
                 .and_then(Value::as_str)
-                .unwrap_or("LLM 请求失败");
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| body.chars().take(500).collect::<String>());
+            let message = if message.trim().is_empty() {
+                "LLM 请求失败".to_string()
+            } else {
+                message
+            };
             return Err(format!("{status}: {message}"));
         }
 
@@ -187,8 +216,13 @@ where
                         .await
                         .map_err(|_| first_token_timeout_error(target, started.elapsed()))?
                         .map_err(|error| error.to_string())?
+                } else if let Some(deadline) = selection_first_token_deadline {
+                    timeout_at(deadline, response.chunk())
+                        .await
+                        .map_err(|_| "划词翻译等待首 token 超时（30 秒）".to_string())?
+                        .map_err(|error| error.to_string())?
                 } else {
-                    response.chunk().await.map_err(|error| error.to_string())?
+                    unreachable!()
                 }
             } else if is_live_caption {
                 match timeout(LIVE_STREAM_IDLE_TIMEOUT, response.chunk()).await {
@@ -212,7 +246,10 @@ where
                     }
                 }
             } else {
-                response.chunk().await.map_err(|error| error.to_string())?
+                timeout(SELECTION_STREAM_IDLE_TIMEOUT, response.chunk())
+                    .await
+                    .map_err(|_| "划词翻译流连续 30 秒没有新数据，已取消本次请求".to_string())?
+                    .map_err(|error| error.to_string())?
             };
             let Some(chunk) = next_chunk else {
                 break;
@@ -224,32 +261,31 @@ where
                 if line.last() == Some(&b'\r') {
                     line.pop();
                 }
-                let line = String::from_utf8_lossy(&line);
-                let line = line.trim();
-                let Some(data) = line.strip_prefix("data:").map(str::trim) else {
-                    continue;
-                };
-                if data == "[DONE]" {
+                let (delta, done) = parse_sse_line(&line);
+                if done {
                     stream_done = true;
                     break;
                 }
-                let Ok(value) = serde_json::from_str::<Value>(data) else {
-                    continue;
-                };
-                if let Some(delta) = value
-                    .pointer("/choices/0/delta/content")
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.is_empty())
-                {
+                if let Some(delta) = delta {
                     if first_token_ms == 0 {
                         first_token_ms = started.elapsed().as_millis();
                     }
-                    translated.push_str(delta);
-                    on_delta(delta.to_string());
+                    translated.push_str(&delta);
+                    on_delta(delta);
                 }
             }
             if stream_done {
                 break;
+            }
+        }
+        if !stream_done && !pending.is_empty() {
+            let (delta, _) = parse_sse_line(&pending);
+            if let Some(delta) = delta {
+                if first_token_ms == 0 {
+                    first_token_ms = started.elapsed().as_millis();
+                }
+                translated.push_str(&delta);
+                on_delta(delta);
             }
         }
         if translated.trim().is_empty() {
@@ -272,6 +308,25 @@ where
         cached: false,
         error: stream_warning,
     })
+}
+
+fn parse_sse_line(line: &[u8]) -> (Option<String>, bool) {
+    let line = String::from_utf8_lossy(line);
+    let line = line.trim();
+    let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+        return (None, false);
+    };
+    if data == "[DONE]" {
+        return (None, true);
+    }
+    let delta = serde_json::from_str::<Value>(data).ok().and_then(|value| {
+        value
+            .pointer("/choices/0/delta/content")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(ToOwned::to_owned)
+    });
+    (delta, false)
 }
 
 #[cfg(test)]
@@ -416,8 +471,31 @@ mod tests {
     }
 
     #[test]
+    fn includes_an_explicit_source_language_hint() {
+        let settings = AppSettings::default();
+        let request = TranslationRequest {
+            mode: TranslationMode::Selection,
+            source_text: "こんにちは".to_string(),
+            source_language: "Japanese".to_string(),
+            target_language: "Chinese".to_string(),
+            context: Vec::new(),
+        };
+        let payload = create_payload(&settings, &request).unwrap();
+        let system = payload["messages"][0]["content"].as_str().unwrap();
+        assert!(system.contains("source language is Japanese"));
+    }
+
+    #[test]
     fn extracts_content() {
         let value = json!({"choices":[{"message":{"content":" 你好 "}}]});
         assert_eq!(extract_content(&value), Some("你好".to_string()));
+    }
+
+    #[test]
+    fn parses_final_sse_line_without_a_trailing_newline() {
+        let (delta, done) = parse_sse_line(br#"data: {"choices":[{"delta":{"content":"hello"}}]}"#);
+        assert_eq!(delta.as_deref(), Some("hello"));
+        assert!(!done);
+        assert!(parse_sse_line(b"data: [DONE]").1);
     }
 }

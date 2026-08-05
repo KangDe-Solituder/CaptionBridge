@@ -269,8 +269,68 @@ class Worker:
         self.routing_reset = threading.Event()
         self.utterance_voice_frames = 0
         self.utterance_probability_sum = 0.0
+        self.runtime_directory_handles = []
+        self.runtime_dll_handles = []
+        self.gpu_runtime_preloaded = False
+
+    def preload_gpu_runtime(self) -> None:
+        if self.gpu_runtime_preloaded or sys.platform != "win32":
+            return
+
+        candidates: list[Path] = []
+        cached_runtime = os.environ.get("LIVECAPTION_CUDA_RUNTIME_DIR")
+        if cached_runtime:
+            candidates.append(Path(cached_runtime))
+        candidates.append(Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)))
+        candidates.extend(
+            Path(entry) for entry in os.environ.get("PATH", "").split(os.pathsep) if entry
+        )
+
+        unique_candidates: list[Path] = []
+        seen: set[str] = set()
+        for directory in candidates:
+            key = os.path.normcase(os.path.abspath(directory))
+            if key in seen:
+                continue
+            try:
+                if not directory.is_dir():
+                    continue
+            except OSError:
+                continue
+            seen.add(key)
+            unique_candidates.append(directory)
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    self.runtime_directory_handles.append(os.add_dll_directory(str(directory)))
+                except OSError:
+                    pass
+
+        missing = []
+        failures = []
+        for name in CUDA_RUNTIME_FILES + CUDNN_RUNTIME_FILES:
+            library = next(
+                (directory / name for directory in unique_candidates if (directory / name).is_file()),
+                None,
+            )
+            if library is None:
+                missing.append(name)
+                continue
+            try:
+                self.runtime_dll_handles.append(ctypes.WinDLL(str(library)))
+            except OSError as error:
+                failures.append(f"{library}: {error}")
+
+        if missing or failures:
+            details = []
+            if missing:
+                details.append(f"missing: {', '.join(missing)}")
+            details.extend(failures)
+            raise RuntimeError(f"gpu_runtime_load_failed:{' | '.join(details)}")
+        self.gpu_runtime_preloaded = True
 
     def load(self, command: dict) -> None:
+        if command.get("device", "cuda") == "cuda":
+            self.preload_gpu_runtime()
         from faster_whisper import WhisperModel
         from faster_whisper.vad import get_vad_model
 
