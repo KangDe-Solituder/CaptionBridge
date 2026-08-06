@@ -18,12 +18,26 @@ use tokio::sync::Mutex;
 use zip::ZipArchive;
 
 use crate::{
-    models::{AsrGpuRuntimeInfo, AsrGpuRuntimeProgressEvent},
+    models::{
+        AsrGpuRuntimeComponentInfo, AsrGpuRuntimeInfo, AsrGpuRuntimeProgressEvent, DownloadSettings,
+    },
+    network,
     settings::AppPaths,
 };
 
 pub const RUNTIME_ID: &str = "cuda12-cudnn9";
 const PYPI_API: &str = "https://pypi.org/pypi";
+const CUBLAS_FILES: &[&str] = &["cublas64_12.dll", "cublasLt64_12.dll"];
+const CUDNN_FILES: &[&str] = &[
+    "cudnn64_9.dll",
+    "cudnn_adv64_9.dll",
+    "cudnn_cnn64_9.dll",
+    "cudnn_engines_precompiled64_9.dll",
+    "cudnn_engines_runtime_compiled64_9.dll",
+    "cudnn_graph64_9.dll",
+    "cudnn_heuristic64_9.dll",
+    "cudnn_ops64_9.dll",
+];
 const RUNTIME_FILES: &[&str] = &[
     "cublas64_12.dll",
     "cublasLt64_12.dll",
@@ -37,21 +51,33 @@ const RUNTIME_FILES: &[&str] = &[
     "cudnn_ops64_9.dll",
 ];
 struct PackageSpec {
+    id: &'static str,
+    display_name: &'static str,
     name: &'static str,
     version: &'static str,
     sha256: &'static str,
+    size: u64,
+    files: &'static [&'static str],
 }
 
 const PACKAGES: &[PackageSpec] = &[
     PackageSpec {
+        id: "cublas",
+        display_name: "CUDA 12 / cuBLAS",
         name: "nvidia-cublas-cu12",
         version: "12.9.2.10",
         sha256: "623f43027d40d44ceadf0043f002bd25cf353e8f13ce90b9a87057019f560661",
+        size: 553_162_896,
+        files: CUBLAS_FILES,
     },
     PackageSpec {
+        id: "cudnn",
+        display_name: "cuDNN 9",
         name: "nvidia-cudnn-cu12",
         version: "9.10.2.21",
         sha256: "c6288de7d63e6cf62988f0923f96dc339cea362decb1bf5b3141883392a7d65e",
+        size: 692_992_268,
+        files: CUDNN_FILES,
     },
 ];
 
@@ -123,20 +149,87 @@ fn staging_dir(paths: &AppPaths) -> PathBuf {
         .join(format!(".{RUNTIME_ID}.partial"))
 }
 
-pub fn runtime_available(paths: &AppPaths) -> bool {
+fn component_cached(paths: &AppPaths, package: &PackageSpec) -> bool {
     let dir = runtime_dir(paths);
-    RUNTIME_FILES.iter().all(|file| dir.join(file).is_file())
+    package.files.iter().all(|file| dir.join(file).is_file())
+}
+
+fn selected_packages(ids: &[String]) -> Result<Vec<&'static PackageSpec>, String> {
+    if ids.is_empty() {
+        return Err("当前环境没有需要下载的 GPU 运行库组件".to_string());
+    }
+    let requested = ids.iter().map(String::as_str).collect::<HashSet<_>>();
+    if requested.len() != ids.len() {
+        return Err("GPU 运行库下载计划包含重复组件".to_string());
+    }
+    let packages = PACKAGES
+        .iter()
+        .filter(|package| requested.contains(package.id))
+        .collect::<Vec<_>>();
+    if packages.len() != requested.len() {
+        return Err("GPU 运行库下载计划包含未知组件".to_string());
+    }
+    Ok(packages)
+}
+
+fn preserve_cached_components(paths: &AppPaths, staging: &Path) -> Result<(), String> {
+    let current = runtime_dir(paths);
+    if !current.is_dir() {
+        return Ok(());
+    }
+    for file in RUNTIME_FILES {
+        let source = current.join(file);
+        if source.is_file() {
+            fs::copy(&source, staging.join(file)).map_err(|error| {
+                format!(
+                    "无法保留已安装的 GPU 运行库组件 {}：{error}",
+                    source.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 pub async fn status(
     paths: &AppPaths,
     downloads: &DownloadRegistry,
-    external_available: bool,
+    cuda_available: bool,
+    cudnn_available: bool,
 ) -> AsrGpuRuntimeInfo {
     let active = downloads.is_active(RUNTIME_ID).await;
+    let availability = [cuda_available, cudnn_available];
+    let components = PACKAGES
+        .iter()
+        .zip(availability)
+        .map(|(package, available)| {
+            let cached = component_cached(paths, package);
+            AsrGpuRuntimeComponentInfo {
+                id: package.id.to_string(),
+                name: package.display_name.to_string(),
+                status: if available { "available" } else { "missing" }.to_string(),
+                source: if available && cached {
+                    "cache"
+                } else if available {
+                    "system"
+                } else if cached {
+                    "cache"
+                } else {
+                    "missing"
+                }
+                .to_string(),
+                download_size_bytes: package.size,
+            }
+        })
+        .collect::<Vec<_>>();
+    let required_download_bytes = components
+        .iter()
+        .filter(|component| component.status != "available")
+        .map(|component| component.download_size_bytes)
+        .sum();
     let status = if active {
         "downloading"
-    } else if runtime_available(paths) || external_available {
+    } else if required_download_bytes == 0 {
         "available"
     } else {
         "not_installed"
@@ -145,7 +238,9 @@ pub async fn status(
         id: RUNTIME_ID.to_string(),
         status: status.to_string(),
         downloaded_bytes: partial_download_size(paths),
-        total_bytes: 0,
+        total_bytes: required_download_bytes,
+        required_download_bytes,
+        components,
         error: None,
     }
 }
@@ -154,9 +249,12 @@ pub async fn download(
     app: AppHandle,
     paths: AppPaths,
     downloads: DownloadRegistry,
+    component_ids: Vec<String>,
+    download_settings: DownloadSettings,
 ) -> Result<(), String> {
+    let packages = selected_packages(&component_ids)?;
     let cancel = downloads.begin(RUNTIME_ID).await?;
-    let result = download_inner(&app, &paths, &cancel).await;
+    let result = download_inner(&app, &paths, &packages, &download_settings, &cancel).await;
     downloads.finish(RUNTIME_ID).await;
     if let Err(error) = &result {
         let status = if cancel.load(Ordering::Relaxed) {
@@ -167,8 +265,8 @@ pub async fn download(
         emit_progress(
             &app,
             status,
-            partial_download_size(&paths),
-            0,
+            partial_download_size_for(&paths, &packages),
+            packages.iter().map(|package| package.size).sum(),
             Some(error.clone()),
         );
     }
@@ -178,6 +276,8 @@ pub async fn download(
 async fn download_inner(
     app: &AppHandle,
     paths: &AppPaths,
+    packages: &[&'static PackageSpec],
+    download_settings: &DownloadSettings,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     paths.ensure()?;
@@ -188,17 +288,15 @@ async fn download_inner(
         fs::remove_dir_all(&staging).map_err(|error| error.to_string())?;
     }
     fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
+    preserve_cached_components(paths, &staging)?;
 
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let assets = fetch_assets(&client).await?;
+    let client = network::download_client(download_settings, std::time::Duration::from_secs(15))?;
+    let assets = fetch_assets(&client, packages).await?;
     let total = assets.iter().map(|asset| asset.size).sum::<u64>();
     let mut completed = 0_u64;
     emit_progress(app, "downloading", 0, total, None);
 
-    for asset in assets {
+    for (package, asset) in packages.iter().zip(assets) {
         if cancel.load(Ordering::Relaxed) {
             return Err("GPU 运行库下载已取消，可稍后继续".to_string());
         }
@@ -220,13 +318,14 @@ async fn download_inner(
             emit_progress(app, "verifying", completed + asset.size, total, None);
         }
         emit_progress(app, "installing", completed + asset.size, total, None);
-        extract_runtime_files(&part, &staging)?;
+        extract_runtime_files(&part, &staging, package.files)?;
         completed += asset.size;
         emit_progress(app, "downloading", completed, total, None);
     }
 
-    let missing = RUNTIME_FILES
+    let missing = packages
         .iter()
+        .flat_map(|package| package.files.iter())
         .filter(|file| !staging.join(file).is_file())
         .copied()
         .collect::<Vec<_>>();
@@ -236,8 +335,8 @@ async fn download_inner(
 
     emit_progress(app, "installing", total, total, None);
     install_staging(&staging, &runtime_dir(paths))?;
-    for asset in PACKAGES {
-        let prefix = format!("{}-{}", asset.name.replace('-', "_"), asset.version);
+    for package in packages {
+        let prefix = format!("{}-{}", package.name.replace('-', "_"), package.version);
         if let Ok(entries) = fs::read_dir(&downloads) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -255,9 +354,12 @@ async fn download_inner(
     Ok(())
 }
 
-async fn fetch_assets(client: &reqwest::Client) -> Result<Vec<PackageFile>, String> {
-    let mut assets = Vec::with_capacity(PACKAGES.len());
-    for package in PACKAGES {
+async fn fetch_assets(
+    client: &reqwest::Client,
+    packages: &[&'static PackageSpec],
+) -> Result<Vec<PackageFile>, String> {
+    let mut assets = Vec::with_capacity(packages.len());
+    for package in packages {
         let url = format!("{PYPI_API}/{}/{}/json", package.name, package.version);
         let metadata =
             tokio::time::timeout(std::time::Duration::from_secs(30), client.get(url).send())
@@ -277,16 +379,23 @@ async fn fetch_assets(client: &reqwest::Client) -> Result<Vec<PackageFile>, Stri
         if !asset.digests.sha256.eq_ignore_ascii_case(package.sha256) {
             return Err(format!("{} 元数据 SHA-256 与内置版本不符", package.name));
         }
+        if asset.size != package.size {
+            return Err(format!("{} 元数据文件大小与内置版本不符", package.name));
+        }
         assets.push(asset);
     }
     Ok(assets)
 }
 
-fn extract_runtime_files(archive_path: &Path, destination: &Path) -> Result<(), String> {
+fn extract_runtime_files(
+    archive_path: &Path,
+    destination: &Path,
+    files: &[&str],
+) -> Result<(), String> {
     let file = File::open(archive_path).map_err(|error| error.to_string())?;
     let mut archive =
         ZipArchive::new(file).map_err(|error| format!("读取 GPU 运行库包失败：{error}"))?;
-    let wanted = RUNTIME_FILES.iter().copied().collect::<HashSet<_>>();
+    let wanted = files.iter().copied().collect::<HashSet<_>>();
     let mut extracted = HashSet::new();
     for index in 0..archive.len() {
         let mut entry = archive
@@ -420,6 +529,26 @@ fn partial_download_size(paths: &AppPaths) -> u64 {
         .sum()
 }
 
+fn partial_download_size_for(paths: &AppPaths, packages: &[&PackageSpec]) -> u64 {
+    let prefixes = packages
+        .iter()
+        .map(|package| format!("{}-{}", package.name.replace('-', "_"), package.version))
+        .collect::<Vec<_>>();
+    fs::read_dir(download_dir(paths))
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_name().to_str().is_some_and(|name| {
+                name.ends_with(".part") && prefixes.iter().any(|prefix| name.starts_with(prefix))
+            })
+        })
+        .filter_map(|entry| entry.metadata().ok())
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
 fn verify_sha256(path: &Path, expected: &str) -> Result<bool, String> {
     if !path.is_file() {
         return Ok(false);
@@ -465,6 +594,21 @@ mod tests {
         assert_eq!(RUNTIME_FILES.len(), 10);
         assert!(RUNTIME_FILES.contains(&"cudnn_ops64_9.dll"));
         assert!(RUNTIME_FILES.contains(&"cublasLt64_12.dll"));
+    }
+
+    #[test]
+    fn selects_only_requested_runtime_components() {
+        let selected = selected_packages(&["cudnn".to_string()]).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, "cudnn");
+        assert_eq!(selected[0].size, 692_992_268);
+        assert_eq!(selected[0].files, CUDNN_FILES);
+    }
+
+    #[test]
+    fn rejects_unknown_or_duplicate_runtime_components() {
+        assert!(selected_packages(&["unknown".to_string()]).is_err());
+        assert!(selected_packages(&["cublas".to_string(), "cublas".to_string()]).is_err());
     }
 
     #[test]

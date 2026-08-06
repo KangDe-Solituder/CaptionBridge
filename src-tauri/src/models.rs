@@ -23,7 +23,18 @@ pub struct AsrGpuRuntimeInfo {
     pub status: String,
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
+    pub required_download_bytes: u64,
+    pub components: Vec<AsrGpuRuntimeComponentInfo>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsrGpuRuntimeComponentInfo {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub source: String,
+    pub download_size_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +172,14 @@ pub enum CaptionSourceConfig {
         #[serde(default = "default_true")]
         suppress_non_speech_segments: bool,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DownloadSettings {
+    #[serde(default)]
+    pub proxy_enabled: bool,
+    #[serde(default)]
+    pub proxy_url: String,
 }
 
 impl Default for CaptionSourceConfig {
@@ -399,17 +418,20 @@ pub struct AppSettings {
     pub captions: CaptionSettings,
     pub overlay: OverlaySettings,
     pub visual: VisualSettings,
+    #[serde(default)]
+    pub downloads: DownloadSettings,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            schema_version: 8,
+            schema_version: 9,
             llm: LlmProviderSettings::default(),
             selection: SelectionSettings::default(),
             captions: CaptionSettings::default(),
             overlay: OverlaySettings::default(),
             visual: VisualSettings::default(),
+            downloads: DownloadSettings::default(),
         }
     }
 }

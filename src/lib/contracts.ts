@@ -8,6 +8,7 @@ export interface LlmProviderSettings {
   timeout_milliseconds: number; max_tokens: number; temperature: number; thinking_enabled: boolean;
 }
 export interface SelectionSettings { enabled: boolean; clipboard_fallback_enabled: boolean; hotkey: string; trigger_mode: "hotkey" | "automatic"; }
+export interface DownloadSettings { proxy_enabled: boolean; proxy_url: string; }
 export interface CaptionSettings {
   source: CaptionSourceConfig;
   enabled: boolean; auto_launch: boolean; poll_milliseconds: number;
@@ -32,7 +33,7 @@ export interface VisualSettings {
 }
 export interface AppSettings {
   schema_version: number; llm: LlmProviderSettings; selection: SelectionSettings;
-  captions: CaptionSettings; overlay: OverlaySettings; visual: VisualSettings;
+  captions: CaptionSettings; overlay: OverlaySettings; visual: VisualSettings; downloads: DownloadSettings;
 }
 export interface SettingsView { settings: AppSettings; api_key_configured: boolean; model_directory: string; }
 export interface TranslationRequest {
@@ -71,7 +72,14 @@ export interface AsrDependencyStatus {
 }
 export type AsrGpuRuntimeStatus = "not_installed" | "downloading" | "verifying" | "installing" | "available" | "failed";
 export interface AsrGpuRuntimeInfo {
+  id: string; status: AsrGpuRuntimeStatus; downloaded_bytes: number; total_bytes: number;
+  required_download_bytes: number; components: AsrGpuRuntimeComponentInfo[]; error?: string;
+}
+export interface AsrGpuRuntimeComponentInfo {
+  id: "cublas" | "cudnn"; name: string; status: "available" | "missing";
+  source: "system" | "cache" | "missing"; download_size_bytes: number;
+}
+export interface AsrGpuRuntimeProgressEvent {
   id: string; status: AsrGpuRuntimeStatus; downloaded_bytes: number; total_bytes: number; error?: string;
 }
-export interface AsrGpuRuntimeProgressEvent extends AsrGpuRuntimeInfo {}
 export interface AsrDependencyReport { ready: boolean; dependencies: AsrDependencyStatus[]; gpu_runtime: AsrGpuRuntimeInfo; }

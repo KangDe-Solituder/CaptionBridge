@@ -16,7 +16,8 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
 use crate::{
-    models::{ModelInfo, ModelProgressEvent, ModelStatus},
+    models::{DownloadSettings, ModelInfo, ModelProgressEvent, ModelStatus},
+    network,
     settings::AppPaths,
 };
 
@@ -246,10 +247,12 @@ pub async fn download_model(
     registry: DownloadRegistry,
     id: String,
     mirror: String,
+    download_settings: DownloadSettings,
 ) -> Result<(), String> {
     let item = *manifest(&id)?;
     let cancel = registry.begin(&id).await?;
-    let result = download_model_inner(&app, &paths, &item, &mirror, &cancel).await;
+    let result =
+        download_model_inner(&app, &paths, &item, &mirror, &download_settings, &cancel).await;
     registry.finish(&id).await;
     if let Err(error) = &result {
         let status = if cancel.load(Ordering::Relaxed) {
@@ -273,6 +276,7 @@ async fn download_model_inner(
     paths: &AppPaths,
     item: &ModelManifest,
     mirror: &str,
+    download_settings: &DownloadSettings,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     paths.ensure()?;
@@ -280,10 +284,7 @@ async fn download_model_inner(
     let model_dir = paths.models_dir.join(item.id);
     fs::create_dir_all(&download_dir).map_err(|e| e.to_string())?;
     fs::create_dir_all(&model_dir).map_err(|e| e.to_string())?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = network::download_client(download_settings, std::time::Duration::from_secs(10))?;
     let mut total_done = partial_size(paths, item);
     emit_progress(app, item, ModelStatus::Downloading, total_done, None);
 

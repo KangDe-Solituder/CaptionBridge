@@ -8,6 +8,7 @@ mod llm;
 mod model_manager;
 mod models;
 mod native_caption_reader;
+mod network;
 mod secrets;
 mod segmenter;
 mod sessions;
@@ -189,6 +190,7 @@ fn save_settings(
     state: State<'_, AppState>,
 ) -> Result<SettingsView, String> {
     settings::normalize(&mut request.settings);
+    network::validate_download_settings(&request.settings.downloads)?;
     if !request.settings.llm.extra_body_json.trim().is_empty() {
         let value: serde_json::Value = serde_json::from_str(&request.settings.llm.extra_body_json)
             .map_err(|e| e.to_string())?;
@@ -226,6 +228,11 @@ fn delete_api_key(state: State<'_, AppState>) -> Result<(), String> {
     secrets::delete_api_key()?;
     state.api_key_configured.store(false, Ordering::Relaxed);
     Ok(())
+}
+
+#[tauri::command]
+async fn test_download_proxy(proxy_url: String) -> Result<String, String> {
+    network::test_download_proxy(&proxy_url).await
 }
 
 #[tauri::command]
@@ -461,15 +468,23 @@ async fn download_model(
 ) -> Result<(), String> {
     let paths = state.paths.clone();
     let registry = state.model_downloads.clone();
-    let mirror = state
-        .settings
-        .read()
-        .map_err(|e| e.to_string())?
-        .captions
-        .model_mirror_url
-        .clone();
+    let (mirror, download_settings) = {
+        let settings = state.settings.read().map_err(|e| e.to_string())?;
+        (
+            settings.captions.model_mirror_url.clone(),
+            settings.downloads.clone(),
+        )
+    };
     tauri::async_runtime::spawn(async move {
-        let _ = model_manager::download_model(app, paths, registry, model_id, mirror).await;
+        let _ = model_manager::download_model(
+            app,
+            paths,
+            registry,
+            model_id,
+            mirror,
+            download_settings,
+        )
+        .await;
     });
     Ok(())
 }
@@ -490,8 +505,24 @@ async fn download_asr_gpu_runtime(
 ) -> Result<(), String> {
     let paths = state.paths.clone();
     let downloads = state.gpu_runtime_downloads.clone();
+    let (source, download_settings) = {
+        let settings = state.settings.read().map_err(|error| error.to_string())?;
+        (settings.captions.source.clone(), settings.downloads.clone())
+    };
+    let report = asr_dependencies::check(&paths, Some(&source), &downloads).await;
+    let component_ids = report
+        .gpu_runtime
+        .components
+        .iter()
+        .filter(|component| component.status != "available")
+        .map(|component| component.id.clone())
+        .collect::<Vec<_>>();
+    if component_ids.is_empty() {
+        return Err("当前环境没有需要下载的 GPU 运行库组件".to_string());
+    }
     tauri::async_runtime::spawn(async move {
-        let _ = gpu_runtime::download(app, paths, downloads).await;
+        let _ =
+            gpu_runtime::download(app, paths, downloads, component_ids, download_settings).await;
     });
     Ok(())
 }
@@ -878,6 +909,7 @@ fn main() {
             get_settings,
             save_settings,
             delete_api_key,
+            test_download_proxy,
             test_llm,
             translate_selection,
             set_caption_running,

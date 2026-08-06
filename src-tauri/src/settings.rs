@@ -187,6 +187,10 @@ pub fn normalize(settings: &mut AppSettings) {
         .trim()
         .trim_end_matches('/')
         .to_string();
+    settings.downloads.proxy_url = settings.downloads.proxy_url.trim().to_string();
+    if !settings.downloads.proxy_enabled {
+        settings.downloads.proxy_url.clear();
+    }
     settings.overlay.opacity = if settings.overlay.opacity.is_finite() {
         settings.overlay.opacity.clamp(0.2, 1.0)
     } else {
@@ -253,7 +257,7 @@ mod tests {
     #[test]
     fn new_install_defaults_to_kotoba() {
         let settings = AppSettings::default();
-        assert_eq!(settings.schema_version, 8);
+        assert_eq!(settings.schema_version, 9);
         assert_eq!(
             settings.captions.source.model_id(),
             Some("kotoba-whisper-v2.0-faster")
@@ -315,7 +319,7 @@ mod tests {
             migrated.captions.source,
             crate::models::CaptionSourceConfig::WindowsLiveCaption
         ));
-        assert_eq!(migrated.schema_version, 8);
+        assert_eq!(migrated.schema_version, 9);
         let _ = fs::remove_dir_all(test_dir);
     }
 
@@ -338,7 +342,7 @@ mod tests {
             migrated.captions.source.channel_mode(),
             Some(AudioChannelMode::Auto)
         );
-        assert_eq!(migrated.schema_version, 8);
+        assert_eq!(migrated.schema_version, 9);
         let _ = fs::remove_dir_all(test_dir);
     }
 
@@ -364,7 +368,25 @@ mod tests {
             migrated.captions.source.suppress_non_speech_segments(),
             Some(true)
         );
-        assert_eq!(migrated.schema_version, 8);
+        assert_eq!(migrated.schema_version, 9);
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn v8_defaults_to_disabled_application_proxy() {
+        let test_dir =
+            std::env::temp_dir().join(format!("livecaption-v8-{}", uuid::Uuid::new_v4()));
+        let paths = AppPaths::new(test_dir.clone());
+        paths.ensure().unwrap();
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["schema_version"] = serde_json::json!(8);
+        value.as_object_mut().unwrap().remove("downloads");
+        fs::write(&paths.settings_file, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let migrated = load(&paths).unwrap();
+        assert!(!migrated.downloads.proxy_enabled);
+        assert!(migrated.downloads.proxy_url.is_empty());
+        assert_eq!(migrated.schema_version, 9);
         let _ = fs::remove_dir_all(test_dir);
     }
 }

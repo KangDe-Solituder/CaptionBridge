@@ -16,7 +16,7 @@ import {
   getRuntimeStatus, getSettings, openLogsDir, refreshCaption, resetAsrChannelRouting, saveOverlayPosition, saveSettings,
   setCaptionRunning, testLlm, translateSelection, listModels, downloadModel, cancelModelDownload,
   verifyModel, testModel, deleteModel, openModelsDir, switchCaptionSource,
-  checkAsrDependencies, openAsrDependencyUrl, downloadAsrGpuRuntime, cancelAsrGpuRuntime,
+  checkAsrDependencies, openAsrDependencyUrl, downloadAsrGpuRuntime, cancelAsrGpuRuntime, testDownloadProxy,
 } from "./lib/api";
 import type {
   AppSettings, AsmrChannelState, AsrDependencyReport, AsrGpuRuntimeInfo, AsrGpuRuntimeProgressEvent, CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth, CaptionTranslatedEvent,
@@ -35,12 +35,13 @@ document.documentElement.dataset.theme = bootTheme === "system"
 
 const emptyResult: TranslationResult = { source_text: "", translated_text: "", model: "", latency_ms: 0, first_token_ms: 0, cached: false };
 const previewSettings: AppSettings = {
-  schema_version: 8,
+  schema_version: 9,
   llm: { endpoint: "https://api.openai.com/v1", model: "gpt-4o-mini", target_language: "中文", extra_body_json: "", timeout_milliseconds: 5000, max_tokens: 768, temperature: 0.2, thinking_enabled: false },
   selection: { enabled: true, clipboard_fallback_enabled: true, hotkey: "Alt+KeyQ", trigger_mode: "automatic" },
   captions: { source: { type: "local_asr", model_id: "kotoba-whisper-v2.0-faster", device: "cuda", compute_type: "int8_float16", vad_profile: "normal", channel_mode: "auto", channel_switch_sensitivity: "standard", suppress_non_speech_segments: true }, enabled: true, auto_launch: true, poll_milliseconds: 160, stable_milliseconds: 420, max_duration_milliseconds: 1800, max_chars: 96, context_segments: 2, audio_mode: "normal", model_mirror_url: "https://hf-mirror.com" },
   overlay: { opacity: .92, font_size: 22, width: 760, transparent: false, caption_color: "#ffffff", drag_mode: "alt" },
   visual: { theme: "system", blur_enabled: true, blur_scope: "floating", reduce_motion: false },
+  downloads: { proxy_enabled: false, proxy_url: "" },
 };
 
 const builtInModels: ModelInfo[] = [
@@ -81,13 +82,14 @@ export function App() {
 }
 
 type Page = "selection" | "captions" | "settings";
-type SettingsTab = "selection" | "captions" | "llm" | "appearance" | "logs";
+type SettingsTab = "features" | "resources" | "llm" | "appearance" | "logs";
+type FeatureModule = "selection" | "captions";
 
 function MainWindow() {
   const [view, setView] = useState<SettingsView | null>(null);
   const [bootError, setBootError] = useState("");
   const [page, setPage] = useState<Page>("selection");
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("captions");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("features");
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<RuntimeStatus>({ caption_running: false, caption_state: "stopped", selection_hotkey_registered: false, source_health: "unknown", last_caption_update_ms: 0, reader_restarts: 0, source_error_count: 0, translation_queue_depth: 0, last_translation_latency_ms: 0, last_translation_first_token_ms: 0, selected_source: previewSettings.captions.source, asr_latency_ms: 0, asmr_channel_state: "inactive" });
   const [models, setModels] = useState<ModelInfo[]>(builtInModels);
@@ -227,7 +229,7 @@ function MainWindow() {
       if (selected.status !== "available" && selected.status !== "active") {
         const size = (selected.expected_size_bytes / 1024 / 1024 / 1024).toFixed(2);
         if (window.confirm(`未找到可用的 ${selected.display_name}（${size} GB）。\n\n状态：${modelStatusText(selected.status)}\n保存位置：${view.model_directory}\n来源：Hugging Face 官方源（失败后使用镜像）\n\n现在开始下载吗？`)) {
-          try { await downloadModel(modelId); setMessage("模型下载已开始，可在设置 → 字幕中查看进度"); }
+          try { await downloadModel(modelId); setMessage("模型下载已开始，可在设置 → 资源中查看进度"); }
           catch (error) { setMessage(String(error)); }
         }
         return;
@@ -360,16 +362,18 @@ function CaptionPage({ status, items, exportFormat, setExportFormat, onToggle, o
 
 function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => void; view: SettingsView; apiKey: string; setApiKey: (v: string) => void; update: (v: AppSettings) => void; onSave: () => void; saving: boolean; testing: boolean; onTest: () => void; logs: RuntimeLogEntry[]; logQuery: string; setLogQuery: (v: string) => void; onClearLogs: () => void; models: ModelInfo[]; status: RuntimeStatus; onSelectSource: (source: CaptionSourceConfig) => Promise<void>; refreshModels: () => void; onMessage: (message: string) => void }) {
   const { tab, setTab, view, apiKey, setApiKey, update } = props; const s = view.settings;
+  const [featureModule, setFeatureModule] = useState<FeatureModule>("captions");
   const [dependencyReport, setDependencyReport] = useState<AsrDependencyReport>();
   const [gpuRuntime, setGpuRuntime] = useState<AsrGpuRuntimeInfo>();
   const [dependencyDialogOpen, setDependencyDialogOpen] = useState(false);
   const [checkingDependencies, setCheckingDependencies] = useState(false);
   const [dependencyError, setDependencyError] = useState("");
+  const [testingProxy, setTestingProxy] = useState(false);
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let unsubscribe: (() => void) | undefined;
     void listen<AsrGpuRuntimeProgressEvent>("gpu-runtime:progress", event => {
-      setGpuRuntime(event.payload);
+      setGpuRuntime(current => current ? { ...current, ...event.payload } : undefined);
       if (["available", "failed", "not_installed"].includes(event.payload.status)) {
         void checkAsrDependencies().then(report => {
           setDependencyReport(report);
@@ -388,26 +392,43 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
   const startGpuRuntimeDownload = async () => {
     try {
       await downloadAsrGpuRuntime();
-      setGpuRuntime(current => current ? { ...current, status: "downloading", error: undefined } : { id: "cuda12-cudnn9", status: "downloading", downloaded_bytes: 0, total_bytes: 0 });
+      setGpuRuntime(current => current ? { ...current, status: "downloading", error: undefined } : undefined);
       setDependencyError("");
     } catch (error) { setDependencyError(String(error)); }
   };
   const stopGpuRuntimeDownload = async () => {
     try { await cancelAsrGpuRuntime(); } catch (error) { setDependencyError(String(error)); }
   };
-  const tabs: { id: SettingsTab; label: string }[] = [{ id: "selection", label: "划词" }, { id: "captions", label: "字幕" }, { id: "llm", label: "LLM" }, { id: "appearance", label: "外观" }, { id: "logs", label: "日志" }];
+  const testProxyConnection = async () => {
+    setTestingProxy(true);
+    try { props.onMessage(await testDownloadProxy(s.downloads.proxy_url)); }
+    catch (error) { props.onMessage(String(error)); }
+    finally { setTestingProxy(false); }
+  };
+  const tabs: { id: SettingsTab; label: string }[] = [{ id: "features", label: "功能" }, { id: "resources", label: "资源" }, { id: "llm", label: "LLM" }, { id: "appearance", label: "外观" }, { id: "logs", label: "日志" }];
   const filteredLogs = props.logs.filter(l => `${l.level} ${l.message}`.toLowerCase().includes(props.logQuery.toLowerCase()));
+  const selectedModelId = s.captions.source.type === "local_asr" ? s.captions.source.model_id : undefined;
+  const selectedModel = props.models.find(model => model.id === selectedModelId);
+  const captionSourceLabel = s.captions.source.type === "windows_live_caption" ? "Windows Live Caption" : selectedModel?.display_name ?? selectedModelId ?? "本地 ASR";
   return <div className="page settings-page">
     <PageHeader eyebrow="PREFERENCES" title="设置" description="配置连接、快捷键和视觉体验。" action={tab !== "logs" && <button className="primary" onClick={props.onSave} disabled={props.saving}>{props.saving ? <Loader2 className="spin" /> : <Check />}保存设置</button>} />
     <div className="settings-tabs" role="tablist" aria-label="设置分类">{tabs.map(t => <button role="tab" aria-selected={tab === t.id} data-active={tab === t.id} onClick={() => setTab(t.id)} key={t.id}>{t.label}</button>)}</div>
     <section className="settings-sheet">
-      {tab === "selection" && <>
+      {tab === "features" && <div className="feature-modules" role="tablist" aria-label="功能模块">
+        <button role="tab" aria-selected={featureModule === "selection"} data-active={featureModule === "selection"} onClick={() => setFeatureModule("selection")}>
+          <span className="feature-module-icon"><Clipboard /></span><span><strong>划词翻译</strong><small>{s.selection.trigger_mode === "automatic" ? "自动出现" : displayHotkey(s.selection.hotkey)} · {s.selection.clipboard_fallback_enabled ? "剪贴板回退" : "仅 UI Automation"}</small></span><i>{s.selection.enabled ? "已启用" : "已关闭"}</i>
+        </button>
+        <button role="tab" aria-selected={featureModule === "captions"} data-active={featureModule === "captions"} onClick={() => setFeatureModule("captions")}>
+          <span className="feature-module-icon"><Captions /></span><span><strong>实时字幕</strong><small>{captionSourceLabel} · {s.captions.source.type === "local_asr" ? (s.captions.audio_mode === "asmr" ? "ASMR" : "普通音频") : "系统字幕"}</small></span><i>{s.captions.enabled ? "已启用" : "已关闭"}</i>
+        </button>
+      </div>}
+      {tab === "features" && featureModule === "selection" && <>
         <SettingRow title="启用划词翻译" description="在其他应用中选中文字后提供轻量翻译工具。"><Toggle label="启用划词翻译" checked={s.selection.enabled} onChange={enabled => update({ ...s, selection: { ...s.selection, enabled } })} /></SettingRow>
         <SettingRow title="划词触发方式" description="自动模式只在明确拖选结束后显示按钮；双击选词不会触发。"><Segmented value={s.selection.trigger_mode} options={[{ label: "快捷键", value: "hotkey" }, { label: "自动出现", value: "automatic" }]} onChange={trigger_mode => update({ ...s, selection: { ...s.selection, trigger_mode } })} /></SettingRow>
         {s.selection.trigger_mode === "hotkey" && <SettingRow title="划词触发快捷键" description="至少包含一个修饰键；Ctrl+Win+L 保留给 Windows 实时字幕。"><HotkeyRecorder value={s.selection.hotkey} onChange={hotkey => update({ ...s, selection: { ...s.selection, hotkey } })} /></SettingRow>}
         <SettingRow title="剪贴板回退" description="无法通过 UI Automation 读取选区时，允许短暂读取剪贴板。"><Toggle label="启用回退" checked={s.selection.clipboard_fallback_enabled} onChange={clipboard_fallback_enabled => update({ ...s, selection: { ...s.selection, clipboard_fallback_enabled } })} /></SettingRow>
       </>}
-      {tab === "captions" && <>
+      {tab === "resources" && <>
         <div className="settings-group"><div className="settings-group-title"><div><h2>字幕来源</h2><p>运行中切换会先检查新来源，成功后开启全新会话。</p></div>{props.status.caption_state === "switching" && <span><Loader2 className="spin" />正在切换字幕来源</span>}</div>
           <div className="source-grid">
             <SourceCard title="Windows Live Caption" description="读取 Windows 系统字幕；不占用 GPU。" state="系统组件" selected={s.captions.source.type === "windows_live_caption"} onClick={() => void props.onSelectSource({ type: "windows_live_caption" })} />
@@ -418,18 +439,29 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
           <button className="ghost" onClick={() => void runDependencyCheck()} disabled={checkingDependencies}>{checkingDependencies ? <Loader2 className="spin" /> : <Activity />}检查依赖</button>
         </SettingRow>
         <ModelManager models={props.models} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
+        <div className="settings-group resource-network">
+          <div className="settings-group-title"><div><h2>网络与下载</h2><p>镜像和代理只用于本应用下载模型与 GPU 运行组件，不会修改 Windows 或其他软件的代理设置。</p></div></div>
+          <Field label="模型镜像" hint="官方 Hugging Face 连接失败后使用；两条线路执行相同 SHA-256 校验。"><input value={s.captions.model_mirror_url} onChange={e => update({ ...s, captions: { ...s.captions, model_mirror_url: e.target.value } })} /></Field>
+          <SettingRow title="应用专用代理" description="关闭后立即清空代理地址；下载请求不会退回系统代理，避免配置意外泄漏到其他应用。"><Toggle label="启用下载代理" checked={s.downloads.proxy_enabled} onChange={proxy_enabled => update({ ...s, downloads: { proxy_enabled, proxy_url: proxy_enabled ? s.downloads.proxy_url : "" } })} /></SettingRow>
+          {s.downloads.proxy_enabled && <Field label="代理地址" hint="支持 HTTP/HTTPS 代理，例如 http://127.0.0.1:10809。保存后仅本应用的模型和运行库下载使用。">
+            <div className="proxy-input-actions"><input inputMode="url" placeholder="http://127.0.0.1:10809" value={s.downloads.proxy_url} onChange={e => update({ ...s, downloads: { ...s.downloads, proxy_url: e.target.value } })} /><button className="ghost" onClick={() => void testProxyConnection()} disabled={testingProxy || !s.downloads.proxy_url.trim()}>{testingProxy ? <Loader2 className="spin" /> : <Activity />}测试连接</button></div>
+          </Field>}
+        </div>
+      </>}
+      {tab === "features" && featureModule === "captions" && <>
+        <div className="settings-group feature-summary"><div className="settings-group-title"><div><h2>实时字幕</h2><p>当前使用 {captionSourceLabel}。来源、模型、运行环境和网络下载统一在“资源”中管理。</p></div><button className="ghost" onClick={() => setTab("resources")}>管理资源<ArrowRight /></button></div></div>
+        <SettingRow title="启用实时字幕" description="启动后读取当前字幕来源，并按下方规则组织上下文和音频。"><Toggle label="启用实时字幕" checked={s.captions.enabled} onChange={enabled => update({ ...s, captions: { ...s.captions, enabled } })} /></SettingRow>
         <SettingRow title="翻译上下文" description="上下文来自已接受的 final 原文，不受上一条 LLM 成败影响。"><Segmented value={String(s.captions.context_segments)} options={[0, 1, 2, 4].map(value => ({ label: `${value} 条`, value: String(value) }))} onChange={value => update({ ...s, captions: { ...s.captions, context_segments: Number(value) } })} /></SettingRow>
         {s.captions.source.type === "local_asr" && <>
           <SettingRow title="音频模式" description="普通模式保持原有单声道流程；ASMR 才会启用双声道人声锁定。"><Segmented value={s.captions.audio_mode} options={[{ label: "普通", value: "normal" }, { label: "ASMR", value: "asmr" }]} onChange={audio_mode => update({ ...s, captions: { ...s.captions, audio_mode, source: { type: "local_asr", model_id: s.captions.source.type === "local_asr" ? s.captions.source.model_id : "kotoba-whisper-v2.0-faster", device: "cuda", compute_type: "int8_float16", vad_profile: audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "auto", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : true } } })} /></SettingRow>
-          {s.captions.audio_mode === "asmr" && <>
+          {s.captions.audio_mode === "asmr" && <div className="nested-settings">
             <SettingRow title="ASMR 人声声道" description="智能锁定不会在句间停顿时换边；只有另一侧持续出现可信人声才会切换。"><Segmented value={s.captions.source.channel_mode === "mono" ? "auto" : s.captions.source.channel_mode} options={[{ label: "智能锁定", value: "auto" }, { label: "保持混合", value: "mix" }, { label: "仅左", value: "left" }, { label: "仅右", value: "right" }]} onChange={channel_mode => { const source = s.captions.source; if (source.type === "local_asr") update({ ...s, captions: { ...s.captions, source: { ...source, channel_mode } } }); }} /></SettingRow>
             {s.captions.source.channel_mode === "auto" && <>
               <SettingRow title="声道切换灵敏度" description="稳健模式需要更长的人声证据；灵敏模式更快，但更容易被复杂噪音影响。"><Segmented value={s.captions.source.channel_switch_sensitivity} options={[{ label: "稳健", value: "stable" }, { label: "标准", value: "standard" }, { label: "灵敏", value: "responsive" }]} onChange={channel_switch_sensitivity => { const source = s.captions.source; if (source.type === "local_asr") update({ ...s, captions: { ...s.captions, source: { ...source, channel_switch_sensitivity } } }); }} /></SettingRow>
               <SettingRow title="疑似非语音字幕抑制" description="在人声证据不足时不把摩擦、敲击等短片段送入 ASR。"><Toggle label="疑似非语音字幕抑制" checked={s.captions.source.suppress_non_speech_segments} onChange={suppress_non_speech_segments => { const source = s.captions.source; if (source.type === "local_asr") update({ ...s, captions: { ...s.captions, source: { ...source, suppress_non_speech_segments } } }); }} /></SettingRow>
               <SettingRow title="当前人声声道" description={asmrChannelStateText[props.status.asmr_channel_state]}><button className="ghost" disabled={!props.status.caption_running} onClick={() => void resetAsrChannelRouting().catch(error => props.onMessage(String(error)))}><RotateCcw />重新检测</button></SettingRow>
             </>}
-          </>}
-          <Field label="模型镜像" hint="官方 Hugging Face 连接失败后使用；两条线路执行相同 SHA-256 校验。"><input value={s.captions.model_mirror_url} onChange={e => update({ ...s, captions: { ...s.captions, model_mirror_url: e.target.value } })} /></Field>
+          </div>}
         </>}
         {s.captions.source.type === "windows_live_caption" && <>
           <SettingRow title="自动启动 Live Captions" description="开始翻译时自动打开 Windows 系统字幕。"><Toggle label="自动启动" checked={s.captions.auto_launch} onChange={auto_launch => update({ ...s, captions: { ...s.captions, auto_launch } })} /></SettingRow>
@@ -468,7 +500,7 @@ function DependencyDialog({ report, gpuRuntime, checking, error, onClose, onChec
   const runtime = gpuRuntime ?? report?.gpu_runtime;
   const runtimeProgress = runtime?.total_bytes ? Math.min(100, runtime.downloaded_bytes / runtime.total_bytes * 100) : 0;
   const runtimeBusy = runtime ? ["downloading", "verifying", "installing"].includes(runtime.status) : false;
-  const phaseText = runtime?.status === "verifying" ? "正在校验完整性" : runtime?.status === "installing" ? "正在安装运行库" : "正在下载运行库";
+  const phaseText = runtime?.status === "verifying" ? "正在校验完整性" : runtime?.status === "installing" ? "正在安装缺失组件" : "正在下载缺失组件";
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", closeOnEscape);
@@ -476,17 +508,19 @@ function DependencyDialog({ report, gpuRuntime, checking, error, onClose, onChec
   }, [onClose]);
   return <div className="dependency-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="dependency-dialog" role="dialog" aria-modal="true" aria-labelledby="dependency-title">
-      <header><div><span>LOCAL ASR</span><h2 id="dependency-title">运行环境检查</h2><p>{checking ? "正在调用 ASR Worker 验证 GPU 运行环境…" : runtimeBusy ? `${phaseText}，完成后会自动重新验证。` : report?.ready ? "本地 ASR 所需依赖已完整安装。" : "发现未安装或不可用的依赖，可按需下载 GPU 运行库。"}</p></div><button className="dialog-close" aria-label="关闭" onClick={onClose}><X /></button></header>
+      <header><div><span>LOCAL ASR</span><h2 id="dependency-title">运行环境检查</h2><p>{checking ? "正在调用 ASR Worker 验证 GPU 运行环境…" : runtimeBusy ? `${phaseText}，完成后会自动重新验证。` : report?.ready ? "本地 ASR 所需依赖已完整安装。" : "已根据当前环境拆分检测 CUDA 计算库与 cuDNN，只需补齐缺失组件。"}</p></div><button className="dialog-close" aria-label="关闭" onClick={onClose}><X /></button></header>
       {checking && !report ? <div className="dependency-loading"><Loader2 className="spin" /><span>正在检查，请稍候</span></div> : error ? <div className="dependency-error">{error}</div> : <div className="dependency-list">
         {report?.dependencies.map(item => <article key={item.id} data-installed={item.installed}>
           <div className="dependency-state">{item.installed ? <Check /> : <X />}</div>
           <div className="dependency-copy"><strong>{item.name}</strong><p>{item.detail}</p>{item.detected_path && <code title={item.detected_path}>{item.detected_path}</code>}</div>
           {!item.installed && <button className="ghost" onClick={() => void openAsrDependencyUrl(item.id)}><ExternalLink />打开官网</button>}
         </article>)}
-        {runtime && runtime.status !== "available" && <article className="dependency-runtime" data-installed="false">
-          <div className="dependency-state"><Download /></div>
-          <div className="dependency-copy"><strong>GPU Runtime（CUDA 12 + cuDNN 9）</strong><p>从 PyPI 下载固定版本并校验后缓存到本机；安装包不再内置这些大型 DLL。</p>{runtimeBusy && <div className="download-progress" role="progressbar" aria-label={phaseText} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(runtimeProgress)} data-phase={runtime.status}><i style={{ width: `${runtimeProgress}%` }} /><small>{phaseText} · {runtime.total_bytes ? `${runtimeProgress.toFixed(1)}% · ` : ""}{formatBytes(runtime.downloaded_bytes)}</small></div>}{runtime.error && <small className="model-error">{runtime.error}</small>}</div>
-          {runtimeBusy ? <button className="ghost" onClick={onCancel}><Square />取消</button> : <button className="primary" onClick={onDownload}><Download />下载</button>}
+        {runtime && <article className="dependency-runtime" data-installed={runtime.status === "available"}>
+          <div className="dependency-state">{runtime.status === "available" ? <Check /> : <Download />}</div>
+          <div className="dependency-copy"><strong>GPU Runtime 组件</strong><p>逐项复用系统环境或应用缓存；仅从 PyPI 下载实际缺失的固定版本，并在安装前校验完整性。</p>
+            <div className="runtime-components">{runtime.components.map(component => <div key={component.id} data-status={component.status}><span>{component.status === "available" ? <Check /> : <Download />}<strong>{component.name}</strong></span><small>{runtimeComponentSourceText(component.source)}{component.status === "missing" ? ` · 需下载 ${formatBytes(component.download_size_bytes)}` : ""}</small></div>)}</div>
+            {runtimeBusy && <div className="download-progress" role="progressbar" aria-label={phaseText} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(runtimeProgress)} data-phase={runtime.status}><i style={{ width: `${runtimeProgress}%` }} /><small>{phaseText} · {runtime.total_bytes ? `${runtimeProgress.toFixed(1)}% · ` : ""}{formatBytes(runtime.downloaded_bytes)}</small></div>}{runtime.error && <small className="model-error">{runtime.error}</small>}</div>
+          {runtimeBusy ? <button className="ghost" onClick={onCancel}><Square />取消</button> : runtime.required_download_bytes > 0 ? <button className="primary" onClick={onDownload}><Download />下载缺失组件 · {formatBytes(runtime.required_download_bytes)}</button> : <span className="dependency-ready"><Check />无需下载</span>}
         </article>}
       </div>}
       <footer><button className="ghost" onClick={onClose}>关闭</button><button className="primary" onClick={onCheck} disabled={checking}>{checking ? <Loader2 className="spin" /> : <RefreshCw />}重新检查</button></footer>
@@ -504,6 +538,10 @@ function SourceCard({ title, description, state, badge, selected, onClick }: { t
 function modelStatusText(status: ModelInfo["status"]) {
   const labels: Record<ModelInfo["status"], string> = { not_installed: "未安装", downloading: "下载中", verifying: "校验中", available: "可用", loading: "加载中", active: "活动中", corrupt: "损坏", incompatible: "不兼容", failed: "失败" };
   return labels[status];
+}
+
+function runtimeComponentSourceText(source: AsrGpuRuntimeInfo["components"][number]["source"]) {
+  return { system: "使用系统环境", cache: "使用应用缓存", missing: "当前缺失" }[source];
 }
 
 function formatBytes(bytes: number) {

@@ -315,15 +315,7 @@ pub async fn check(
         DRIVER_URL,
     ));
 
-    let externally_loaded = probe_result
-        .as_ref()
-        .ok()
-        .map(|outcome| {
-            runtime_loaded_cuda(outcome) == Some(true)
-                && runtime_loaded_cudnn(outcome) == Some(true)
-        })
-        .unwrap_or(false);
-    let runtime_status = gpu_runtime::status(paths, downloads, externally_loaded).await;
+    let runtime_status = gpu_runtime::status(paths, downloads, cuda_ready, cudnn_ready).await;
 
     AsrDependencyReport {
         ready: dependencies.iter().all(|item| item.installed),
