@@ -1,0 +1,95 @@
+/* ===== LiveCaption design tokens ===== */
+:root {
+  /* palette — light */
+  --bg: #faf9fc;
+  --rail: #f2f0f7;
+  --surface: #ffffff;
+  --surface-2: #f5f4f9;
+  --surface-3: #ebe9f2;
+  --text: #1d1b26;
+  --muted: #6f6a80;
+  --faint: #9d98ac;
+  --line: #e8e5f0;
+  --line-strong: #d9d5e4;
+
+  --accent: #6d5ae0;
+  --accent-strong: #5a47d4;
+  --accent-soft: #efebfd;
+  --accent-ring: rgba(109, 90, 224, .16);
+  --on-accent: #ffffff;
+  --coral: #ed7b6c;
+
+  --success: #1f9d6c;
+  --success-soft: rgba(31, 157, 108, .12);
+  --warning: #c47a1f;
+  --danger: #d64855;
+  --danger-soft: rgba(214, 72, 85, .1);
+
+  /* elevation */
+  --elev-1: 0 1px 2px rgba(29, 22, 51, .05), 0 4px 14px rgba(29, 22, 51, .05);
+  --elev-2: 0 2px 6px rgba(29, 22, 51, .06), 0 14px 36px rgba(29, 22, 51, .09);
+  --elev-3: 0 6px 16px rgba(29, 22, 51, .1), 0 28px 72px rgba(29, 22, 51, .18);
+  --elev-accent: 0 4px 16px rgba(109, 90, 224, .32), 0 1px 3px rgba(109, 90, 224, .24);
+
+  /* radii */
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+  --r-2xl: 22px;
+
+  /* type scale */
+  --t-2xs: 10px;
+  --t-xs: 11px;
+  --t-sm: 12px;
+  --t-md: 13px;
+  --t-lg: 14px;
+  --t-xl: 15px;
+  --t-2xl: 17px;
+  --t-3xl: 20px;
+  --t-4xl: 26px;
+
+  /* motion */
+  --ease-out: cubic-bezier(.22, 1, .36, 1);
+  --ease-spring: cubic-bezier(.34, 1.35, .5, 1);
+  --dur-fast: 140ms;
+  --dur-base: 220ms;
+  --dur-slow: 340ms;
+
+  color: var(--text);
+  background: var(--bg);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #14121a;
+  --rail: #1a1723;
+  --surface: #1f1c2a;
+  --surface-2: #262233;
+  --surface-3: #2f2a3e;
+  --text: #f2eff9;
+  --muted: #a59fb6;
+  --faint: #6f6982;
+  --line: #302b3f;
+  --line-strong: #443d58;
+
+  --accent: #a78bfa;
+  --accent-strong: #b89fff;
+  --accent-soft: #302a4d;
+  --accent-ring: rgba(167, 139, 250, .22);
+  --on-accent: #241463;
+  --coral: #f39183;
+
+  --success: #4ecb92;
+  --success-soft: rgba(78, 203, 146, .14);
+  --warning: #e0a054;
+  --danger: #f07f8a;
+  --danger-soft: rgba(240, 127, 138, .12);
+
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .28), 0 4px 14px rgba(0, 0, 0, .22);
+  --elev-2: 0 2px 8px rgba(0, 0, 0, .32), 0 16px 44px rgba(0, 0, 0, .36);
+  --elev-3: 0 8px 20px rgba(0, 0, 0, .4), 0 32px 80px rgba(0, 0, 0, .5);
+  --elev-accent: 0 4px 18px rgba(139, 110, 246, .38), 0 1px 3px rgba(139, 110, 246, .3);
+
+  color-scheme: dark;
+}

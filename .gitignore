@@ -54,6 +54,7 @@ logs/
 *.db-wal
 
 # IDE and editor files
+.zcode/
 .idea/
 .vs/
 .vscode/*

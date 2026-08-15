@@ -1,3 +1,5 @@
+import { motion } from "motion/react";
+
 interface ToggleProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
@@ -14,7 +16,10 @@ export function Toggle({ checked, onChange, label }: ToggleProps) {
       aria-pressed={checked}
       aria-label={label}
     >
-      <span />
+      <motion.span
+        animate={{ x: checked ? 20 : 0 }}
+        transition={{ type: "spring", stiffness: 550, damping: 32 }}
+      />
     </button>
   );
 }

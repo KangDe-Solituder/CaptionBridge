@@ -4,9 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LiveCaption</title>
+    <script>
+      try {
+        var t = localStorage.getItem("livecaption-theme") || "system";
+        document.documentElement.dataset.theme = t === "system" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : t;
+      } catch (e) { /* pre-paint only */ }
+    </script>
     <style>
-      html,body,#root{margin:0;width:100%;height:100%;background:#f7f5f8}
-      @media(prefers-color-scheme:dark){html,body,#root{background:#18161b}}
+      html,body,#root{margin:0;width:100%;height:100%}
+      :root[data-theme="light"],:root[data-theme="light"] body,:root[data-theme="light"] #root{background:#faf9fc}
+      :root[data-theme="dark"],:root[data-theme="dark"] body,:root[data-theme="dark"] #root{background:#14121a}
+      :root:not([data-theme]),:root:not([data-theme]) body,:root:not([data-theme]) #root{background:#faf9fc}
+      @media(prefers-color-scheme:dark){:root:not([data-theme]),:root:not([data-theme]) body,:root:not([data-theme]) #root{background:#14121a}}
     </style>
   </head>
   <body>
