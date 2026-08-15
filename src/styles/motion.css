@@ -1,0 +1,16 @@
+/* ===== keyframes + reduced motion ===== */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+@keyframes cursor-blink { 50% { opacity: 0; } }
+@keyframes source-pulse { 50% { opacity: .35; transform: scale(.7); } }
+@keyframes listening-pulse { from { opacity: .7; transform: scale(.88); } to { opacity: 0; transform: scale(1.28); } }
+@keyframes progress-scan { to { background-position: -220% 0; } }
+@keyframes dot-breathe { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--success) 8%, transparent); } }
+@keyframes hotkey-blink { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 8%, transparent); } }
+
+:root[data-motion="reduced"] * {
+  scroll-behavior: auto !important;
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 1ms !important;
+}
