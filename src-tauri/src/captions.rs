@@ -7,7 +7,9 @@ use std::{
     time::Instant,
 };
 
-use tauri::{async_runtime::JoinHandle, AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{
+    async_runtime::JoinHandle, AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize,
+};
 use tokio::{
     sync::{Mutex, Notify},
     time::Duration,
@@ -31,6 +33,52 @@ use crate::{
 pub struct CaptionController {
     pub stop: Arc<AtomicBool>,
     pub join: JoinHandle<()>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScreenArea {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+fn window_position_is_visible(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    screens: &[ScreenArea],
+) -> bool {
+    const MIN_VISIBLE_WIDTH: i64 = 80;
+    const MIN_VISIBLE_HEIGHT: i64 = 32;
+    let left = i64::from(x);
+    let top = i64::from(y);
+    let right = left + i64::from(width);
+    let bottom = top + i64::from(height);
+
+    screens.iter().any(|screen| {
+        let screen_left = i64::from(screen.x);
+        let screen_top = i64::from(screen.y);
+        let screen_right = screen_left + i64::from(screen.width);
+        let screen_bottom = screen_top + i64::from(screen.height);
+        let visible_width = right.min(screen_right) - left.max(screen_left);
+        let visible_height = bottom.min(screen_bottom) - top.max(screen_top);
+        visible_width >= MIN_VISIBLE_WIDTH && visible_height >= MIN_VISIBLE_HEIGHT
+    })
+}
+
+fn centered_window_position(screen: ScreenArea, width: u32, height: u32) -> (i32, i32) {
+    let horizontal_margin = screen.width.saturating_sub(width) / 2;
+    let vertical_margin = screen.height.saturating_sub(height) / 5;
+    (
+        screen
+            .x
+            .saturating_add(i32::try_from(horizontal_margin).unwrap_or(i32::MAX)),
+        screen
+            .y
+            .saturating_add(i32::try_from(vertical_margin).unwrap_or(i32::MAX)),
+    )
 }
 
 #[derive(Clone)]
@@ -120,10 +168,78 @@ async fn run_session(app: AppHandle, state: AppState, stop: Arc<AtomicBool>) -> 
     let accepted_context = Arc::new(Mutex::new(VecDeque::<String>::new()));
 
     if let Some(window) = app.get_webview_window("overlay") {
+        let window_size = window
+            .outer_size()
+            .unwrap_or_else(|_| PhysicalSize::new(settings.overlay.width, 170));
+        let monitors = window.available_monitors().unwrap_or_default();
+        let screen_areas = monitors
+            .iter()
+            .map(|monitor| {
+                let area = monitor.work_area();
+                ScreenArea {
+                    x: area.position.x,
+                    y: area.position.y,
+                    width: area.size.width,
+                    height: area.size.height,
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut restored_position = None;
         if let (Some(x), Some(y)) = (settings.overlay.x, settings.overlay.y) {
-            let _ = window.set_position(PhysicalPosition { x, y });
+            if screen_areas.is_empty()
+                || window_position_is_visible(
+                    x,
+                    y,
+                    window_size.width,
+                    window_size.height,
+                    &screen_areas,
+                )
+            {
+                restored_position = Some((x, y));
+            } else {
+                let fallback_monitor = window
+                    .primary_monitor()
+                    .ok()
+                    .flatten()
+                    .or_else(|| monitors.first().cloned());
+                if let Some(monitor) = fallback_monitor {
+                    let area = monitor.work_area();
+                    let fallback = centered_window_position(
+                        ScreenArea {
+                            x: area.position.x,
+                            y: area.position.y,
+                            width: area.size.width,
+                            height: area.size.height,
+                        },
+                        window_size.width,
+                        window_size.height,
+                    );
+                    restored_position = Some(fallback);
+                    if let Ok(mut current) = state.settings.write() {
+                        current.overlay.x = Some(fallback.0);
+                        current.overlay.y = Some(fallback.1);
+                        if let Err(error) = crate::settings::save(&state.paths, &current) {
+                            state.log("warn", format!("保存字幕窗口回退位置失败：{error}"));
+                        }
+                    }
+                    state.log(
+                        "info",
+                        format!(
+                            "字幕窗口原位置不在当前显示器范围内，已从 ({x}, {y}) 恢复到 ({}, {})",
+                            fallback.0, fallback.1
+                        ),
+                    );
+                }
+            }
         }
-        let _ = window.show();
+        if let Some((x, y)) = restored_position {
+            if let Err(error) = window.set_position(PhysicalPosition { x, y }) {
+                state.log("warn", format!("恢复字幕窗口位置失败：{error}"));
+            }
+        }
+        if let Err(error) = window.show() {
+            state.log("warn", format!("显示字幕窗口失败：{error}"));
+        }
     }
     if let Ok(mut active) = state.active_source.write() {
         *active = Some(source.clone());
@@ -711,5 +827,53 @@ mod tests {
         );
         assert!(!normal.suppress_non_speech_segments);
         assert!(asmr.suppress_non_speech_segments);
+    }
+
+    #[test]
+    fn detects_overlay_positions_outside_the_current_monitor_layout() {
+        let screens = [ScreenArea {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 752,
+        }];
+        assert!(!window_position_is_visible(-2058, 103, 760, 170, &screens));
+        assert!(window_position_is_visible(260, 116, 760, 170, &screens));
+    }
+
+    #[test]
+    fn accepts_overlay_positions_on_a_negative_coordinate_monitor() {
+        let screens = [
+            ScreenArea {
+                x: -2560,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            },
+            ScreenArea {
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 752,
+            },
+        ];
+        assert!(window_position_is_visible(-2058, 103, 760, 170, &screens));
+    }
+
+    #[test]
+    fn centers_an_offscreen_overlay_inside_the_primary_work_area() {
+        assert_eq!(
+            centered_window_position(
+                ScreenArea {
+                    x: 0,
+                    y: 0,
+                    width: 1280,
+                    height: 752,
+                },
+                760,
+                170,
+            ),
+            (260, 116)
+        );
     }
 }
