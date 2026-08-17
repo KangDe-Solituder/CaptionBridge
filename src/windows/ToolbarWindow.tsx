@@ -19,7 +19,6 @@ export function ToolbarWindow() {
   const [copied, setCopied] = useState(false);
   const [showOriginal, setShowOriginal] = useState(true);
   const [settings, setSettings] = useState<AppSettings>();
-  const [session, setSession] = useState(0);
   const copiedTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -29,14 +28,12 @@ export function ToolbarWindow() {
     }
     void getSettings().then(v => setSettings(v.settings));
     const ps = [
-      listen("selection:pending", async () => {
-        setSelection(undefined); setPending(true); setResult(undefined); setExpanded(false); setCopied(false); setSession(s => s + 1);
-        await currentWindow.setFocusable(false); await currentWindow.setSize(new LogicalSize(246, 44));
+      listen("selection:pending", () => {
+        setSelection(undefined); setPending(true); setResult(undefined); setExpanded(false); setCopied(false);
       }),
       listen("selection:cancelled", async () => { setPending(false); await currentWindow.hide(); }),
-      listen<SelectionReadyEvent>("selection:ready", async e => {
-        setSelection(e.payload); setPending(false); setResult(undefined); setExpanded(false); setCopied(false); setSession(s => s + 1);
-        await currentWindow.setFocusable(false); await currentWindow.setSize(new LogicalSize(246, 44));
+      listen<SelectionReadyEvent>("selection:ready", e => {
+        setSelection(e.payload); setPending(false); setResult(undefined); setExpanded(false); setCopied(false);
       }),
       listen<string>("translation:delta", e => setResult(v => ({ ...(v ?? emptyResult), translated_text: `${v?.translated_text ?? ""}${e.payload}` }))),
       listen<SettingsView>("settings:changed", e => { setSettings(e.payload.settings); setResult(undefined); }),
@@ -75,7 +72,7 @@ export function ToolbarWindow() {
       <AnimatePresence mode="wait" initial={false}>
         {!expanded ? (
           <motion.main
-            key={`toolbar-${session}`}
+            key="toolbar"
             className="selection-toolbar floating"
             initial={{ opacity: 0, scale: .9, y: 8 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
