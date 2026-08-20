@@ -4,6 +4,7 @@ import type { AppSettings, AsrDependencyReport, CaptionSourceConfig, ModelInfo, 
 export const getSettings = () => invoke<SettingsView>("get_settings");
 export const saveSettings = (settings: AppSettings, apiKey?: string) =>
   invoke<SettingsView>("save_settings", { request: { settings, api_key: apiKey || null } });
+export const hideSelectionToolbar = () => invoke<void>("hide_selection_toolbar");
 export const deleteApiKey = () => invoke<void>("delete_api_key");
 export const testDownloadProxy = (proxyUrl: string) => invoke<string>("test_download_proxy", { proxyUrl });
 export const testLlm = (apiKey?: string) => invoke<TranslationResult>("test_llm", { apiKey: apiKey || null });

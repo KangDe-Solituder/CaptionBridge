@@ -224,6 +224,14 @@ fn save_settings(
 }
 
 #[tauri::command]
+fn hide_selection_toolbar(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    windows_integration::hide_selection_toolbar(&app).map_err(|error| {
+        state.log("warn", format!("划词工具条隐藏失败：{error}"));
+        error
+    })
+}
+
+#[tauri::command]
 fn delete_api_key(state: State<'_, AppState>) -> Result<(), String> {
     secrets::delete_api_key()?;
     state.api_key_configured.store(false, Ordering::Relaxed);
@@ -908,6 +916,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
+            hide_selection_toolbar,
             delete_api_key,
             test_download_proxy,
             test_llm,
@@ -978,7 +987,7 @@ fn main() {
                 app.handle().clone(),
                 state.clone(),
             );
-            windows_integration::start_toolbar_dismiss_watcher(app.handle().clone());
+            windows_integration::start_toolbar_dismiss_watcher(app.handle().clone(), state.clone());
             state.log("info", "LiveCaption 已启动");
             build_tray(app)?;
             Ok(())

@@ -99,11 +99,7 @@ pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
             thread::sleep(Duration::from_millis(24));
             let app_window_focused = ["main", "selection-toolbar", "overlay"]
                 .iter()
-                .any(|label| {
-                    app.get_webview_window(label)
-                        .and_then(|window| window.is_focused().ok())
-                        .unwrap_or(false)
-                });
+                .any(|label| app_window_blocks_selection(&app, label));
             if app_window_focused {
                 was_down = false;
                 mouse_started = None;
@@ -165,6 +161,20 @@ pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
     });
 }
 
+fn app_window_blocks_selection(app: &AppHandle, label: &str) -> bool {
+    let Some(window) = app.get_webview_window(label) else {
+        return false;
+    };
+    let visible = window.is_visible().unwrap_or(false);
+    let minimized = visible && window.is_minimized().unwrap_or(true);
+    let focused = visible && !minimized && window.is_focused().unwrap_or(false);
+    window_state_blocks_selection(visible, minimized, focused)
+}
+
+fn window_state_blocks_selection(visible: bool, minimized: bool, focused: bool) -> bool {
+    visible && !minimized && focused
+}
+
 fn is_intentional_selection_drag(start: POINT, end: POINT, elapsed: Duration) -> bool {
     let distance = (end.x - start.x).abs() + (end.y - start.y).abs();
     distance >= MIN_SELECTION_DRAG_DISTANCE && elapsed >= MIN_SELECTION_DRAG_DURATION
@@ -186,7 +196,11 @@ fn emit_automatic_selection(
     // Showing the non-focusable toolbar must never wait for UI Automation or
     // clipboard acquisition. Text capture continues independently below.
     let _ = app.emit("selection:pending", ());
-    show_toolbar_at_cursor(app);
+    if let Err(error) = show_toolbar_at_cursor(app) {
+        state.log("warn", format!("划词工具条显示失败：{error}"));
+        let _ = app.emit("selection:cancelled", ());
+        return;
+    }
 
     let app = app.clone();
     let state = state.clone();
@@ -214,7 +228,9 @@ fn emit_selection_result(
             };
             let _ = app.emit("selection:ready", &event);
             if show_toolbar {
-                show_toolbar_at_cursor(app);
+                if let Err(error) = show_toolbar_at_cursor(app) {
+                    state.log("warn", format!("划词工具条显示失败：{error}"));
+                }
             }
         }
         Err(error) => {
@@ -274,7 +290,7 @@ fn changed_clipboard_text(sequence_before: u32) -> Result<Option<String>, String
     Ok((!trimmed.is_empty()).then(|| trimmed.to_string()))
 }
 
-pub fn start_toolbar_dismiss_watcher(app: AppHandle) {
+pub fn start_toolbar_dismiss_watcher(app: AppHandle, state: AppState) {
     thread::spawn(move || {
         let mut mouse_was_down = false;
         let mut escape_was_down = false;
@@ -296,7 +312,9 @@ pub fn start_toolbar_dismiss_watcher(app: AppHandle) {
                     .map(|size| size.width as f64 / window.scale_factor().unwrap_or(1.0) <= 320.0)
                     .unwrap_or(false);
                 if compact {
-                    let _ = window.hide();
+                    if let Err(error) = hide_selection_toolbar(&app) {
+                        state.log("warn", format!("划词工具条隐藏失败：{error}"));
+                    }
                 }
             }
             escape_was_down = escape_down;
@@ -314,7 +332,9 @@ pub fn start_toolbar_dismiss_watcher(app: AppHandle) {
                         && cursor.y < position.y + size.height as i32;
                     let logical_width = size.width as f64 / window.scale_factor().unwrap_or(1.0);
                     if !inside && logical_width <= 320.0 {
-                        let _ = window.hide();
+                        if let Err(error) = hide_selection_toolbar(&app) {
+                            state.log("warn", format!("划词工具条隐藏失败：{error}"));
+                        }
                     }
                 }
             }
@@ -393,49 +413,73 @@ for ($i = 0; $i -lt 8 -and $element; $i++) {
     run_powershell(script)
 }
 
-pub fn show_toolbar_at_cursor(app: &AppHandle) {
-    if let (Some(window), Some(point)) = (
-        app.get_webview_window("selection-toolbar"),
-        cursor_position(),
-    ) {
-        let _ = window.set_focusable(false);
-        let _ = window.set_size(LogicalSize::new(246.0, 44.0));
-        let size = window.outer_size().unwrap_or(tauri::PhysicalSize {
-            width: 246,
-            height: 44,
-        });
-        let monitor = window.available_monitors().ok().and_then(|monitors| {
-            monitors.into_iter().find(|monitor| {
-                let work_area = monitor.work_area();
-                point.x >= work_area.position.x
-                    && point.x < work_area.position.x + work_area.size.width as i32
-                    && point.y >= work_area.position.y
-                    && point.y < work_area.position.y + work_area.size.height as i32
-            })
-        });
-        let (left, top, right, bottom) = monitor
-            .map(|monitor| {
-                let work_area = monitor.work_area();
-                (
-                    work_area.position.x,
-                    work_area.position.y,
-                    work_area.position.x + work_area.size.width as i32,
-                    work_area.position.y + work_area.size.height as i32,
-                )
-            })
-            .unwrap_or((0, 0, 1920, 1080));
-        let max_x = (right - size.width as i32).max(left);
-        let max_y = (bottom - size.height as i32).max(top);
-        let preferred_x = point.x.saturating_add(12);
-        let preferred_y = point.y.saturating_sub(size.height as i32 + 12);
-        let x = preferred_x.clamp(left, max_x);
-        let y = if preferred_y < top {
-            point.y.saturating_add(18).clamp(top, max_y)
-        } else {
-            preferred_y.clamp(top, max_y)
-        };
-        let _ = window.set_position(PhysicalPosition { x, y });
-        let _ = window.show();
+pub fn show_toolbar_at_cursor(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("selection-toolbar")
+        .ok_or_else(|| "工具条窗口不存在".to_string())?;
+    let point = cursor_position().ok_or_else(|| "无法读取鼠标位置".to_string())?;
+    window
+        .set_focusable(false)
+        .map_err(|error| format!("无法恢复不可聚焦状态：{error}"))?;
+    window
+        .set_size(LogicalSize::new(246.0, 44.0))
+        .map_err(|error| format!("无法恢复工具条尺寸：{error}"))?;
+    let size = window.outer_size().unwrap_or(tauri::PhysicalSize {
+        width: 246,
+        height: 44,
+    });
+    let monitor = window.available_monitors().ok().and_then(|monitors| {
+        monitors.into_iter().find(|monitor| {
+            let work_area = monitor.work_area();
+            point.x >= work_area.position.x
+                && point.x < work_area.position.x + work_area.size.width as i32
+                && point.y >= work_area.position.y
+                && point.y < work_area.position.y + work_area.size.height as i32
+        })
+    });
+    let (left, top, right, bottom) = monitor
+        .map(|monitor| {
+            let work_area = monitor.work_area();
+            (
+                work_area.position.x,
+                work_area.position.y,
+                work_area.position.x + work_area.size.width as i32,
+                work_area.position.y + work_area.size.height as i32,
+            )
+        })
+        .unwrap_or((0, 0, 1920, 1080));
+    let max_x = (right - size.width as i32).max(left);
+    let max_y = (bottom - size.height as i32).max(top);
+    let preferred_x = point.x.saturating_add(12);
+    let preferred_y = point.y.saturating_sub(size.height as i32 + 12);
+    let x = preferred_x.clamp(left, max_x);
+    let y = if preferred_y < top {
+        point.y.saturating_add(18).clamp(top, max_y)
+    } else {
+        preferred_y.clamp(top, max_y)
+    };
+    window
+        .set_position(PhysicalPosition { x, y })
+        .map_err(|error| format!("无法移动工具条：{error}"))?;
+    window
+        .show()
+        .map_err(|error| format!("无法显示工具条：{error}"))?;
+    Ok(())
+}
+
+pub fn hide_selection_toolbar(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("selection-toolbar")
+        .ok_or_else(|| "工具条窗口不存在".to_string())?;
+    let focus_error = window.set_focusable(false).err();
+    let hide_error = window.hide().err();
+    match (focus_error, hide_error) {
+        (None, None) => Ok(()),
+        (Some(focus), None) => Err(format!("无法恢复不可聚焦状态：{focus}")),
+        (None, Some(hide)) => Err(format!("无法隐藏工具条：{hide}")),
+        (Some(focus), Some(hide)) => Err(format!(
+            "无法恢复不可聚焦状态：{focus}；无法隐藏工具条：{hide}"
+        )),
     }
 }
 
@@ -682,7 +726,7 @@ fn keyboard_input(key: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
 mod tests {
     use super::{
         decode_powershell_output, is_intentional_selection_drag, parse_live_caption_snapshot,
-        run_powershell, validate_hotkey,
+        run_powershell, validate_hotkey, window_state_blocks_selection,
     };
     use std::time::Duration;
     use windows::Win32::Foundation::POINT;
@@ -710,6 +754,15 @@ mod tests {
             POINT { x: 130, y: 100 },
             Duration::from_millis(120)
         ));
+    }
+
+    #[test]
+    fn hidden_app_windows_never_block_selection() {
+        assert!(!window_state_blocks_selection(false, false, false));
+        assert!(!window_state_blocks_selection(false, false, true));
+        assert!(!window_state_blocks_selection(true, true, true));
+        assert!(!window_state_blocks_selection(true, false, false));
+        assert!(window_state_blocks_selection(true, false, true));
     }
 
     #[test]

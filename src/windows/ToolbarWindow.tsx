@@ -3,12 +3,21 @@ import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { ArrowRight, Check, Copy, Languages, Loader2, Minus, RotateCcw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { getSettings, translateSelection } from "../lib/api";
+import { getSettings, hideSelectionToolbar, translateSelection } from "../lib/api";
 import type { AppSettings, SelectionReadyEvent, SettingsView, TranslationResult } from "../lib/contracts";
 import { emptyResult, previewSettings, useTheme } from "../lib/ui-shared";
 import { currentWindow, isTauri } from "../lib/window";
 
 const springPop = { type: "spring", stiffness: 520, damping: 32 } as const;
+
+async function dismissCurrentSelectionToolbar() {
+  try {
+    await hideSelectionToolbar();
+  } catch {
+    try { await currentWindow.setFocusable(false); }
+    finally { await currentWindow.hide(); }
+  }
+}
 
 export function ToolbarWindow() {
   const [selection, setSelection] = useState<SelectionReadyEvent>();
@@ -31,7 +40,7 @@ export function ToolbarWindow() {
       listen("selection:pending", () => {
         setSelection(undefined); setPending(true); setResult(undefined); setExpanded(false); setCopied(false);
       }),
-      listen("selection:cancelled", async () => { setPending(false); await currentWindow.hide(); }),
+      listen("selection:cancelled", async () => { setPending(false); await dismissCurrentSelectionToolbar(); }),
       listen<SelectionReadyEvent>("selection:ready", e => {
         setSelection(e.payload); setPending(false); setResult(undefined); setExpanded(false); setCopied(false);
       }),
@@ -83,7 +92,7 @@ export function ToolbarWindow() {
             <span className="toolbar-divider" />
             <button className="toolbar-action" disabled={pending || !selection} onClick={() => selection && void copyText(selection.text)}>{copyIcon}<span>{copied ? "已复制" : "复制"}</span></button>
             <span className="toolbar-divider" />
-            <button className="toolbar-action close-action" onClick={() => void currentWindow.hide()}><X /><span>关闭</span></button>
+            <button className="toolbar-action close-action" onClick={() => void dismissCurrentSelectionToolbar()}><X /><span>关闭</span></button>
           </motion.main>
         ) : (
           <motion.main
@@ -98,7 +107,7 @@ export function ToolbarWindow() {
               <div><Languages /><strong>翻译</strong></div>
               <nav>
                 <button title="收起" onClick={e => { e.stopPropagation(); void collapse(); }}><Minus /></button>
-                <button title="关闭" onClick={e => { e.stopPropagation(); void currentWindow.hide(); }}><X /></button>
+                <button title="关闭" onClick={e => { e.stopPropagation(); void dismissCurrentSelectionToolbar(); }}><X /></button>
               </nav>
             </header>
             <div className="language-row">
