@@ -49,6 +49,7 @@ __pycache__/
 Model/
 sessions/
 logs/
+plan/
 *.db
 *.db-shm
 *.db-wal

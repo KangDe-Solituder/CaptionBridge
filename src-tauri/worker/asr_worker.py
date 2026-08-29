@@ -252,7 +252,7 @@ class Worker:
         self.profile = {
             "threshold": 0.5,
             "silence_commit_ms": 500,
-            "max_segment_ms": 8000,
+            "max_segment_ms": 6000,
             "partial_interval_ms": 800,
             "channel_mode": "mono",
             "channel_switch_sensitivity": "standard",

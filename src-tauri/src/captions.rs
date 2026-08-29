@@ -788,7 +788,7 @@ mod tests {
                 normal.max_segment_ms,
                 normal.partial_interval_ms
             ),
-            (0.5, 500, 8000, 800)
+            (0.5, 500, 6000, 800)
         );
         assert_eq!(
             (

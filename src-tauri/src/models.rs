@@ -286,7 +286,7 @@ impl VadProfile {
             Self::Normal => VadParameters {
                 threshold: 0.5,
                 silence_commit_ms: 500,
-                max_segment_ms: 8_000,
+                max_segment_ms: 6_000,
                 partial_interval_ms: 800,
                 channel_mode: AudioChannelMode::Mono,
                 channel_switch_sensitivity: ChannelSwitchSensitivity::Standard,
