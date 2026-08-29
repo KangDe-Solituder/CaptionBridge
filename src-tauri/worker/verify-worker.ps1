@@ -4,6 +4,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Get-Sha256Hex([string]$FilePath) {
+  $FileStream = [System.IO.File]::OpenRead($FilePath)
+  try {
+    $Sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      return ([System.BitConverter]::ToString($Sha256.ComputeHash($FileStream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+      $Sha256.Dispose()
+    }
+  } finally {
+    $FileStream.Dispose()
+  }
+}
+
 if (-not (Test-Path -LiteralPath $WorkerExe -PathType Leaf)) {
   throw "ASR Worker not found at $WorkerExe. Run build-worker.ps1 before packaging the app."
 }
@@ -19,7 +33,7 @@ if ($BuildManifest.schema -ne 1 -or -not $BuildManifest.files) {
 foreach ($SourceName in @('asr_worker.py', 'requirements.lock.txt')) {
   $SourcePath = Join-Path $PSScriptRoot $SourceName
   $ExpectedHash = $BuildManifest.files.$SourceName
-  $ActualHash = (Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $ActualHash = Get-Sha256Hex $SourcePath
   if (-not $ExpectedHash -or $ExpectedHash.ToLowerInvariant() -ne $ActualHash) {
     throw "ASR Worker is stale because $SourceName changed after it was built. Rebuild the Worker before packaging the app."
   }

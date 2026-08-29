@@ -5,6 +5,21 @@ param(
     [switch]$BundleGpuRuntime
 )
 $ErrorActionPreference = 'Stop'
+
+function Get-Sha256Hex([string]$FilePath) {
+  $FileStream = [System.IO.File]::OpenRead($FilePath)
+  try {
+    $Sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      return ([System.BitConverter]::ToString($Sha256.ComputeHash($FileStream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+      $Sha256.Dispose()
+    }
+  } finally {
+    $FileStream.Dispose()
+  }
+}
+
 $WorkerDir = $PSScriptRoot
 $VenvDir = Join-Path $WorkerDir '.venv-build'
 $BuildDir = Join-Path $WorkerDir 'build'
@@ -133,7 +148,7 @@ $WorkerBuildManifest = Join-Path (Split-Path $WorkerExe -Parent) 'worker-build.j
 $SourceHashes = [ordered]@{}
 foreach ($SourceName in @('asr_worker.py', 'requirements.lock.txt')) {
   $SourcePath = Join-Path $WorkerDir $SourceName
-  $SourceHashes[$SourceName] = (Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $SourceHashes[$SourceName] = Get-Sha256Hex $SourcePath
 }
 @{
   schema = 1
