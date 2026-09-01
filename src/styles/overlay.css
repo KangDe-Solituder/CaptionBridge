@@ -1,6 +1,6 @@
 /* ===== caption overlay window ===== */
 .overlay-window {
-  position: relative; display: grid; grid-template-rows: 36px minmax(0, 1fr) auto;
+  position: relative; display: grid; grid-template-rows: 32px minmax(0, 1fr) auto;
   height: 100vh; overflow: hidden; user-select: text;
   border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
   border-radius: var(--r-xl);
@@ -25,7 +25,7 @@
 .overlay-bar small { display: inline-flex; align-items: center; gap: 4px; opacity: .6; font-size: 9px; font-weight: 550; letter-spacing: .05em; }
 .overlay-bar small svg { width: 12px; height: 12px; }
 .overlay-bar button {
-  display: grid; width: 26px; height: 26px; place-items: center; border-radius: 8px;
+  display: grid; width: 24px; height: 24px; place-items: center; border-radius: 7px;
   cursor: pointer; color: var(--muted); background: transparent;
   transition: background var(--dur-fast) ease, color var(--dur-fast) ease, transform var(--dur-fast) ease;
 }
@@ -36,12 +36,13 @@
 .overlay-bar svg { width: 14px; height: 14px; }
 
 .caption-feed {
-  min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 10px 18px 14px;
+  min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 6px 18px 10px;
   scroll-behavior: smooth; scrollbar-color: color-mix(in srgb, var(--muted) 40%, transparent) transparent; scrollbar-width: thin;
 }
 .caption-feed::-webkit-scrollbar { width: 6px; }
 .caption-feed::-webkit-scrollbar-thumb { border-radius: 8px; background: color-mix(in srgb, var(--muted) 34%, transparent); }
-.overlay-window section { display: grid; gap: 5px; padding: 9px 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 65%, transparent); }
+/* section spacing scales with the caption font size, so a smaller font really frees room for more lines */
+.overlay-window section { display: grid; gap: .22em; padding: .4em 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 65%, transparent); }
 .overlay-window section:last-child { border-bottom: 0; }
 .overlay-window section > span { overflow: hidden; color: var(--muted); font-size: .56em; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; opacity: .85; }
 .overlay-window section p { color: var(--caption-color, var(--text)); font-size: .92em; font-weight: 560; line-height: 1.4; letter-spacing: .005em; }
@@ -49,7 +50,7 @@
 
 .recognition-dock {
   display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px;
-  min-height: 38px; max-height: 54px; padding: 7px 48px 7px 15px; overflow: hidden;
+  min-height: 30px; max-height: 44px; padding: 5px 48px 5px 15px; overflow: hidden;
   border-top: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
   background: color-mix(in srgb, var(--surface-2) 82%, transparent);
 }

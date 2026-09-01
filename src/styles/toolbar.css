@@ -3,8 +3,11 @@
   display: flex; align-items: center; justify-content: center; gap: 2px;
   width: 100vw; height: 100vh; padding: 4px; overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--line) 85%, transparent); border-radius: 15px;
-  box-shadow: var(--elev-2), inset 0 1px 0 rgba(255, 255, 255, .07);
 }
+/* keep a single crisp edge: an opaque card avoids the translucent rim that read as a second border */
+.selection-toolbar.floating, :root[data-blur="true"] .selection-toolbar.floating { background: var(--surface); backdrop-filter: none; }
+/* keep a single crisp edge: an opaque card avoids the translucent rim that read as a second border */
+.selection-toolbar.floating, :root[data-blur="true"] .selection-toolbar.floating { background: var(--surface); backdrop-filter: none; }
 .toolbar-action {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   min-width: 70px; height: 35px; padding: 0 10px; border-radius: 10px;
@@ -28,7 +31,7 @@
 .selection-result {
   display: grid; grid-template-rows: 48px 46px 1fr 52px; width: 100vw; height: 100vh;
   overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-lg);
-  background: var(--surface); box-shadow: var(--elev-3);
+  background: var(--surface);
 }
 .selection-result.floating, :root[data-blur="true"] .selection-result.floating { background: var(--surface); backdrop-filter: none; }
 .result-titlebar {

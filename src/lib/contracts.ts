@@ -83,3 +83,17 @@ export interface AsrGpuRuntimeProgressEvent {
   id: string; status: AsrGpuRuntimeStatus; downloaded_bytes: number; total_bytes: number; error?: string;
 }
 export interface AsrDependencyReport { ready: boolean; dependencies: AsrDependencyStatus[]; gpu_runtime: AsrGpuRuntimeInfo; }
+export interface SessionSummary {
+  id: string; created_at: string; entry_count: number;
+  first_source: string; first_translation: string; has_correction: boolean; is_current: boolean;
+}
+export interface SessionEntryView {
+  index: number; timestamp: string; source_text: string; translated_text: string;
+  corrected_source_text?: string; corrected_translated_text?: string;
+  model: string; latency_ms: number; error?: string;
+}
+export interface SessionPageView { entries: SessionEntryView[]; total: number; page: number; page_count: number; }
+export interface CorrectionProgress { id: string; completed: number; total: number; error?: string; }
+export interface GlossaryTerm { id: string; source: string; target: string; note: string; }
+export interface Glossary { terms: GlossaryTerm[]; use_in_translation: boolean; use_in_correction: boolean; }
+export interface GlossaryImportResult { glossary: Glossary; added: number; updated: number; }

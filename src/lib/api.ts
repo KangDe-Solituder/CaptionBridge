@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, AsrDependencyReport, CaptionSourceConfig, ModelInfo, RuntimeLogEntry, RuntimeStatus, SettingsView, TranslationRequest, TranslationResult } from "./contracts";
+import type { AppSettings, AsrDependencyReport, CaptionSourceConfig, Glossary, GlossaryImportResult, ModelInfo, RuntimeLogEntry, RuntimeStatus, SessionPageView, SessionSummary, SettingsView, TranslationRequest, TranslationResult } from "./contracts";
 
 export const getSettings = () => invoke<SettingsView>("get_settings");
 export const saveSettings = (settings: AppSettings, apiKey?: string) =>
@@ -14,7 +14,20 @@ export const refreshCaption = () => invoke<void>("refresh_caption");
 export const resetAsrChannelRouting = () => invoke<void>("reset_asr_channel_routing");
 export const getRuntimeStatus = () => invoke<RuntimeStatus>("get_runtime_status");
 export const saveOverlayPosition = (x: number, y: number) => invoke<void>("save_overlay_position", { x, y });
-export const exportCaptionSession = (path: string, format: string) => invoke<void>("export_caption_session", { path, format });
+export const exportCaptionSession = (path: string, format: string, sessionId?: string) =>
+  invoke<void>("export_caption_session", { path, format, sessionId: sessionId ?? null });
+export const listCaptionSessions = () => invoke<SessionSummary[]>("list_caption_sessions");
+export const readCaptionSession = (id: string, page: number, pageSize = 20) =>
+  invoke<SessionPageView>("read_caption_session", { id, page, pageSize });
+export const deleteCaptionSession = (id: string) => invoke<void>("delete_caption_session", { id });
+export const newCaptionSession = () => invoke<void>("new_caption_session");
+export const correctCaptionSession = (id: string, useGlossary: boolean) =>
+  invoke<void>("correct_caption_session", { id, useGlossary });
+export const openSessionsDir = () => invoke<void>("open_sessions_dir");
+export const getGlossary = () => invoke<Glossary>("get_glossary");
+export const saveGlossary = (glossary: Glossary) => invoke<void>("save_glossary", { glossary });
+export const exportGlossary = (path: string) => invoke<void>("export_glossary", { path });
+export const importGlossary = (path: string) => invoke<GlossaryImportResult>("import_glossary", { path });
 export const getRuntimeLogs = () => invoke<RuntimeLogEntry[]>("get_runtime_logs");
 export const clearRuntimeLogs = () => invoke<void>("clear_runtime_logs");
 export const openLogsDir = () => invoke<void>("open_logs_dir");

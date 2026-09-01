@@ -8,6 +8,12 @@ import type { AppSettings, CaptionSourceHealth, CaptionTranslatedEvent, Settings
 import { useTheme, previewSettings } from "../lib/ui-shared";
 import { currentWindow, isTauri } from "../lib/window";
 
+const demoOverlayItems: CaptionTranslatedEvent[] = [
+  { segment: { id: "demo-1", source_text: "それでは、今日の配信を始めたいと思います", revision: 1, committed: true, source: "local_asr", start_ms: 0, end_ms: 2600, final_result: true, time_source: "model" }, result: { source_text: "", translated_text: "那么，开始今天的直播吧", model: "demo", latency_ms: 800, first_token_ms: 300, cached: false } },
+  { segment: { id: "demo-2", source_text: "まずは昨日の続きから説明します", revision: 1, committed: true, source: "local_asr", start_ms: 2600, end_ms: 5100, final_result: true, time_source: "model" }, result: { source_text: "", translated_text: "首先从昨天内容的继续部分开始说明", model: "demo", latency_ms: 760, first_token_ms: 280, cached: false } },
+  { segment: { id: "demo-3", source_text: "質問があればコメントで教えてください", revision: 1, committed: true, source: "local_asr", start_ms: 5100, end_ms: 8200, final_result: true, time_source: "model" }, result: { source_text: "", translated_text: "如果有问题请在评论里告诉我", model: "demo", latency_ms: 830, first_token_ms: 310, cached: false } },
+];
+
 export function OverlayWindow() {
   const [items, setItems] = useState<CaptionTranslatedEvent[]>([]);
   const [currentSource, setCurrentSource] = useState("");
@@ -22,6 +28,7 @@ export function OverlayWindow() {
   useEffect(() => {
     if (!isTauri) {
       setSettings(previewSettings);
+      setItems(demoOverlayItems);
       return;
     }
     void getSettings().then(v => setSettings(v.settings));

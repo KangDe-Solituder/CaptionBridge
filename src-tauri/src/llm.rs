@@ -1,13 +1,17 @@
 use std::{
+    collections::HashSet,
     sync::OnceLock,
     time::{Duration, Instant},
 };
 
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::time::{timeout, timeout_at, Instant as TokioInstant};
 
-use crate::models::{AppSettings, TranslationMode, TranslationRequest, TranslationResult};
+use crate::models::{
+    AppSettings, GlossaryPair, TranslationMode, TranslationRequest, TranslationResult,
+};
 
 pub fn normalize_endpoint(endpoint: &str) -> String {
     let trimmed = endpoint.trim().trim_end_matches('/');
@@ -70,6 +74,7 @@ pub fn create_payload(
             .join("\n");
         format!(" Previous caption context (use only for terminology and continuity):\n{context}")
     };
+    let glossary_hint = glossary_hint(&request.glossary);
     let mut payload = json!({
         "model": settings.llm.model,
         "stream": true,
@@ -79,7 +84,7 @@ pub fn create_payload(
         "messages": [
             {
                 "role": "system",
-                "content": format!("You are doing {task}. {source_hint} Translate into {}. Keep the result {style}. Return only the translation.{context_hint}", request.target_language)
+                "content": format!("You are doing {task}. {source_hint} Translate into {}. Keep the result {style}. Return only the translation.{context_hint}{glossary_hint}", request.target_language)
             },
             {
                 "role": "user",
@@ -329,7 +334,165 @@ fn parse_sse_line(line: &[u8]) -> (Option<String>, bool) {
     (delta, false)
 }
 
-#[cfg(test)]
+fn glossary_hint(glossary: &[GlossaryPair]) -> String {
+    if glossary.is_empty() {
+        return String::new();
+    }
+    let pairs = glossary
+        .iter()
+        .map(|pair| format!("- {} => {}", pair.source, pair.target))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(" Terminology (always use these translations):\n{pairs}")
+}
+
+pub struct CorrectionInput {
+    pub index: usize,
+    pub source: String,
+    pub translation: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CorrectionOutput {
+    pub index: usize,
+    pub source: String,
+    pub translation: String,
+}
+
+const CORRECTION_TIMEOUT: Duration = Duration::from_secs(180);
+
+pub async fn correct_batch(
+    settings: &AppSettings,
+    api_key: &str,
+    entries: &[CorrectionInput],
+    glossary: &[GlossaryPair],
+) -> Result<Vec<CorrectionOutput>, String> {
+    let listing = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}. 原文: {}\n   译文: {}",
+                entry.index, entry.source, entry.translation
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let system = format!(
+        "You are proofreading Japanese ASR live-caption transcripts and their {} translations. \
+         Use the surrounding entries as context to fix ASR misrecognitions (misheard words, names, numbers) \
+         and to fix translation errors. Keep the original meaning and keep entries independent; \
+         if an entry is already correct, return it unchanged. Respond with ONLY a JSON array containing \
+         exactly one object per input entry, each like {{\"index\":1,\"source\":\"...\",\"translation\":\"...\"}}. \
+         No markdown fences, no commentary.{}",
+        settings.llm.target_language,
+        glossary_hint(glossary)
+    );
+    let mut payload = json!({
+        "model": settings.llm.model,
+        "stream": false,
+        "temperature": 0.1,
+        "max_tokens": 4096,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": listing }
+        ]
+    });
+    if settings.llm.endpoint.contains("api.deepseek.com")
+        || settings.llm.model.starts_with("deepseek-v4")
+    {
+        payload["thinking"] = json!({ "type": "disabled" });
+    }
+    let extra = settings.llm.extra_body_json.trim();
+    if !extra.is_empty() {
+        let extra_value: Value = serde_json::from_str(extra).map_err(|error| error.to_string())?;
+        if extra_value.is_object() {
+            deep_merge(&mut payload, extra_value);
+        }
+    }
+    // The correction response is parsed as a single JSON document, so extra
+    // body must not be able to turn streaming back on.
+    payload["stream"] = Value::Bool(false);
+
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(2))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .build()
+            .expect("valid shared HTTP client")
+    });
+    let response = timeout(
+        CORRECTION_TIMEOUT,
+        client
+            .post(normalize_endpoint(&settings.llm.endpoint))
+            .header(CONTENT_TYPE, "application/json")
+            .header(AUTHORIZATION, format!("Bearer {api_key}"))
+            .json(&payload)
+            .send(),
+    )
+    .await
+    .map_err(|_| "纠错请求超时（180 秒）".to_string())?
+    .map_err(|error| error.to_string())?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.map_err(|error| error.to_string())?;
+        let parsed = serde_json::from_str::<Value>(&body).ok();
+        let message = parsed
+            .as_ref()
+            .and_then(|value| value.pointer("/error/message"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| body.chars().take(500).collect::<String>());
+        return Err(format!("{status}: {message}"));
+    }
+    let body: Value = response.json().await.map_err(|error| error.to_string())?;
+    let content = extract_content(&body).ok_or_else(|| "纠错响应没有返回内容".to_string())?;
+    parse_correction(&content, entries)
+}
+
+fn parse_correction(
+    content: &str,
+    entries: &[CorrectionInput],
+) -> Result<Vec<CorrectionOutput>, String> {
+    let trimmed = content
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    let start = trimmed
+        .find('[')
+        .ok_or_else(|| "纠错响应不是 JSON 数组".to_string())?;
+    let end = trimmed
+        .rfind(']')
+        .ok_or_else(|| "纠错响应不是 JSON 数组".to_string())?;
+    let outputs: Vec<CorrectionOutput> = serde_json::from_str(&trimmed[start..=end])
+        .map_err(|error| format!("解析纠错 JSON 失败：{error}"))?;
+    let expected = entries
+        .iter()
+        .map(|entry| entry.index)
+        .collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    let valid = outputs
+        .into_iter()
+        .filter(|output| {
+            expected.contains(&output.index)
+                && !output.source.trim().is_empty()
+                && !output.translation.trim().is_empty()
+                && seen.insert(output.index)
+        })
+        .collect::<Vec<_>>();
+    if valid.len() != expected.len() {
+        return Err(format!(
+            "纠错响应条目不完整：期望 {} 条，收到 {} 条有效结果",
+            expected.len(),
+            valid.len()
+        ));
+    }
+    Ok(valid)
+}
+
 fn extract_content(value: &Value) -> Option<String> {
     value
         .pointer("/choices/0/message/content")
@@ -405,6 +568,7 @@ mod tests {
             context: Vec::new(),
             source_language: "auto".to_string(),
             target_language: "中文".to_string(),
+            glossary: Vec::new(),
         };
 
         let payload = create_payload(&settings, &request).unwrap();
@@ -422,6 +586,7 @@ mod tests {
             context: Vec::new(),
             source_language: "auto".to_string(),
             target_language: "中文".to_string(),
+            glossary: Vec::new(),
         };
         assert_eq!(
             create_payload(&settings, &request).unwrap()["enable_thinking"],
@@ -447,6 +612,7 @@ mod tests {
             context: Vec::new(),
             source_language: "auto".to_string(),
             target_language: "中文".to_string(),
+            glossary: Vec::new(),
         };
 
         let payload = create_payload(&settings, &request).unwrap();
@@ -463,6 +629,7 @@ mod tests {
             source_language: "auto".to_string(),
             target_language: "Chinese".to_string(),
             context: vec!["Previous sentence".to_string()],
+            glossary: Vec::new(),
         };
         let payload = create_payload(&settings, &request).unwrap();
         let system = payload["messages"][0]["content"].as_str().unwrap();
@@ -479,6 +646,7 @@ mod tests {
             source_language: "Japanese".to_string(),
             target_language: "Chinese".to_string(),
             context: Vec::new(),
+            glossary: Vec::new(),
         };
         let payload = create_payload(&settings, &request).unwrap();
         let system = payload["messages"][0]["content"].as_str().unwrap();
@@ -497,5 +665,53 @@ mod tests {
         assert_eq!(delta.as_deref(), Some("hello"));
         assert!(!done);
         assert!(parse_sse_line(b"data: [DONE]").1);
+    }
+
+    #[test]
+    fn includes_glossary_terms_in_the_system_prompt() {
+        let settings = AppSettings::default();
+        let request = TranslationRequest {
+            mode: TranslationMode::LiveCaption,
+            source_text: "彼は先生だ".to_string(),
+            source_language: "auto".to_string(),
+            target_language: "Chinese".to_string(),
+            context: Vec::new(),
+            glossary: vec![crate::models::GlossaryPair {
+                source: "先生".to_string(),
+                target: "老师".to_string(),
+            }],
+        };
+        let payload = create_payload(&settings, &request).unwrap();
+        let system = payload["messages"][0]["content"].as_str().unwrap();
+        assert!(system.contains("先生 => 老师"));
+    }
+
+    #[test]
+    fn parses_complete_correction_json_despite_fences_and_unknown_indices() {
+        let entries = vec![
+            CorrectionInput {
+                index: 1,
+                source: "a".to_string(),
+                translation: "b".to_string(),
+            },
+            CorrectionInput {
+                index: 2,
+                source: "c".to_string(),
+                translation: "d".to_string(),
+            },
+        ];
+        let parsed = parse_correction(
+            "```json\n[{\"index\":2,\"source\":\"c2\",\"translation\":\"d2\"},{\"index\":9,\"source\":\"x\",\"translation\":\"y\"},{\"index\":1,\"source\":\"a1\",\"translation\":\"b1\"}]\n```",
+            &entries,
+        )
+        .unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].index, 2);
+        assert!(parse_correction(
+            "[{\"index\":2,\"source\":\"c2\",\"translation\":\"d2\"}]",
+            &entries
+        )
+        .is_err());
+        assert!(parse_correction("没有 JSON", &entries).is_err());
     }
 }

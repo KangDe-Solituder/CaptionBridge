@@ -7,6 +7,7 @@
 @keyframes progress-scan { to { background-position: -220% 0; } }
 @keyframes dot-breathe { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--success) 8%, transparent); } }
 @keyframes hotkey-blink { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 8%, transparent); } }
+@keyframes tick-pulse { 0%, 100% { transform: scaleX(1); opacity: 1; } 50% { transform: scaleX(.55); opacity: .55; } }
 
 :root[data-motion="reduced"] * {
   scroll-behavior: auto !important;

@@ -19,9 +19,9 @@ use crate::{
     asr_worker::{AsrWorker, WorkerEvent},
     llm, model_manager,
     models::{
-        AsmrChannelState, AudioChannelMode, CaptionExportEntry, CaptionRuntimeState,
-        CaptionSegment, CaptionSourceConfig, CaptionSourceHealth, CaptionSourceKind,
-        CaptionTimeSource, CaptionTranslatedEvent, TranslationMode, TranslationRequest,
+        AsmrChannelState, AudioChannelMode, CaptionRuntimeState, CaptionSegment,
+        CaptionSourceConfig, CaptionSourceHealth, CaptionSourceKind, CaptionTimeSource,
+        CaptionTranslatedEvent, GlossaryPair, TranslationMode, TranslationRequest,
         TranslationResult, VadProfile,
     },
     secrets,
@@ -163,7 +163,17 @@ async fn run_session(app: AppHandle, state: AppState, stop: Arc<AtomicBool>) -> 
     let settings = state.settings.read().map_err(|e| e.to_string())?.clone();
     let source = settings.captions.source.clone();
     let api_key = secrets::get_api_key()?.ok_or_else(|| "请先保存 API Key".to_string())?;
-    let session = Arc::new(JsonlSession::start(&state.paths.sessions_dir)?);
+    // One session file per process lifetime: stopping and restarting captions
+    // keeps appending to the same record; only a fresh process starts a new one.
+    // The translator reads the shared slot per write, so "新建记录" swaps
+    // take effect without interrupting a running session.
+    {
+        let mut current = state.current_session.lock().await;
+        if current.is_none() {
+            *current = Some(Arc::new(JsonlSession::start(&state.paths.sessions_dir)?));
+            let _ = app.emit("caption:sessions-changed", ());
+        }
+    }
     let queue = Arc::new(FinalQueue::default());
     let accepted_context = Arc::new(Mutex::new(VecDeque::<String>::new()));
 
@@ -255,13 +265,20 @@ async fn run_session(app: AppHandle, state: AppState, stop: Arc<AtomicBool>) -> 
             _ => AsmrChannelState::Inactive,
         },
     );
+    let glossary = crate::glossary::load(&state.paths);
+    let glossary_pairs = if glossary.use_in_translation {
+        crate::glossary::pairs(&glossary)
+    } else {
+        Vec::new()
+    };
     let translator = spawn_translator(
         app.clone(),
         state.clone(),
         settings.clone(),
         api_key,
-        session,
+        state.current_session.clone(),
         queue.clone(),
+        glossary_pairs,
     );
     state.set_caption_state(&app, CaptionRuntimeState::Running);
     state.log("info", format!("字幕会话已启动：{:?}", source));
@@ -314,12 +331,11 @@ fn spawn_translator(
     state: AppState,
     settings: crate::models::AppSettings,
     api_key: String,
-    session: Arc<JsonlSession>,
+    session_slot: Arc<Mutex<Option<Arc<JsonlSession>>>>,
     queue: Arc<FinalQueue>,
+    glossary: Vec<GlossaryPair>,
 ) -> JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
-        let session_started = Instant::now();
-        let mut previous_end = 0_u64;
         let mut consecutive_first_token_timeouts = 0_u32;
         while let Some(job) = queue.pop().await {
             state
@@ -332,6 +348,7 @@ fn spawn_translator(
                 source_language: "ja".to_string(),
                 target_language: settings.llm.target_language.clone(),
                 context: job.context,
+                glossary: glossary.clone(),
             };
             let translation_started = Instant::now();
             let result = match llm::translate(settings.clone(), api_key.clone(), request).await {
@@ -366,24 +383,9 @@ fn spawn_translator(
                 result.first_token_ms.min(u64::MAX as u128) as u64,
                 Ordering::Relaxed,
             );
-            let _ = session.append(&segment, &result);
-            let estimated_end = session_started.elapsed().as_millis() as u64;
-            let (start_ms, end_ms) = if segment.time_source == CaptionTimeSource::Model {
-                (segment.start_ms, segment.end_ms.max(segment.start_ms + 1))
-            } else {
-                let end = estimated_end;
-                (previous_end.max(end.saturating_sub(2_500)), end)
-            };
-            previous_end = end_ms;
-            if let Ok(mut records) = state.caption_exports.write() {
-                let index = records.len() + 1;
-                records.push(CaptionExportEntry {
-                    index,
-                    start_ms,
-                    end_ms: end_ms.max(start_ms + 500),
-                    source_text: segment.source_text.clone(),
-                    translated_text: result.translated_text.clone(),
-                });
+            let session = { session_slot.lock().await.clone() };
+            if let Some(session) = session.as_ref() {
+                let _ = session.append(&segment, &result);
             }
             let _ = app.emit(
                 "caption:translated",

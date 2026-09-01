@@ -450,6 +450,12 @@ pub struct SettingsSaveRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlossaryPair {
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranslationRequest {
     pub mode: TranslationMode,
     pub source_text: String,
@@ -457,6 +463,8 @@ pub struct TranslationRequest {
     pub target_language: String,
     #[serde(default)]
     pub context: Vec<String>,
+    #[serde(default)]
+    pub glossary: Vec<GlossaryPair>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -637,4 +645,77 @@ pub struct TaskDescriptor {
     pub id: String,
     pub label: String,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlossaryTerm {
+    pub id: String,
+    pub source: String,
+    pub target: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Glossary {
+    pub terms: Vec<GlossaryTerm>,
+    pub use_in_translation: bool,
+    pub use_in_correction: bool,
+}
+
+impl Default for Glossary {
+    fn default() -> Self {
+        Self {
+            terms: Vec::new(),
+            use_in_translation: false,
+            use_in_correction: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GlossaryImportResult {
+    pub glossary: Glossary,
+    pub added: usize,
+    pub updated: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub created_at: String,
+    pub entry_count: usize,
+    pub first_source: String,
+    pub first_translation: String,
+    pub has_correction: bool,
+    pub is_current: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionEntryView {
+    pub index: usize,
+    pub timestamp: String,
+    pub source_text: String,
+    pub translated_text: String,
+    pub corrected_source_text: Option<String>,
+    pub corrected_translated_text: Option<String>,
+    pub model: String,
+    pub latency_ms: u128,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionPageView {
+    pub entries: Vec<SessionEntryView>,
+    pub total: usize,
+    pub page: usize,
+    pub page_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CorrectionProgressEvent {
+    pub id: String,
+    pub completed: usize,
+    pub total: usize,
+    pub error: Option<String>,
 }

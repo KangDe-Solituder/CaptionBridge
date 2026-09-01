@@ -3,6 +3,7 @@
 mod asr_dependencies;
 mod asr_worker;
 mod captions;
+mod glossary;
 mod gpu_runtime;
 mod llm;
 mod model_manager;
@@ -16,6 +17,7 @@ mod settings;
 mod windows_integration;
 
 use std::{
+    collections::HashSet,
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
@@ -29,8 +31,9 @@ use std::{
 use captions::CaptionController;
 use models::{
     AppSettings, AsmrChannelState, AsrDependencyReport, AudioChannelMode, CaptionExportEntry,
-    CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth, ModelInfo, RuntimeLogEntry,
-    RuntimeStatus, SettingsSaveRequest, SettingsView, TranslationMode, TranslationRequest,
+    CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth, CorrectionProgressEvent,
+    Glossary, GlossaryImportResult, ModelInfo, RuntimeLogEntry, RuntimeStatus, SessionPageView,
+    SessionSummary, SettingsSaveRequest, SettingsView, TranslationMode, TranslationRequest,
     TranslationResult, VadProfile,
 };
 use settings::AppPaths;
@@ -47,7 +50,8 @@ pub struct AppState {
     pub settings: Arc<RwLock<AppSettings>>,
     pub caption: Arc<Mutex<Option<CaptionController>>>,
     pub caption_state: Arc<RwLock<CaptionRuntimeState>>,
-    pub caption_exports: Arc<RwLock<Vec<CaptionExportEntry>>>,
+    pub current_session: Arc<Mutex<Option<Arc<sessions::JsonlSession>>>>,
+    pub correction_tasks: Arc<Mutex<HashSet<String>>>,
     pub selection_hotkey_registered: Arc<AtomicBool>,
     pub last_error: Arc<RwLock<Option<String>>>,
     pub source_health: Arc<RwLock<CaptionSourceHealth>>,
@@ -76,7 +80,8 @@ impl AppState {
             settings: Arc::new(RwLock::new(settings)),
             caption: Arc::new(Mutex::new(None)),
             caption_state: Arc::new(RwLock::new(CaptionRuntimeState::Stopped)),
-            caption_exports: Arc::new(RwLock::new(Vec::new())),
+            current_session: Arc::new(Mutex::new(None)),
+            correction_tasks: Arc::new(Mutex::new(HashSet::new())),
             selection_hotkey_registered: Arc::new(AtomicBool::new(false)),
             last_error: Arc::new(RwLock::new(None)),
             source_health: Arc::new(RwLock::new(CaptionSourceHealth::Unknown)),
@@ -262,19 +267,32 @@ async fn test_llm(
             source_language: "auto".into(),
             target_language: settings.llm.target_language.clone(),
             context: Vec::new(),
+            glossary: Vec::new(),
         },
     )
     .await
 }
 
+fn translation_glossary(state: &AppState) -> Vec<models::GlossaryPair> {
+    let glossary = glossary::load(&state.paths);
+    if glossary.use_in_translation {
+        glossary::pairs(&glossary)
+    } else {
+        Vec::new()
+    }
+}
+
 #[tauri::command]
 async fn translate_selection(
-    request: TranslationRequest,
+    mut request: TranslationRequest,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<TranslationResult, String> {
     let settings = state.settings.read().map_err(|e| e.to_string())?.clone();
     let key = secrets::get_api_key()?.ok_or_else(|| "请先保存 API Key".to_string())?;
+    if request.glossary.is_empty() {
+        request.glossary = translation_glossary(&state);
+    }
     let _ = app.emit("translation:started", &request);
     let delta_app = app.clone();
     let result = llm::translate_with_delta(settings, key, request, move |text| {
@@ -311,11 +329,6 @@ async fn set_caption_running_inner(
         if secrets::get_api_key()?.is_none() {
             return Err("请先保存 API Key".into());
         }
-        state
-            .caption_exports
-            .write()
-            .map_err(|e| e.to_string())?
-            .clear();
         state.set_caption_state(&app, CaptionRuntimeState::Starting);
         state.log("info", "正在启动实时字幕翻译");
         *controller = Some(captions::spawn_caption_session(app, state.clone()));
@@ -765,12 +778,6 @@ async fn switch_caption_source(
         settings.captions.source = source;
         settings::save(&state.paths, &settings)?;
     }
-    state
-        .caption_exports
-        .write()
-        .map_err(|e| e.to_string())?
-        .clear();
-    let _ = app.emit("caption:session-reset", ());
     if was_running {
         state.set_caption_state(&app, CaptionRuntimeState::Starting);
         *state.caption.lock().await = Some(captions::spawn_caption_session(app, state.clone()));
@@ -788,18 +795,61 @@ fn save_overlay_position(x: i32, y: i32, state: State<'_, AppState>) -> Result<(
     settings::save(&state.paths, &current)
 }
 
+fn export_entries(records: &[sessions::SessionRecord]) -> Vec<CaptionExportEntry> {
+    let Some(first) = records.first() else {
+        return Vec::new();
+    };
+    let started = first.timestamp;
+    records
+        .iter()
+        .enumerate()
+        .map(|(i, record)| {
+            let start_ms = (record.timestamp - started).num_milliseconds().max(0) as u64;
+            let next_start = records
+                .get(i + 1)
+                .map(|next| (next.timestamp - started).num_milliseconds().max(0) as u64);
+            let end_ms = next_start.unwrap_or(start_ms + 2_500).max(start_ms + 500);
+            let corrected = record.corrected.as_ref();
+            CaptionExportEntry {
+                index: i + 1,
+                start_ms,
+                end_ms,
+                source_text: corrected
+                    .map(|value| value.source_text.clone())
+                    .unwrap_or_else(|| record.segment.source_text.clone()),
+                translated_text: corrected
+                    .map(|value| value.translated_text.clone())
+                    .unwrap_or_else(|| record.result.translated_text.clone()),
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
-fn export_caption_session(
+async fn export_caption_session(
     path: String,
     format: String,
+    session_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let records = state.caption_exports.read().map_err(|e| e.to_string())?;
+    let records = match session_id {
+        Some(id) => {
+            sessions::read_records(&sessions::session_path(&state.paths.sessions_dir, &id)?)
+        }
+        None => {
+            let current = state.current_session.lock().await.clone();
+            match current {
+                Some(session) => sessions::read_records(session.path()),
+                None => return Err("当前没有可导出的字幕".into()),
+            }
+        }
+    };
     if records.is_empty() {
         return Err("当前没有可导出的字幕".into());
     }
+    let entries = export_entries(&records);
     let body = match format.as_str() {
-        "srt" => records
+        "srt" => entries
             .iter()
             .map(|r| {
                 format!(
@@ -815,7 +865,7 @@ fn export_caption_session(
             .join("\n"),
         "vtt" => format!(
             "WEBVTT\n\n{}",
-            records
+            entries
                 .iter()
                 .map(|r| format!(
                     "{} --> {}\n{}\n{}\n",
@@ -827,8 +877,8 @@ fn export_caption_session(
                 .collect::<Vec<_>>()
                 .join("\n")
         ),
-        "json" => serde_json::to_string_pretty(&*records).map_err(|e| e.to_string())?,
-        _ => records
+        "json" => serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())?,
+        _ => entries
             .iter()
             .map(|r| format!("{}\n{}", r.source_text, r.translated_text))
             .collect::<Vec<_>>()
@@ -837,6 +887,283 @@ fn export_caption_session(
     fs::write(Path::new(&path), body).map_err(|e| e.to_string())?;
     state.log("info", format!("字幕已导出：{path}"));
     Ok(())
+}
+
+#[tauri::command]
+async fn list_caption_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
+    let current_id = state
+        .current_session
+        .lock()
+        .await
+        .as_ref()
+        .map(|session| session.id());
+    Ok(sessions::summarize(
+        &state.paths.sessions_dir,
+        current_id.as_deref(),
+    ))
+}
+
+#[tauri::command]
+async fn read_caption_session(
+    id: String,
+    page: usize,
+    page_size: usize,
+    state: State<'_, AppState>,
+) -> Result<SessionPageView, String> {
+    let path = sessions::session_path(&state.paths.sessions_dir, &id)?;
+    let records = sessions::read_records(&path);
+    Ok(sessions::paginate(&records, page, page_size))
+}
+
+#[tauri::command]
+async fn delete_caption_session(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let running = matches!(
+        *state.caption_state.read().map_err(|e| e.to_string())?,
+        CaptionRuntimeState::Starting
+            | CaptionRuntimeState::Running
+            | CaptionRuntimeState::LoadingModel
+            | CaptionRuntimeState::Switching
+    );
+    let current_id = state
+        .current_session
+        .lock()
+        .await
+        .as_ref()
+        .map(|session| session.id());
+    let path = sessions::session_path(&state.paths.sessions_dir, &id)?;
+    if current_id.as_deref() == Some(id.as_str()) {
+        if running {
+            return Err("实时字幕运行中，请先停止再删除本次记录".to_string());
+        }
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+        *state.current_session.lock().await = None;
+        let _ = app.emit("caption:session-reset", ());
+    } else {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("caption:sessions-changed", ());
+    state.log("info", format!("字幕记录已删除：{id}"));
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_correction(
+    app: AppHandle,
+    state: AppState,
+    id: String,
+    path: std::path::PathBuf,
+    settings: AppSettings,
+    api_key: String,
+    glossary_pairs: Vec<models::GlossaryPair>,
+) -> Result<(), String> {
+    let mut records = sessions::read_records(&path);
+    let correctable = records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| {
+            record.result.error.is_none() && !record.result.translated_text.trim().is_empty()
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let total = correctable.len();
+    if total == 0 {
+        return Err("记录中没有可纠错的内容".to_string());
+    }
+    let _ = app.emit(
+        "correction:progress",
+        CorrectionProgressEvent {
+            id: id.clone(),
+            completed: 0,
+            total,
+            error: None,
+        },
+    );
+    const BATCH_SIZE: usize = 20;
+    let mut completed = 0_usize;
+    for chunk in correctable.chunks(BATCH_SIZE) {
+        let inputs = chunk
+            .iter()
+            .map(|&index| llm::CorrectionInput {
+                index,
+                source: records[index].segment.source_text.clone(),
+                translation: records[index].result.translated_text.clone(),
+            })
+            .collect::<Vec<_>>();
+        let outputs = llm::correct_batch(&settings, &api_key, &inputs, &glossary_pairs).await?;
+        let corrected_count = outputs.len();
+        for output in outputs {
+            if let Some(record) = records.get_mut(output.index) {
+                record.corrected = Some(sessions::SessionCorrection {
+                    source_text: output.source,
+                    translated_text: output.translation,
+                    at: chrono::Local::now(),
+                    glossary_used: !glossary_pairs.is_empty(),
+                });
+            }
+        }
+        completed += corrected_count;
+        let _ = app.emit(
+            "correction:progress",
+            CorrectionProgressEvent {
+                id: id.clone(),
+                completed,
+                total,
+                error: None,
+            },
+        );
+    }
+    sessions::rewrite_records(&path, &records)?;
+    state.log("info", format!("字幕记录纠错完成：{id}（{total} 条）"));
+    let _ = app.emit("correction:finished", &id);
+    let _ = app.emit("caption:sessions-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+async fn new_caption_session(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let current = state.current_session.lock().await;
+        if let Some(session) = current.as_ref() {
+            if sessions::read_records(session.path()).is_empty() {
+                return Err("当前记录还没有转录内容，无需新建".to_string());
+            }
+        }
+    }
+    let created = Arc::new(sessions::JsonlSession::start(&state.paths.sessions_dir)?);
+    *state.current_session.lock().await = Some(created);
+    let _ = app.emit("caption:sessions-changed", ());
+    state.log("info", "已新建字幕记录");
+    Ok(())
+}
+
+#[tauri::command]
+async fn correct_caption_session(
+    id: String,
+    use_glossary: bool,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let path = sessions::session_path(&state.paths.sessions_dir, &id)?;
+    let running = matches!(
+        *state.caption_state.read().map_err(|e| e.to_string())?,
+        CaptionRuntimeState::Starting
+            | CaptionRuntimeState::Running
+            | CaptionRuntimeState::LoadingModel
+            | CaptionRuntimeState::Switching
+    );
+    let current_id = state
+        .current_session
+        .lock()
+        .await
+        .as_ref()
+        .map(|session| session.id());
+    if running && current_id.as_deref() == Some(id.as_str()) {
+        return Err("实时字幕运行中，请先停止再纠错".to_string());
+    }
+    {
+        let mut tasks = state.correction_tasks.lock().await;
+        if !tasks.insert(id.clone()) {
+            return Err("该记录正在纠错中".to_string());
+        }
+    }
+    let settings = state.settings.read().map_err(|e| e.to_string())?.clone();
+    let api_key = match secrets::get_api_key()? {
+        Some(key) => key,
+        None => {
+            state.correction_tasks.lock().await.remove(&id);
+            return Err("请先保存 API Key".to_string());
+        }
+    };
+    let glossary_pairs = if use_glossary {
+        glossary::pairs(&glossary::load(&state.paths))
+    } else {
+        Vec::new()
+    };
+    let task_state = state.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = run_correction(
+            app.clone(),
+            task_state.clone(),
+            id.clone(),
+            path,
+            settings,
+            api_key,
+            glossary_pairs,
+        )
+        .await
+        {
+            task_state.log("error", format!("字幕纠错失败：{error}"));
+            let _ = app.emit(
+                "correction:progress",
+                CorrectionProgressEvent {
+                    id: id.clone(),
+                    completed: 0,
+                    total: 0,
+                    error: Some(error),
+                },
+            );
+        }
+        task_state.correction_tasks.lock().await.remove(&id);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn get_glossary(state: State<'_, AppState>) -> Result<Glossary, String> {
+    Ok(glossary::load(&state.paths))
+}
+
+#[tauri::command]
+fn save_glossary(
+    glossary: Glossary,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    glossary::save(&state.paths, &glossary)?;
+    let _ = app.emit("glossary:changed", &glossary);
+    state.log("info", "术语表已保存");
+    Ok(())
+}
+
+#[tauri::command]
+fn export_glossary(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let glossary = glossary::load(&state.paths);
+    let raw = serde_json::to_string_pretty(&glossary).map_err(|e| e.to_string())?;
+    fs::write(Path::new(&path), raw).map_err(|e| e.to_string())?;
+    state.log("info", format!("术语表已导出：{path}"));
+    Ok(())
+}
+
+#[tauri::command]
+fn import_glossary(
+    path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<GlossaryImportResult, String> {
+    let result = glossary::import(&state.paths, Path::new(&path))?;
+    let _ = app.emit("glossary:changed", &result.glossary);
+    state.log(
+        "info",
+        format!(
+            "术语表导入完成：新增 {} 条，更新 {} 条",
+            result.added, result.updated
+        ),
+    );
+    Ok(result)
+}
+
+#[tauri::command]
+fn open_sessions_dir(state: State<'_, AppState>) -> Result<(), String> {
+    state.paths.ensure()?;
+    Command::new("explorer")
+        .arg(&state.paths.sessions_dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn srt_time(ms: u64) -> String {
@@ -908,7 +1235,83 @@ fn open_asr_dependency_url(dependency_id: String) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+#[cfg(windows)]
+struct SingleInstanceGuard(windows::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn acquire_single_instance() -> Result<Option<SingleInstanceGuard>, String> {
+    use windows::{
+        core::w,
+        Win32::{
+            Foundation::{GetLastError, ERROR_ALREADY_EXISTS},
+            System::Threading::CreateMutexW,
+        },
+    };
+
+    unsafe {
+        let handle = CreateMutexW(
+            None,
+            false,
+            w!("Local\\com.dimfi.livecaption.single-instance"),
+        )
+        .map_err(|error| format!("创建单实例锁失败：{error}"))?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let _ = windows::Win32::Foundation::CloseHandle(handle);
+            Ok(None)
+        } else {
+            Ok(Some(SingleInstanceGuard(handle)))
+        }
+    }
+}
+
+#[cfg(windows)]
+fn focus_existing_instance() {
+    use windows::{
+        core::w,
+        Win32::UI::WindowsAndMessaging::{
+            FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE,
+        },
+    };
+
+    unsafe {
+        if let Ok(window) = FindWindowW(None, w!("LiveCaption")) {
+            let _ = ShowWindow(window, SW_RESTORE);
+            let _ = SetForegroundWindow(window);
+        }
+    }
+}
+
+#[cfg(windows)]
 fn main() {
+    let _single_instance = match acquire_single_instance() {
+        Ok(Some(guard)) => guard,
+        Ok(None) => {
+            focus_existing_instance();
+            return;
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            return;
+        }
+    };
+    run_app();
+}
+
+#[cfg(not(windows))]
+fn main() {
+    run_app();
+}
+
+fn run_app() {
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -927,6 +1330,16 @@ fn main() {
             get_runtime_status,
             save_overlay_position,
             export_caption_session,
+            list_caption_sessions,
+            read_caption_session,
+            delete_caption_session,
+            new_caption_session,
+            correct_caption_session,
+            get_glossary,
+            save_glossary,
+            export_glossary,
+            import_glossary,
+            open_sessions_dir,
             get_runtime_logs,
             clear_runtime_logs,
             open_logs_dir,

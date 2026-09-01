@@ -1,12 +1,12 @@
 import { listen } from "@tauri-apps/api/event";
-import { save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import {
-  Activity, ArrowRight, BrainCircuit, Captions, Check, Clipboard, Copy, Download, Eraser,
-  ExternalLink, FileText, Languages, Loader2, MousePointer2, Play,
-  RefreshCw, RotateCcw, Search, Settings, Sparkles, Square, Trash2, X,
+  Activity, ArrowLeft, ArrowRight, BookMarked, BrainCircuit, Captions, Check, ChevronLeft, ChevronRight,
+  Clipboard, Copy, Download, Eraser, ExternalLink, FileText, Languages, Loader2, MousePointer2,
+  Play, Plus, RefreshCw, RotateCcw, Search, Settings, Sparkles, Square, Trash2, Upload, Wand2, X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Segmented } from "./components/Segmented";
 import { Slider } from "./components/Slider";
@@ -14,15 +14,17 @@ import { Toggle } from "./components/Toggle";
 import { OverlayWindow } from "./windows/OverlayWindow";
 import { ToolbarWindow } from "./windows/ToolbarWindow";
 import {
-  clearRuntimeLogs, deleteApiKey, exportCaptionSession, getRuntimeLogs,
-  getRuntimeStatus, getSettings, openLogsDir, resetAsrChannelRouting, saveSettings,
-  setCaptionRunning, testLlm, listModels, downloadModel, cancelModelDownload,
+  clearRuntimeLogs, correctCaptionSession, deleteApiKey, deleteCaptionSession, exportCaptionSession,
+  exportGlossary, getGlossary, getRuntimeLogs, getRuntimeStatus, getSettings, importGlossary,
+  listCaptionSessions, newCaptionSession, openLogsDir, openSessionsDir, readCaptionSession, resetAsrChannelRouting,
+  saveGlossary, saveSettings, setCaptionRunning, testLlm, listModels, downloadModel, cancelModelDownload,
   verifyModel, testModel, deleteModel, openModelsDir, switchCaptionSource,
   checkAsrDependencies, openAsrDependencyUrl, downloadAsrGpuRuntime, cancelAsrGpuRuntime, testDownloadProxy,
 } from "./lib/api";
 import type {
-  AppSettings, AsmrChannelState, AsrDependencyReport, AsrGpuRuntimeInfo, AsrGpuRuntimeProgressEvent, CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth, CaptionTranslatedEvent,
-  ModelInfo, ModelProgressEvent, RuntimeLogEntry, RuntimeStatus, SettingsView, TranslationResult,
+  AppSettings, AsmrChannelState, AsrDependencyReport, AsrGpuRuntimeInfo, AsrGpuRuntimeProgressEvent, CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth,
+  CorrectionProgress, Glossary, ModelInfo, ModelProgressEvent, RuntimeLogEntry, RuntimeStatus,
+  SessionPageView, SessionSummary, SettingsView, TranslationResult,
 } from "./lib/contracts";
 import { displayHotkey, emptyResult, previewSettings, useTheme } from "./lib/ui-shared";
 import { currentWindow, isTauri, windowLabel } from "./lib/window";
@@ -54,14 +56,43 @@ export function App() {
   return <MainWindow />;
 }
 
-type Page = "selection" | "captions" | "settings";
+type Page = "selection" | "captions" | "glossary" | "settings";
 type SettingsTab = "features" | "resources" | "llm" | "appearance" | "logs";
 type FeatureModule = "selection" | "captions";
+
+// previews mirror the backend convention: newest session first
+const demoSessions: SessionSummary[] = [
+  { id: "2026-09-01_14-02-55", created_at: "2026-09-01T14:02:55+08:00", entry_count: 45, first_source: "今日のテーマは先週の続きです", first_translation: "今天的主题是上周的继续", has_correction: true, is_current: true },
+  { id: "2026-08-31_22-40-15", created_at: "2026-08-31T22:40:15+08:00", entry_count: 23, first_source: "それでは始めましょう", first_translation: "那么开始吧", has_correction: false, is_current: false },
+  { id: "2026-08-31_18-10-44", created_at: "2026-08-31T18:10:44+08:00", entry_count: 132, first_source: "では、次のコーナーです", first_translation: "那么进入下一个环节", has_correction: true, is_current: false },
+  { id: "2026-08-30_21-12-03", created_at: "2026-08-30T21:12:03+08:00", entry_count: 87, first_source: "おはようございます、皆さん", first_translation: "大家早上好", has_correction: true, is_current: false },
+  { id: "2026-08-30_13-01-26", created_at: "2026-08-30T13:01:26+08:00", entry_count: 201, first_source: "はい、こんにちは", first_translation: "大家好", has_correction: false, is_current: false },
+  { id: "2026-08-29_20-05-11", created_at: "2026-08-29T20:05:11+08:00", entry_count: 54, first_source: "次の動画はこちらです", first_translation: "下一个视频在这里", has_correction: true, is_current: false },
+  { id: "2026-08-28_23-30-58", created_at: "2026-08-28T23:30:58+08:00", entry_count: 9, first_source: "テスト中です", first_translation: "正在测试中", has_correction: false, is_current: false },
+  { id: "2026-08-27_19-44-07", created_at: "2026-08-27T19:44:07+08:00", entry_count: 64, first_source: "歌枠です", first_translation: "是歌回直播", has_correction: false, is_current: false },
+  { id: "2026-08-26_22-08-31", created_at: "2026-08-26T22:08:31+08:00", entry_count: 76, first_source: "みなさん、こんばんは", first_translation: "大家晚上好", has_correction: false, is_current: false },
+];
+
+function formatSessionDateTime(iso: string) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function formatEntryTime(iso: string) {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString("zh-CN", { hour12: false });
+}
 
 function MainWindow() {
   const [view, setView] = useState<SettingsView | null>(null);
   const [bootError, setBootError] = useState("");
-  const [page, setPage] = useState<Page>("selection");
+  // browser preview may deep-link a page with ?page=captions|glossary|settings
+  const [page, setPage] = useState<Page>(() => {
+    const initial = new URLSearchParams(location.search).get("page");
+    return initial === "captions" || initial === "glossary" || initial === "settings" ? initial : "selection";
+  });
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("features");
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<RuntimeStatus>({ caption_running: false, caption_state: "stopped", selection_hotkey_registered: false, source_health: "unknown", last_caption_update_ms: 0, reader_restarts: 0, source_error_count: 0, translation_queue_depth: 0, last_translation_latency_ms: 0, last_translation_first_token_ms: 0, selected_source: previewSettings.captions.source, asr_latency_ms: 0, asmr_channel_state: "inactive" });
@@ -70,10 +101,25 @@ function MainWindow() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [selectionResult, setSelectionResult] = useState<TranslationResult>(emptyResult);
-  const [captionResults, setCaptionResults] = useState<CaptionTranslatedEvent[]>([]);
+  const [sessions, setSessions] = useState<SessionSummary[]>(isTauri ? [] : demoSessions);
+  const [viewingSession, setViewingSession] = useState<string | null>(null);
   const [logs, setLogs] = useState<RuntimeLogEntry[]>([]);
   const [logQuery, setLogQuery] = useState("");
-  const [exportFormat, setExportFormat] = useState("srt");
+  const sessionRefreshTimer = useRef<number | undefined>(undefined);
+
+  const refreshSessions = useCallback(async () => {
+    if (!isTauri) return;
+    try { setSessions(await listCaptionSessions()); } catch { /* the ticker is optional chrome */ }
+  }, []);
+  const scheduleSessionRefresh = useCallback(() => {
+    if (sessionRefreshTimer.current) return;
+    sessionRefreshTimer.current = window.setTimeout(() => {
+      sessionRefreshTimer.current = undefined;
+      void refreshSessions();
+    }, 2500);
+  }, [refreshSessions]);
+
+  const selectSession = useCallback((id: string | null) => { setViewingSession(id); setPage("captions"); }, []);
 
   useEffect(() => {
     if (!message) return;
@@ -125,7 +171,8 @@ function MainWindow() {
     const unsubs = [
       listen<SettingsView>("settings:changed", e => setView(e.payload)),
       listen<TranslationResult>("translation:finished", e => setSelectionResult(e.payload)),
-      listen<CaptionTranslatedEvent>("caption:translated", e => setCaptionResults(items => [...items, e.payload].slice(-30))),
+      listen("caption:translated", () => scheduleSessionRefresh()),
+      listen<void>("caption:sessions-changed", () => void refreshSessions()),
       listen<CaptionRuntimeState>("caption:state-changed", e => setStatus(s => ({ ...s, caption_state: e.payload, caption_running: ["running", "starting", "loading_model", "switching"].includes(e.payload) }))),
       listen<CaptionSourceHealth>("caption:health-changed", e => setStatus(s => ({ ...s, source_health: e.payload }))),
       listen<AsmrChannelState>("caption:asmr-channel-changed", e => setStatus(s => ({ ...s, asmr_channel_state: e.payload }))),
@@ -134,17 +181,24 @@ function MainWindow() {
         setModels(items => items.map(item => item.id === p.model_id ? { ...item, status: p.status, downloaded_bytes: p.downloaded_bytes, error: p.error } : item));
         if (p.status === "available" || p.status === "corrupt" || p.status === "failed" || p.status === "incompatible") void refreshModels();
       }),
-      listen<void>("caption:session-reset", () => setCaptionResults([])),
+      listen<void>("caption:session-reset", () => { setViewingSession(null); void refreshSessions(); }),
       listen<string>("runtime:error", e => setMessage(e.payload)),
     ];
     const interval = window.setInterval(() => void getRuntimeStatus().then(setStatus).catch(() => undefined), 1200);
     void refreshModels();
+    void refreshSessions();
     const modelRefreshRetries = [600, 2_000].map(delay => window.setTimeout(() => void refreshModels(), delay));
     const closeRequested = "__TAURI_INTERNALS__" in window
       ? currentWindow.onCloseRequested(event => { event.preventDefault(); void currentWindow.hide(); })
       : undefined;
-    return () => { clearInterval(interval); modelRefreshRetries.forEach(clearTimeout); unsubs.forEach(p => void p.then(u => u())); if (closeRequested) void closeRequested.then(u => u()); };
-  }, [loadInitialSettings, refreshModels]);
+    return () => {
+      clearInterval(interval);
+      modelRefreshRetries.forEach(clearTimeout);
+      if (sessionRefreshTimer.current) clearTimeout(sessionRefreshTimer.current);
+      unsubs.forEach(p => void p.then(u => u()));
+      if (closeRequested) void closeRequested.then(u => u());
+    };
+  }, [loadInitialSettings, refreshModels, refreshSessions, scheduleSessionRefresh]);
 
   useEffect(() => {
     if (settingsTab !== "logs" || page !== "settings") return;
@@ -222,13 +276,6 @@ function MainWindow() {
     } catch (error) { setMessage(String(error)); }
   };
 
-  const exportCaptions = async () => {
-    const path = await save({ defaultPath: `LiveCaption-${new Date().toISOString().slice(0, 10)}.${exportFormat}`, filters: [{ name: "字幕", extensions: [exportFormat] }] });
-    if (!path) return;
-    try { await exportCaptionSession(path, exportFormat); setMessage("字幕已导出"); }
-    catch (error) { setMessage(String(error)); }
-  };
-
   if (!settings || !view) return (
     <main className="boot">
       {bootError
@@ -245,6 +292,7 @@ function MainWindow() {
           <nav>
             <RailButton active={page === "selection"} label="划词翻译" onClick={() => setPage("selection")}><Clipboard /></RailButton>
             <RailButton active={page === "captions"} label="实时字幕" onClick={() => setPage("captions")}><Captions /></RailButton>
+            <RailButton active={page === "glossary"} label="术语表" onClick={() => setPage("glossary")}><BookMarked /></RailButton>
             <RailButton active={page === "settings"} label="设置" onClick={() => setPage("settings")}><Settings /></RailButton>
           </nav>
           <span className="rail-spacer" />
@@ -261,7 +309,8 @@ function MainWindow() {
               transition={{ duration: .2, ease: [0.22, 1, 0.36, 1] }}
             >
               {page === "selection" && <SelectionPage settings={settings} status={status} result={selectionResult} />}
-              {page === "captions" && <CaptionPage status={status} items={captionResults} exportFormat={exportFormat} setExportFormat={setExportFormat} onToggle={toggleCaptions} onExport={exportCaptions} />}
+              {page === "captions" && <CaptionPage status={status} sessions={sessions} viewingSession={viewingSession} onSelectSession={selectSession} onToggle={toggleCaptions} onMessage={setMessage} />}
+              {page === "glossary" && <GlossaryPage onMessage={setMessage} />}
               {page === "settings" && (
                 <SettingsPage tab={settingsTab} setTab={setSettingsTab} view={view} apiKey={apiKey} setApiKey={setApiKey}
                   update={update} onSave={persist} saving={saving} testing={testing} onTest={runTest}
@@ -342,10 +391,148 @@ const asmrChannelStateText: Record<AsmrChannelState, string> = {
   pending_right: "正在确认人声是否已切换到右侧。",
   fallback_mono: "设备不支持双声道采集，当前已退回单声道。",
 };
-function CaptionPage({ status, items, exportFormat, setExportFormat, onToggle, onExport }: { status: RuntimeStatus; items: CaptionTranslatedEvent[]; exportFormat: string; setExportFormat: (v: string) => void; onToggle: () => void; onExport: () => void }) {
+const SESSION_PAGE_SIZE = 20;
+
+const demoCaptionPage: SessionPageView = {
+  total: 46, page: 3, page_count: 3,
+  entries: [
+    { index: 41, timestamp: "2026-09-01T14:24:10+08:00", source_text: "じゃあ、次のコーナーに行きましょう", translated_text: "那么进入下一个环节吧", model: "gpt-4o-mini", latency_ms: 812 },
+    { index: 42, timestamp: "2026-09-01T14:24:26+08:00", source_text: "今日のゲストは桜井先生です", translated_text: "今天的嘉宾是樱井老师", corrected_source_text: "今日のゲストは桜井先生です", corrected_translated_text: "今天的嘉宾是桜井先生", model: "gpt-4o-mini", latency_ms: 764 },
+    { index: 43, timestamp: "2026-09-01T14:24:41+08:00", source_text: "よろしくお願いします", translated_text: "请多关照", model: "gpt-4o-mini", latency_ms: 690 },
+    { index: 44, timestamp: "2026-09-01T14:25:02+08:00", source_text: "まずは自己紹介からお願いします", translated_text: "首先请做一下自我介绍", model: "gpt-4o-mini", latency_ms: 845 },
+    { index: 45, timestamp: "2026-09-01T14:25:20+08:00", source_text: "私は十年前からこの研究をしています", translated_text: "我从十年前就开始这项研究了", model: "gpt-4o-mini", latency_ms: 901 },
+    { index: 46, timestamp: "2026-09-01T14:25:38+08:00", source_text: "えーと、資料を見てください", translated_text: "呃，请看一下资料", model: "gpt-4o-mini", latency_ms: 733 },
+  ],
+};
+
+function CaptionPage({ status, sessions, viewingSession, onSelectSession, onToggle, onMessage }: {
+  status: RuntimeStatus; sessions: SessionSummary[]; viewingSession: string | null;
+  onSelectSession: (id: string | null) => void; onToggle: () => void; onMessage: (message: string) => void;
+}) {
   const busy = status.caption_state === "starting" || status.caption_state === "stopping" || status.caption_state === "switching" || status.caption_state === "loading_model";
   const activeName = sourceName(status.active_source ?? status.selected_source);
   const actionText = busy ? stateText[status.caption_state] : status.caption_running ? "停止字幕" : "启动字幕";
+  const currentSession = sessions.find(session => session.is_current);
+  const activeId = viewingSession ?? currentSession?.id ?? null;
+  const activeSummary = viewingSession ? sessions.find(session => session.id === viewingSession) : currentSession;
+  const isViewingCurrent = viewingSession === null;
+  const [pageView, setPageView] = useState<SessionPageView | null>(null);
+  const [pageDraft, setPageDraft] = useState("1");
+  const [showCorrected, setShowCorrected] = useState(true);
+  const [exportFormat, setExportFormat] = useState("srt");
+  const [correctionOpen, setCorrectionOpen] = useState(false);
+  const [useGlossary, setUseGlossary] = useState(true);
+  const [correction, setCorrection] = useState({ running: false, completed: 0, total: 0 });
+  const followTimer = useRef<number | undefined>(undefined);
+  const pageRef = useRef(1);
+
+  const loadPage = useCallback(async (targetPage: number) => {
+    if (!activeId) { setPageView(null); return; }
+    if (!isTauri) {
+      const pageCount = Math.max(1, Math.ceil(demoCaptionPage.total / SESSION_PAGE_SIZE));
+      const page = Math.min(Math.max(1, targetPage), pageCount);
+      pageRef.current = page;
+      setPageView({ ...demoCaptionPage, page, page_count: pageCount });
+      return;
+    }
+    try {
+      const view = await readCaptionSession(activeId, targetPage, SESSION_PAGE_SIZE);
+      pageRef.current = view.page;
+      setPageView(view);
+    } catch (error) { onMessage(String(error)); }
+  }, [activeId, onMessage]);
+
+  useEffect(() => {
+    setCorrectionOpen(false); setCorrection({ running: false, completed: 0, total: 0 });
+    // live with the current process's record: newest page; history starts at page 1
+    void loadPage(isViewingCurrent ? Number.MAX_SAFE_INTEGER : 1);
+  }, [loadPage, isViewingCurrent]);
+
+  useEffect(() => { setPageDraft(String(pageView?.page ?? 1)); }, [pageView?.page]);
+
+  const jumpToPage = () => {
+    if (!pageView) return;
+    const target = Number(pageDraft);
+    if (Number.isInteger(target) && target >= 1 && target <= pageView.page_count) {
+      if (target !== pageView.page) void loadPage(target);
+    } else {
+      setPageDraft(String(pageView.page));
+    }
+  };
+
+  useEffect(() => {
+    if (!isTauri) return;
+    const unsubs = [
+      listen("caption:translated", () => {
+        if (!isViewingCurrent || followTimer.current) return;
+        followTimer.current = window.setTimeout(() => {
+          followTimer.current = undefined;
+          void loadPage(Number.MAX_SAFE_INTEGER);
+        }, 400);
+      }),
+      listen<CorrectionProgress>("correction:progress", e => {
+        const progress = e.payload;
+        if (progress.id !== activeId) return;
+        if (progress.error) {
+          setCorrection({ running: false, completed: 0, total: 0 });
+          onMessage(`纠错失败：${progress.error}`);
+          return;
+        }
+        setCorrection(current => current.running ? { running: true, completed: progress.completed, total: progress.total } : current);
+      }),
+      listen<string>("correction:finished", e => {
+        if (e.payload !== activeId) return;
+        setCorrection({ running: false, completed: 0, total: 0 });
+        onMessage("字幕纠错完成");
+        void loadPage(pageRef.current);
+      }),
+    ];
+    return () => { if (followTimer.current) clearTimeout(followTimer.current); unsubs.forEach(p => void p.then(u => u())); };
+  }, [activeId, isViewingCurrent, loadPage, onMessage]);
+
+  const exportCaptions = async () => {
+    if (!activeId) return;
+    const path = await save({ defaultPath: `LiveCaption-${activeId}.${exportFormat}`, filters: [{ name: "字幕", extensions: [exportFormat] }] });
+    if (!path) return;
+    try { await exportCaptionSession(path, exportFormat, activeId); onMessage("字幕已导出"); }
+    catch (error) { onMessage(String(error)); }
+  };
+
+  const startCorrection = async () => {
+    if (!activeId) return;
+    try {
+      await correctCaptionSession(activeId, useGlossary);
+      setCorrectionOpen(false);
+      setCorrection({ running: true, completed: 0, total: pageView?.total ?? 0 });
+    } catch (error) { onMessage(String(error)); }
+  };
+
+  const toggleCorrectionPanel = async () => {
+    if (correctionOpen) {
+      setCorrectionOpen(false);
+      return;
+    }
+    if (isTauri) {
+      try {
+        setUseGlossary((await getGlossary()).use_in_correction);
+      } catch (error) {
+        onMessage(String(error));
+        return;
+      }
+    }
+    setCorrectionOpen(true);
+  };
+
+  const createNewRecord = async () => {
+    try { await newCaptionSession(); onMessage("已新建记录，后续转录将写入新记录"); }
+    catch (error) { onMessage(String(error)); }
+  };
+
+  const correctionBlocked = isViewingCurrent && status.caption_running;
+  const headingText = viewingSession
+    ? `${formatSessionDateTime(activeSummary?.created_at ?? "")} · ${activeSummary?.entry_count ?? 0} 条`
+    : pageView?.total ? `${pageView.total} 条字幕 · 每页 ${SESSION_PAGE_SIZE} 条` : "启动后记录会自动出现在这里";
+
   return <div className="page">
     <PageHeader eyebrow="LIVE CAPTIONS" title="实时字幕" description={`当前字幕来源：${activeName}。识别结果按顺序交给 LLM 翻译。`}
       action={<StatusDot on={status.caption_state === "running"} text={stateText[status.caption_state]} />} />
@@ -355,20 +542,237 @@ function CaptionPage({ status, items, exportFormat, setExportFormat, onToggle, o
       <button className={status.caption_running ? "danger action" : "primary action"} disabled={busy} onClick={onToggle}>{busy ? <Loader2 className="spin" /> : status.caption_running ? <Square /> : <Play />}{actionText}</button>
     </section>
     <CaptionHealth status={status} />
-    <div className="section-heading"><div><h2>本次转录</h2><p>{items.length ? `${items.length} 条字幕，最新内容在最上方` : "启动后记录会自动出现在这里"}</p></div><div className="export-row"><select value={exportFormat} onChange={e => setExportFormat(e.target.value)}><option value="srt">SRT</option><option value="vtt">WebVTT</option><option value="txt">TXT</option><option value="json">JSON</option></select><button className="ghost" disabled={!items.length} onClick={onExport}><Download />导出</button></div></div>
-    <div className="caption-list">
-      {items.length ? [...items].reverse().map((item, index) => (
-        <motion.article
-          key={item.segment.id}
-          data-latest={index === 0}
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: .24, ease: [0.22, 1, 0.36, 1] }}
-        >
-          <span>{item.segment.source_text}</span><p>{item.result.translated_text || item.result.error}</p><small>{item.result.latency_ms}ms</small>
-        </motion.article>
-      )) : <div className="quiet-empty"><FileText /><div><h3>等待第一句字幕</h3><p>这里不会用大面积空框占住你的视线。</p></div></div>}
+    <div className="section-heading">
+      <div><h2>{viewingSession ? "历史记录" : "本次转录"}</h2><p>{headingText}</p></div>
+      <div className="export-row">
+        {activeSummary?.has_correction && <Segmented value={showCorrected ? "corrected" : "original"} options={[{ label: "原文", value: "original" }, { label: "纠错后", value: "corrected" }]} onChange={value => setShowCorrected(value === "corrected")} />}
+        <select value={exportFormat} onChange={e => setExportFormat(e.target.value)}><option value="srt">SRT</option><option value="vtt">WebVTT</option><option value="txt">TXT</option><option value="json">JSON</option></select>
+        <button className="ghost" disabled={!pageView?.total} onClick={() => void exportCaptions()}><Download />导出</button>
+        {isTauri && <button className="ghost" title="打开字幕目录" onClick={() => void openSessionsDir().catch(error => onMessage(String(error)))}><ExternalLink />目录</button>}
+        <button className="ghost" disabled={!activeId || !pageView?.total || correction.running || correctionBlocked} title={correctionBlocked ? "停止实时字幕后可纠错" : undefined} onClick={() => void toggleCorrectionPanel()}><Wand2 />纠错</button>
+        {viewingSession
+          ? <button className="ghost record-action" onClick={() => onSelectSession(null)}><ArrowLeft />返回本次</button>
+          : <button className="ghost record-action" disabled={!isTauri} title="把后续转录写入一条新记录" onClick={() => void createNewRecord()}><Plus />新建记录</button>}
+      </div>
     </div>
+    {correctionOpen && !correction.running && (
+      <div className="correction-bar">
+        <span>LLM 将结合上下文修正可能的转写和翻译错误，原始内容会保留。</span>
+        <Toggle label="导入术语表" checked={useGlossary} onChange={setUseGlossary} />
+        <button className="primary" onClick={() => void startCorrection()}><Wand2 />开始纠错</button>
+        <button className="ghost" onClick={() => setCorrectionOpen(false)}>取消</button>
+      </div>
+    )}
+    {correction.running && (
+      <div className="correction-bar" data-running="true">
+        <Loader2 className="spin" /><span>正在纠错 {correction.completed}/{correction.total || "…"}，可继续浏览其他页面</span>
+      </div>
+    )}
+    <div className="caption-list">
+      {pageView?.entries.length ? pageView.entries.map(entry => {
+        const corrected = showCorrected && !!entry.corrected_translated_text;
+        const isLiveLatest = isViewingCurrent && status.caption_running && entry.index === pageView.total;
+        return (
+          <motion.article
+            key={entry.index}
+            data-latest={isLiveLatest}
+            data-corrected={corrected}
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: .24, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <span>{corrected ? entry.corrected_source_text : entry.source_text}</span>
+            <p>{(corrected ? entry.corrected_translated_text : entry.translated_text) || entry.error}</p>
+            <small title={`#${entry.index} · ${entry.model} · ${entry.latency_ms}ms`}>{formatEntryTime(entry.timestamp)}</small>
+          </motion.article>
+        );
+      }) : <div className="quiet-empty"><FileText /><div><h3>{viewingSession ? "这条记录是空的" : "等待第一句字幕"}</h3><p>这里不会用大面积空框占住你的视线。</p></div></div>}
+    </div>
+    {pageView && pageView.page_count > 1 && (
+      <nav className="pager" aria-label="分页">
+        <button disabled={pageView.page <= 1} onClick={() => void loadPage(pageView.page - 1)}><ChevronLeft />上一页</button>
+        <label className="pager-jump" title="输入页码，回车跳转">
+          <input
+            value={pageDraft}
+            inputMode="numeric"
+            aria-label="页码"
+            onChange={e => setPageDraft(e.target.value.replace(/\D/g, ""))}
+            onKeyDown={e => { if (e.key === "Enter") { jumpToPage(); e.currentTarget.blur(); } }}
+            onBlur={jumpToPage}
+          />
+          <span>/ {pageView.page_count}</span>
+        </label>
+        <button disabled={pageView.page >= pageView.page_count} onClick={() => void loadPage(pageView.page + 1)}>下一页<ChevronRight /></button>
+      </nav>
+    )}
+    <SessionTicker sessions={sessions} viewingSession={viewingSession} running={status.caption_running} onSelect={onSelectSession} onMessage={onMessage} />
+  </div>;
+}
+
+function SessionTicker({ sessions, viewingSession, running, onSelect, onMessage }: {
+  sessions: SessionSummary[]; viewingSession: string | null; running: boolean;
+  onSelect: (id: string | null) => void; onMessage: (message: string) => void;
+}) {
+  const [hover, setHover] = useState<{ session: SessionSummary; top: number; left: number } | null>(null);
+  const closeTimer = useRef<number | undefined>(undefined);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [sessions.length]);
+
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
+
+  const openCard = (session: SessionSummary, target: HTMLElement) => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    const rect = target.getBoundingClientRect();
+    setHover({ session, top: Math.min(rect.top, window.innerHeight - 210), left: rect.right + 12 });
+  };
+  const scheduleClose = () => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => setHover(null), 160);
+  };
+
+  const remove = async (id: string) => {
+    if (!window.confirm("删除这条转录记录？此操作不可撤销。")) return;
+    if (!isTauri) { onMessage("预览模式无法删除记录"); return; }
+    try { await deleteCaptionSession(id); if (viewingSession === id) onSelect(null); }
+    catch (error) { onMessage(String(error)); }
+  };
+
+  if (!sessions.length) return null;
+  const ordered = [...sessions].reverse();
+  return <>
+    <div className="session-ticker" aria-label="转录记录">
+      <div className="ticker-track" ref={listRef}>
+        {ordered.map(session => (
+          <button
+            key={session.id}
+            className="ticker-tick"
+            data-current={session.is_current}
+            data-live={session.is_current && running}
+            data-active={session.is_current ? viewingSession === null : viewingSession === session.id}
+            style={{ width: Math.min(30, 10 + Math.round(Math.log2(session.entry_count + 1) * 5)) }}
+            title={session.id}
+            onMouseEnter={e => openCard(session, e.currentTarget)}
+            onMouseLeave={scheduleClose}
+            onFocus={e => openCard(session, e.currentTarget)}
+            onBlur={scheduleClose}
+            onClick={() => onSelect(session.is_current ? null : session.id)}
+          />
+        ))}
+      </div>
+    </div>
+    {hover && createPortal(
+      <motion.div
+        className="ticker-card"
+        style={{ top: hover.top, left: hover.left }}
+        initial={{ opacity: 0, x: -6, scale: .97 }}
+        animate={{ opacity: 1, x: 0, scale: 1 }}
+        transition={{ duration: .16, ease: [0.22, 1, 0.36, 1] }}
+        onMouseEnter={() => { if (closeTimer.current) clearTimeout(closeTimer.current); }}
+        onMouseLeave={scheduleClose}
+      >
+        <header>
+          <strong>{formatSessionDateTime(hover.session.created_at)}</strong>
+          {hover.session.is_current && <i>本次</i>}
+        </header>
+        <p className="ticker-card-source">{hover.session.first_source || "（还没有转录内容）"}</p>
+        {hover.session.first_translation && <p className="ticker-card-translation">{hover.session.first_translation}</p>}
+        <footer>
+          <small>{hover.session.entry_count} 条{hover.session.has_correction ? " · 已纠错" : ""}</small>
+          <button onClick={() => void remove(hover.session.id)}><Trash2 />删除</button>
+        </footer>
+      </motion.div>,
+      document.body,
+    )}
+  </>;
+}
+
+function GlossaryPage({ onMessage }: { onMessage: (message: string) => void }) {
+  const demo: Glossary = {
+    use_in_translation: false, use_in_correction: true,
+    terms: [
+      { id: "demo-1", source: "桜井", target: "樱井", note: "常驻嘉宾" },
+      { id: "demo-2", source: "ファスト映画", target: "速看电影", note: "" },
+    ],
+  };
+  const [glossary, setGlossary] = useState<Glossary | null>(isTauri ? null : demo);
+  const [saving, setSaving] = useState(false);
+  const [draft, setDraft] = useState({ source: "", target: "", note: "" });
+
+  useEffect(() => {
+    if (!isTauri) return;
+    void getGlossary().then(setGlossary).catch(error => onMessage(String(error)));
+    const unlisten = listen<Glossary>("glossary:changed", e => setGlossary(e.payload));
+    return () => { void unlisten.then(u => u()); };
+  }, [onMessage]);
+
+  const update = (next: Glossary) => setGlossary(next);
+  const updateTerm = (id: string, patch: Partial<{ source: string; target: string; note: string }>) => {
+    if (!glossary) return;
+    update({ ...glossary, terms: glossary.terms.map(term => term.id === id ? { ...term, ...patch } : term) });
+  };
+  const addTerm = () => {
+    if (!glossary || !draft.source.trim() || !draft.target.trim()) return;
+    update({ ...glossary, terms: [...glossary.terms, { id: crypto.randomUUID(), source: draft.source.trim(), target: draft.target.trim(), note: draft.note.trim() }] });
+    setDraft({ source: "", target: "", note: "" });
+  };
+  const persist = async () => {
+    if (!glossary || !isTauri) return;
+    setSaving(true);
+    try { await saveGlossary(glossary); onMessage("术语表已保存"); }
+    catch (error) { onMessage(String(error)); }
+    finally { setSaving(false); }
+  };
+  const exportFile = async () => {
+    const path = await save({ defaultPath: "livecaption-glossary.json", filters: [{ name: "术语表", extensions: ["json"] }] });
+    if (!path) return;
+    try { await exportGlossary(path); onMessage("术语表已导出"); }
+    catch (error) { onMessage(String(error)); }
+  };
+  const importFile = async () => {
+    const path = await open({ multiple: false, filters: [{ name: "术语表", extensions: ["json"] }] });
+    if (!path) return;
+    try {
+      const result = await importGlossary(path);
+      setGlossary(result.glossary);
+      onMessage(`导入完成：新增 ${result.added} 条，更新 ${result.updated} 条`);
+    } catch (error) { onMessage(String(error)); }
+  };
+
+  if (!glossary) return <div className="page"><PageHeader eyebrow="GLOSSARY" title="术语表" description="正在读取术语表…" /></div>;
+  return <div className="page">
+    <PageHeader eyebrow="GLOSSARY" title="术语表" description="统一人名、作品名等专有名词的译法，可用于实时翻译和字幕纠错；支持导入导出以便多设备同步。"
+      action={<button className="primary" onClick={() => void persist()} disabled={saving || !isTauri}>{saving ? <Loader2 className="spin" /> : <Check />}保存术语表</button>} />
+    <section className="settings-sheet">
+      <SettingRow title="用于实时翻译" description="翻译请求携带术语表，下次启动字幕后生效。"><Toggle label="用于实时翻译" checked={glossary.use_in_translation} onChange={use_in_translation => update({ ...glossary, use_in_translation })} /></SettingRow>
+      <SettingRow title="默认用于字幕纠错" description="点击纠错时可临时更改是否导入术语表，这里是默认值。"><Toggle label="默认用于字幕纠错" checked={glossary.use_in_correction} onChange={use_in_correction => update({ ...glossary, use_in_correction })} /></SettingRow>
+      <div className="settings-group-title glossary-head">
+        <div><h2>词条</h2><p>{glossary.terms.length} 条，按源词去重</p></div>
+        <div>
+          <button className="ghost" onClick={() => void importFile()} disabled={!isTauri}><Upload />导入</button>
+          <button className="ghost" onClick={() => void exportFile()} disabled={!isTauri || !glossary.terms.length}><Download />导出</button>
+        </div>
+      </div>
+      <div className="glossary-add">
+        <input placeholder="原文，如 桜井" value={draft.source} onChange={e => setDraft({ ...draft, source: e.target.value })} />
+        <input placeholder="译法，如 樱井" value={draft.target} onChange={e => setDraft({ ...draft, target: e.target.value })} />
+        <input placeholder="备注（可选）" value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} onKeyDown={e => { if (e.key === "Enter") addTerm(); }} />
+        <button className="primary" onClick={addTerm} disabled={!draft.source.trim() || !draft.target.trim()}><Plus />添加</button>
+      </div>
+      <div className="glossary-list">
+        {glossary.terms.length ? glossary.terms.map(term => (
+          <div className="glossary-row" key={term.id}>
+            <input value={term.source} onChange={e => updateTerm(term.id, { source: e.target.value })} aria-label="原文" />
+            <input value={term.target} onChange={e => updateTerm(term.id, { target: e.target.value })} aria-label="译法" />
+            <input value={term.note} placeholder="备注" onChange={e => updateTerm(term.id, { note: e.target.value })} aria-label="备注" />
+            <button title="删除词条" onClick={() => update({ ...glossary, terms: glossary.terms.filter(item => item.id !== term.id) })}><Trash2 /></button>
+          </div>
+        )) : <div className="quiet-empty"><BookMarked /><div><h3>还没有词条</h3><p>在上方添加第一组术语，或从其他设备导入。</p></div></div>}
+      </div>
+    </section>
   </div>;
 }
 
