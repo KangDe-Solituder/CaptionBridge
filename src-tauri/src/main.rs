@@ -1312,7 +1312,20 @@ fn main() {
 }
 
 fn run_app() {
+    // Register state on the builder before Tauri creates any configured
+    // webviews. Release assets can load quickly enough to invoke commands
+    // before `setup` runs, so managing state from `setup` is racy.
+    let paths = AppPaths::shared()
+        .unwrap_or_else(|error| panic!("failed to resolve LiveCaption data paths: {error}"));
+    paths
+        .ensure()
+        .unwrap_or_else(|error| panic!("failed to create LiveCaption data paths: {error}"));
+    let settings = settings::load(&paths)
+        .unwrap_or_else(|error| panic!("failed to load LiveCaption settings: {error}"));
+    let state = AppState::new(paths, settings);
+
     tauri::Builder::default()
+        .manage(state)
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -1357,14 +1370,12 @@ fn run_app() {
             open_asr_dependency_url
         ])
         .setup(|app| {
-            // Use one explicit data directory for dev, raw release binaries,
-            // and installed builds. This avoids environment-dependent path
-            // resolution producing separate settings files.
-            let paths = AppPaths::shared().map_err(anyhow::Error::msg)?;
-            paths.ensure().map_err(anyhow::Error::msg)?;
-            let settings = settings::load(&paths).map_err(anyhow::Error::msg)?;
-            let state = AppState::new(paths, settings.clone());
-            app.manage(state.clone());
+            let state = app.state::<AppState>().inner().clone();
+            let settings = state
+                .settings
+                .read()
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                .clone();
 
             // A packaged process can take noticeably longer to access Windows
             // Credential Manager. Probe once off the event loop so first paint,
