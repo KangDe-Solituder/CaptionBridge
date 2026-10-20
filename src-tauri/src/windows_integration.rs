@@ -3,7 +3,7 @@ use std::{
     process::Command,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Condvar, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -12,6 +12,7 @@ use std::{
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MIN_SELECTION_DRAG_DISTANCE: i32 = 10;
 const MIN_SELECTION_DRAG_DURATION: Duration = Duration::from_millis(80);
+const SELECTION_REQUEST_MAX_AGE: Duration = Duration::from_millis(1500);
 
 use arboard::Clipboard;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition};
@@ -24,12 +25,13 @@ use windows::Win32::{
             KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_LBUTTON,
             VK_LWIN, VK_MENU, VK_SHIFT,
         },
-        WindowsAndMessaging::GetCursorPos,
+        WindowsAndMessaging::{GetCursorPos, GetForegroundWindow},
     },
 };
 
 use crate::{
     models::{SelectionReadyEvent, SelectionTriggerMode},
+    native_selection_reader::{Selection, SelectionReader},
     AppState,
 };
 
@@ -91,16 +93,31 @@ fn parse_hotkey(value: &str) -> Result<ParsedHotkey, String> {
 }
 
 pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
+    let generation = Arc::new(AtomicU64::new(0));
+    let requests = start_selection_reader(app.clone(), state.clone(), Arc::clone(&generation));
     thread::spawn(move || {
         let mut was_down = false;
+        let mut mouse_was_down = false;
+        let mut was_automatic = false;
+        let mut source_window = unsafe { GetForegroundWindow() }.0 as isize;
         let mut mouse_started: Option<(POINT, Instant)> = None;
-        let automatic_generation = Arc::new(AtomicU64::new(0));
         loop {
             thread::sleep(Duration::from_millis(24));
+            let foreground = unsafe { GetForegroundWindow() }.0 as isize;
+            let mouse_down = key_down(VK_LBUTTON.0 as i32);
+            if foreground != source_window || (mouse_down && !mouse_was_down) {
+                generation.fetch_add(1, Ordering::Relaxed);
+            }
+            if foreground != source_window {
+                mouse_started = None;
+                source_window = foreground;
+            }
+            mouse_was_down = mouse_down;
             let app_window_focused = ["main", "selection-toolbar", "overlay"]
                 .iter()
                 .any(|label| app_window_blocks_selection(&app, label));
             if app_window_focused {
+                generation.fetch_add(1, Ordering::Relaxed);
                 was_down = false;
                 mouse_started = None;
                 continue;
@@ -116,23 +133,36 @@ pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
                     Err(_) => continue,
                 };
             if !selection_enabled {
+                generation.fetch_add(1, Ordering::Relaxed);
                 was_down = false;
                 mouse_started = None;
                 continue;
             }
-            if trigger_mode == SelectionTriggerMode::Automatic {
-                let mouse_down = key_down(VK_LBUTTON.0 as i32);
+            let automatic = trigger_mode == SelectionTriggerMode::Automatic;
+            if automatic != was_automatic {
+                generation.fetch_add(1, Ordering::Relaxed);
+                mouse_started = None;
+                was_down = false;
+                was_automatic = automatic;
+            }
+            if key_down(VK_ESCAPE.0 as i32) {
+                generation.fetch_add(1, Ordering::Relaxed);
+                mouse_started = None;
+                continue;
+            }
+            if automatic {
                 if mouse_down && mouse_started.is_none() {
                     mouse_started = cursor_position().map(|point| (point, Instant::now()));
                 } else if !mouse_down {
                     if let Some((start, started)) = mouse_started.take() {
                         if let Some(end) = cursor_position() {
                             if is_intentional_selection_drag(start, end, started.elapsed()) {
-                                emit_automatic_selection(
-                                    &app,
-                                    &state,
+                                queue_selection(
+                                    &requests,
+                                    &generation,
+                                    end,
                                     clipboard_fallback,
-                                    Arc::clone(&automatic_generation),
+                                    false,
                                 );
                             }
                         }
@@ -154,7 +184,11 @@ pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
                 {
                     thread::sleep(Duration::from_millis(10));
                 }
-                emit_selection(&app, &state);
+                if !key_down(hotkey.key) && !hotkey.modifiers.iter().any(|key| key_down(*key)) {
+                    if let Some(point) = cursor_position() {
+                        queue_selection(&requests, &generation, point, clipboard_fallback, true);
+                    }
+                }
             }
             was_down = down;
         }
@@ -180,71 +214,179 @@ fn is_intentional_selection_drag(start: POINT, end: POINT, elapsed: Duration) ->
     distance >= MIN_SELECTION_DRAG_DISTANCE && elapsed >= MIN_SELECTION_DRAG_DURATION
 }
 
-fn emit_selection(app: &AppHandle, state: &AppState) {
-    emit_selection_result(app, state, capture_selected_text(), true);
+struct SelectionRequest {
+    generation: u64,
+    source_window: isize,
+    point: POINT,
+    use_focused_element: bool,
+    clipboard_fallback: bool,
+    sequence_before: u32,
+    started: Instant,
 }
 
-fn emit_automatic_selection(
-    app: &AppHandle,
-    state: &AppState,
-    clipboard_fallback: bool,
-    generation: Arc<AtomicU64>,
-) {
-    let sequence_before = unsafe { GetClipboardSequenceNumber() };
-    let current_generation = generation.fetch_add(1, Ordering::Relaxed) + 1;
+// One in-flight read plus one replaceable pending request, even if a provider
+// ignores its timeout. Never create a thread per drag or queue stale work.
+#[derive(Default)]
+struct SelectionRequests {
+    latest: Mutex<Option<SelectionRequest>>,
+    ready: Condvar,
+}
 
-    // Showing the non-focusable toolbar must never wait for UI Automation or
-    // clipboard acquisition. Text capture continues independently below.
-    let _ = app.emit("selection:pending", ());
-    if let Err(error) = show_toolbar_at_cursor(app) {
-        state.log("warn", format!("划词工具条显示失败：{error}"));
-        let _ = app.emit("selection:cancelled", ());
-        return;
+impl SelectionRequests {
+    fn submit(&self, request: SelectionRequest) {
+        *self
+            .latest
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(request);
+        self.ready.notify_one();
     }
 
-    let app = app.clone();
-    let state = state.clone();
+    fn next(&self) -> SelectionRequest {
+        let pending = self
+            .latest
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.ready
+            .wait_while(pending, |pending| pending.is_none())
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .expect("selection request signalled")
+    }
+}
+
+fn queue_selection(
+    requests: &SelectionRequests,
+    generation: &AtomicU64,
+    point: POINT,
+    clipboard_fallback: bool,
+    use_focused_element: bool,
+) {
+    requests.submit(SelectionRequest {
+        generation: generation.fetch_add(1, Ordering::Relaxed) + 1,
+        source_window: unsafe { GetForegroundWindow() }.0 as isize,
+        point,
+        use_focused_element,
+        clipboard_fallback,
+        sequence_before: unsafe { GetClipboardSequenceNumber() },
+        started: Instant::now(),
+    });
+}
+
+fn start_selection_reader(
+    app: AppHandle,
+    state: AppState,
+    generation: Arc<AtomicU64>,
+) -> Arc<SelectionRequests> {
+    let requests = Arc::new(SelectionRequests::default());
+    let worker_requests = Arc::clone(&requests);
     thread::spawn(move || {
-        let result = capture_automatic_selected_text(clipboard_fallback, sequence_before);
-        if generation.load(Ordering::Relaxed) == current_generation {
-            emit_selection_result(&app, &state, result, false);
+        // Construct and drop all UIA/COM objects on this long-lived MTA thread.
+        let reader = SelectionReader::new();
+        loop {
+            let request = worker_requests.next();
+            let is_current = || {
+                selection_request_is_current(
+                    request.generation,
+                    generation.load(Ordering::Relaxed),
+                    request.source_window,
+                    unsafe { GetForegroundWindow() }.0 as isize,
+                    request.started.elapsed(),
+                ) && !key_down(VK_LBUTTON.0 as i32)
+                    && !key_down(VK_ESCAPE.0 as i32)
+            };
+            let result = capture_selected_text(
+                request.clipboard_fallback,
+                &is_current,
+                || match &reader {
+                    Ok(reader) => reader.read(
+                        (!request.use_focused_element).then_some(request.point),
+                        &is_current,
+                    ),
+                    Err(error) => Err(error.clone()),
+                },
+                || capture_compatible_selected_text(request.sequence_before, &is_current),
+            );
+            if is_current() {
+                state.log(
+                    "debug",
+                    format!("选区读取耗时 {}ms", request.started.elapsed().as_millis()),
+                );
+                emit_selection_result(&app, &state, request.point, result);
+            }
         }
     });
+    requests
+}
+
+fn selection_request_is_current(
+    requested_generation: u64,
+    current_generation: u64,
+    source_window: isize,
+    foreground: isize,
+    elapsed: Duration,
+) -> bool {
+    requested_generation == current_generation
+        && source_window == foreground
+        && elapsed < SELECTION_REQUEST_MAX_AGE
 }
 
 fn emit_selection_result(
     app: &AppHandle,
     state: &AppState,
+    point: POINT,
     result: Result<String, String>,
-    show_toolbar: bool,
 ) {
-    match result {
+    match result.and_then(nonempty_selection) {
         Ok(text) => {
-            let point = cursor_position().unwrap_or(POINT { x: 0, y: 0 });
             let event = SelectionReadyEvent {
                 text,
                 x: point.x,
                 y: point.y,
             };
             let _ = app.emit("selection:ready", &event);
-            if show_toolbar {
-                if let Err(error) = show_toolbar_at_cursor(app) {
-                    state.log("warn", format!("划词工具条显示失败：{error}"));
-                }
+            if let Err(error) = show_toolbar_at_point(app, point) {
+                state.log("warn", format!("划词工具条显示失败：{error}"));
             }
         }
         Err(error) => {
             state.log("debug", error);
-            if !show_toolbar {
-                let _ = app.emit("selection:cancelled", ());
-            }
         }
     }
 }
 
-fn capture_automatic_selected_text(
+fn nonempty_selection(text: String) -> Result<String, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        Err("当前应用没有可读取的选中文本".to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn capture_selected_text(
     clipboard_fallback: bool,
+    is_current: &impl Fn() -> bool,
+    read_native: impl FnOnce() -> Result<Selection, String>,
+    copy_fallback: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    if !is_current() {
+        return Err("选区读取已取消".to_string());
+    }
+    let selection = read_native()?;
+    if !is_current() {
+        return Err("选区读取已取消".to_string());
+    }
+    match selection {
+        Selection::Text(text) => nonempty_selection(text),
+        Selection::Empty => Err("当前应用没有可读取的选中文本".to_string()),
+        Selection::Unsupported if clipboard_fallback => copy_fallback(),
+        Selection::Unsupported => Err("当前应用不支持读取文本选区".to_string()),
+    }
+}
+
+fn capture_compatible_selected_text(
     sequence_before: u32,
+    is_current: &impl Fn() -> bool,
 ) -> Result<String, String> {
     // A real Ctrl+C always wins. Keep observing long enough for the target
     // application to publish its clipboard content before considering a
@@ -255,6 +397,9 @@ fn capture_automatic_selected_text(
     let grace_started = Instant::now();
     let mut user_copy_detected = false;
     while grace_started.elapsed() < Duration::from_millis(320) {
+        if !is_current() {
+            return Err("选区读取已取消".to_string());
+        }
         if let Some(text) = changed_clipboard_text(sequence_before)? {
             return Ok(text);
         }
@@ -267,17 +412,10 @@ fn capture_automatic_selected_text(
     if user_copy_detected {
         return Err("检测到用户正在复制，本次自动划词不注入 Ctrl+C".to_string());
     }
-    if !clipboard_fallback {
-        return read_selected_text_uia().and_then(|text| {
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                Err("当前应用没有可读取的选中文本".to_string())
-            } else {
-                Ok(trimmed.to_string())
-            }
-        });
+    if !is_current() {
+        return Err("选区读取已取消".to_string());
     }
-    capture_selected_text()
+    capture_selected_text_via_copy(is_current)
 }
 
 fn changed_clipboard_text(sequence_before: u32) -> Result<Option<String>, String> {
@@ -343,10 +481,17 @@ pub fn start_toolbar_dismiss_watcher(app: AppHandle, state: AppState) {
     });
 }
 
-pub fn capture_selected_text() -> Result<String, String> {
+fn capture_selected_text_via_copy(is_current: &impl Fn() -> bool) -> Result<String, String> {
     let mut clipboard = Clipboard::new().map_err(|error| error.to_string())?;
     let previous = clipboard.get_text().ok();
     let sequence = unsafe { GetClipboardSequenceNumber() };
+    if !is_current()
+        || [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_C]
+            .iter()
+            .any(|key| key_down(key.0 as i32))
+    {
+        return Err("选区已失效或用户正在操作键盘，本次不注入 Ctrl+C".to_string());
+    }
     send_copy_shortcut();
 
     let started = Instant::now();
@@ -357,12 +502,6 @@ pub fn capture_selected_text() -> Result<String, String> {
         thread::sleep(Duration::from_millis(12));
     }
     if unsafe { GetClipboardSequenceNumber() } == sequence {
-        if let Ok(text) = read_selected_text_uia() {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_string());
-            }
-        }
         return Err("当前没有可复制的选中文本".into());
     }
 
@@ -380,44 +519,10 @@ pub fn capture_selected_text() -> Result<String, String> {
     }
 }
 
-fn read_selected_text_uia() -> Result<String, String> {
-    let script = r#"
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName WindowsBase
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class SelectionCursorNative {
-  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
-  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
-}
-"@
-$point = New-Object SelectionCursorNative+POINT
-[SelectionCursorNative]::GetCursorPos([ref]$point) | Out-Null
-$element = [System.Windows.Automation.AutomationElement]::FromPoint([Windows.Point]::new($point.X, $point.Y))
-$walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
-for ($i = 0; $i -lt 8 -and $element; $i++) {
-  try {
-    $pattern = $element.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-    if ($pattern) {
-      $ranges = $pattern.GetSelection()
-      if ($ranges -and $ranges.Count -gt 0) {
-        $text = $ranges[0].GetText(-1)
-        if ($text) { Write-Output $text; exit 0 }
-      }
-    }
-  } catch {}
-  $element = $walker.GetParent($element)
-}
-"#;
-    run_powershell(script)
-}
-
-pub fn show_toolbar_at_cursor(app: &AppHandle) -> Result<(), String> {
+fn show_toolbar_at_point(app: &AppHandle, point: POINT) -> Result<(), String> {
     let window = app
         .get_webview_window("selection-toolbar")
         .ok_or_else(|| "工具条窗口不存在".to_string())?;
-    let point = cursor_position().ok_or_else(|| "无法读取鼠标位置".to_string())?;
     window
         .set_focusable(false)
         .map_err(|error| format!("无法恢复不可聚焦状态：{error}"))?;
@@ -725,11 +830,147 @@ fn keyboard_input(key: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_powershell_output, is_intentional_selection_drag, parse_live_caption_snapshot,
-        run_powershell, validate_hotkey, window_state_blocks_selection,
+        capture_selected_text, decode_powershell_output, is_intentional_selection_drag,
+        nonempty_selection, parse_live_caption_snapshot, run_powershell,
+        selection_request_is_current, validate_hotkey, window_state_blocks_selection,
+        SelectionRequest, SelectionRequests, SELECTION_REQUEST_MAX_AGE,
     };
-    use std::time::Duration;
+    use crate::native_selection_reader::Selection;
+    use std::{
+        cell::Cell,
+        time::{Duration, Instant},
+    };
     use windows::Win32::Foundation::POINT;
+
+    #[test]
+    fn selection_toolbar_requires_nonblank_text() {
+        for text in ["", " ", "\r\n\t", "\u{00a0}\u{3000}"] {
+            assert!(nonempty_selection(text.to_string()).is_err());
+        }
+        assert_eq!(
+            nonempty_selection(" \n选中的文字\n第二行\t ".to_string()).unwrap(),
+            "选中的文字\n第二行"
+        );
+    }
+
+    #[test]
+    fn cancelled_selection_does_not_read_the_clipboard_or_inject_copy() {
+        assert_eq!(
+            capture_selected_text(
+                true,
+                &|| false,
+                || panic!("cancelled request must not read UIA"),
+                || panic!("cancelled request must not copy"),
+            ),
+            Err("选区读取已取消".to_string())
+        );
+    }
+
+    #[test]
+    fn native_selection_bypasses_clipboard_grace_period() {
+        assert_eq!(
+            capture_selected_text(
+                true,
+                &|| true,
+                || Ok(Selection::Text(" 选中的文字 ".into())),
+                || panic!("native text must bypass the entire clipboard path"),
+            ),
+            Ok("选中的文字".into())
+        );
+    }
+
+    #[test]
+    fn empty_or_failed_native_read_never_copies_a_whole_line() {
+        for result in [
+            Ok(Selection::Empty),
+            Ok(Selection::Text(" \n\t".into())),
+            Err("provider timed out".to_string()),
+        ] {
+            assert!(capture_selected_text(
+                true,
+                &|| true,
+                || result,
+                || panic!("empty selection or provider failure must not copy"),
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn unsupported_app_uses_copy_only_when_enabled() {
+        assert_eq!(
+            capture_selected_text(
+                true,
+                &|| true,
+                || Ok(Selection::Unsupported),
+                || Ok("兼容选区".into()),
+            ),
+            Ok("兼容选区".into())
+        );
+        assert!(capture_selected_text(
+            false,
+            &|| true,
+            || Ok(Selection::Unsupported),
+            || panic!("disabled fallback must not copy"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cancellation_during_native_read_discards_text_and_prevents_fallback() {
+        for result in [Selection::Text("过期文字".into()), Selection::Unsupported] {
+            let current = Cell::new(true);
+            assert_eq!(
+                capture_selected_text(
+                    true,
+                    &|| current.get(),
+                    || {
+                        current.set(false);
+                        Ok(result)
+                    },
+                    || panic!("stale request must not inject copy"),
+                ),
+                Err("选区读取已取消".into())
+            );
+        }
+    }
+
+    #[test]
+    fn pending_selection_is_replaced_by_the_latest_drag() {
+        let requests = SelectionRequests::default();
+        for generation in 1..=100 {
+            requests.submit(SelectionRequest {
+                generation,
+                source_window: 1,
+                point: POINT {
+                    x: generation as i32,
+                    y: 0,
+                },
+                use_focused_element: false,
+                clipboard_fallback: false,
+                sequence_before: 0,
+                started: Instant::now(),
+            });
+        }
+        let latest = requests.next();
+        assert_eq!(latest.generation, 100);
+        assert_eq!(latest.point.x, 100);
+        assert!(requests.latest.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn stale_selection_or_changed_foreground_never_shows_toolbar() {
+        assert!(selection_request_is_current(1, 1, 10, 10, Duration::ZERO));
+        assert!(!selection_request_is_current(1, 2, 10, 10, Duration::ZERO));
+        assert!(!selection_request_is_current(1, 1, 10, 20, Duration::ZERO));
+        assert!(!selection_request_is_current(
+            1,
+            1,
+            10,
+            10,
+            SELECTION_REQUEST_MAX_AGE
+        ));
+    }
 
     #[test]
     fn automatic_selection_requires_a_deliberate_drag() {

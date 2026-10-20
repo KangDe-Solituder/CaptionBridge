@@ -47,6 +47,7 @@
         "url": "index.html",
         "width": 246,
         "height": 44,
+        "shadow": false,
         "focus": false,
         "visible": false,
         "decorations": false,

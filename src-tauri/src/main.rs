@@ -9,6 +9,7 @@ mod llm;
 mod model_manager;
 mod models;
 mod native_caption_reader;
+mod native_selection_reader;
 mod network;
 mod secrets;
 mod segmenter;

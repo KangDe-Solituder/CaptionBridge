@@ -1,11 +1,14 @@
 /* ===== selection toolbar + result card ===== */
+:root[data-window="selection-toolbar"],
+:root[data-window="selection-toolbar"] body,
+:root[data-window="selection-toolbar"] #root {
+  min-width: 0; width: 100%; height: 100%; overflow: hidden;
+}
 .selection-toolbar {
   display: flex; align-items: center; justify-content: center; gap: 2px;
   width: 100vw; height: 100vh; padding: 4px; overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--line) 85%, transparent); border-radius: 15px;
 }
-/* keep a single crisp edge: an opaque card avoids the translucent rim that read as a second border */
-.selection-toolbar.floating, :root[data-blur="true"] .selection-toolbar.floating { background: var(--surface); backdrop-filter: none; }
 /* keep a single crisp edge: an opaque card avoids the translucent rim that read as a second border */
 .selection-toolbar.floating, :root[data-blur="true"] .selection-toolbar.floating { background: var(--surface); backdrop-filter: none; }
 .toolbar-action {
