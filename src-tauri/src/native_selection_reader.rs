@@ -21,6 +21,9 @@ use windows::{
 #[derive(Debug, PartialEq)]
 pub enum Selection {
     Text(String),
+    // UIA can expose inline emoji/images as U+FFFC instead of their text.
+    // The source app's copy operation is needed to recover the original.
+    EmbeddedObjects,
     Empty,
     Unsupported,
 }
@@ -166,6 +169,8 @@ fn selection_from_ranges(texts: Vec<String>) -> Selection {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         Selection::Empty
+    } else if trimmed.contains('\u{fffc}') {
+        Selection::EmbeddedObjects
     } else {
         Selection::Text(trimmed.to_string())
     }
@@ -189,6 +194,30 @@ mod tests {
         assert_eq!(
             selection_from_ranges(vec![" 日本語🙂".into(), "".into(), "中文\n第二行 ".into()]),
             Selection::Text("日本語🙂\n中文\n第二行".into())
+        );
+    }
+
+    #[test]
+    fn object_replacement_characters_require_original_text_recovery() {
+        for text in [
+            "\u{fffc}\u{fffc}",
+            "YouTube 评论 \u{fffc} 👍🏽",
+            "第一行\n\u{fffc}",
+        ] {
+            assert_eq!(
+                selection_from_ranges(vec![text.into()]),
+                Selection::EmbeddedObjects
+            );
+        }
+    }
+
+    #[test]
+    fn native_emoji_survive_utf16_conversion_without_clipboard_recovery() {
+        let original = "🎉👍🏽👨‍👩‍👧‍👦🇨🇳❤️1️⃣ 中文🙂";
+        let native = windows::core::BSTR::from(original);
+        assert_eq!(
+            selection_from_ranges(vec![native.to_string()]),
+            Selection::Text(original.into())
         );
     }
 

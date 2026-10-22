@@ -379,7 +379,23 @@ fn capture_selected_text(
     match selection {
         Selection::Text(text) => nonempty_selection(text),
         Selection::Empty => Err("当前应用没有可读取的选中文本".to_string()),
-        Selection::Unsupported if clipboard_fallback => copy_fallback(),
+        Selection::EmbeddedObjects | Selection::Unsupported if clipboard_fallback => {
+            let recovered = copy_fallback()?;
+            if !is_current() {
+                return Err("选区读取已取消".to_string());
+            }
+            let recovered = nonempty_selection(recovered)?;
+            // Never send known-incomplete text to the toolbar or translation.
+            // Removing/guessing a placeholder would silently lose the emoji.
+            if recovered.contains('\u{fffc}') {
+                Err("源应用复制的选区仍含对象占位符，无法取得完整文字".to_string())
+            } else {
+                Ok(recovered)
+            }
+        }
+        Selection::EmbeddedObjects => {
+            Err("选区包含 emoji 或嵌入对象，需要启用兼容复制以读取完整文字".to_string())
+        }
         Selection::Unsupported => Err("当前应用不支持读取文本选区".to_string()),
     }
 }
@@ -880,6 +896,78 @@ mod tests {
     }
 
     #[test]
+    fn readable_native_emoji_keep_the_fast_path() {
+        let text = "YouTube 评论 🎉👍🏽👨‍👩‍👧‍👦🇨🇳❤️1️⃣";
+        assert_eq!(
+            capture_selected_text(
+                true,
+                &|| true,
+                || Ok(Selection::Text(text.into())),
+                || panic!("readable emoji must not trigger clipboard access"),
+            ),
+            Ok(text.into())
+        );
+    }
+
+    #[test]
+    fn embedded_emoji_use_original_clipboard_text() {
+        for original in ["🎉👍🏽👨‍👩‍👧‍👦🇨🇳", "YouTube 评论 ❤️\n下一行 1️⃣🙂"]
+        {
+            assert_eq!(
+                capture_selected_text(
+                    true,
+                    &|| true,
+                    || Ok(Selection::EmbeddedObjects),
+                    || Ok(original.into()),
+                ),
+                Ok(original.into())
+            );
+        }
+        assert!(capture_selected_text(
+            false,
+            &|| true,
+            || Ok(Selection::EmbeddedObjects),
+            || panic!("disabled clipboard recovery must be respected"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn failed_or_incomplete_emoji_recovery_never_reaches_the_toolbar() {
+        for recovered in [
+            Err("source app did not copy".into()),
+            Ok(" \r\n".into()),
+            Ok("\u{fffc}\u{fffc}".into()),
+            Ok("评论 🙂\u{fffc}".into()),
+        ] {
+            assert!(capture_selected_text(
+                true,
+                &|| true,
+                || Ok(Selection::EmbeddedObjects),
+                || recovered,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn cancelling_during_emoji_recovery_discards_the_result() {
+        let current = Cell::new(true);
+        assert_eq!(
+            capture_selected_text(
+                true,
+                &|| current.get(),
+                || Ok(Selection::EmbeddedObjects),
+                || {
+                    current.set(false);
+                    Ok("🙂".into())
+                },
+            ),
+            Err("选区读取已取消".into())
+        );
+    }
+
+    #[test]
     fn empty_or_failed_native_read_never_copies_a_whole_line() {
         for result in [
             Ok(Selection::Empty),
@@ -918,7 +1006,11 @@ mod tests {
 
     #[test]
     fn cancellation_during_native_read_discards_text_and_prevents_fallback() {
-        for result in [Selection::Text("过期文字".into()), Selection::Unsupported] {
+        for result in [
+            Selection::Text("过期文字".into()),
+            Selection::Unsupported,
+            Selection::EmbeddedObjects,
+        ] {
             let current = Cell::new(true);
             assert_eq!(
                 capture_selected_text(
