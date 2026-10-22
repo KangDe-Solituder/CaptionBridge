@@ -216,6 +216,27 @@ cargo clippy -- -D warnings
 
 Windows 运行态验收清单见 [`QUALITY_ACCEPTANCE.md`](QUALITY_ACCEPTANCE.md)，产品架构和阶段计划见 [`LIVE_CAPTIONS_TRANSLATOR_BLUEPRINT.md`](LIVE_CAPTIONS_TRANSLATOR_BLUEPRINT.md)，待办事项见 [`TODO.md`](TODO.md)。
 
+## 截图翻译（首版）
+
+1. 在“设置 → 资源 → OCR 来源”下载 PP-OCRv5 Mobile 模型（约 21.4 MiB），支持中、英、日文常见印刷文字；可校验、测试或删除。
+2. 点击划词工具栏“识屏”、主页“识屏 · 截图翻译”，或托盘菜单“截图翻译”。在鼠标所在屏幕拖动框选，按 Enter 或“识别并翻译”确认；Esc / 右键取消。
+3. 结果按文字块显示。右键文字或点击每块的省略号，分别复制原文、译文或两者。
+4. 齿轮设置可切换“每块译文下方 / 底部显示选中块”，以及翻译的源语言和目标语言。底部模式点击译文后显示对应原文，支持展开。翻译使用当前翻译服务和术语表。
+
+OCR 在 CPU 本地运行，按需启动，闲置 60 秒后退出。截图只在内存中使用，不保存到日志或会话，也不上传给翻译服务；识别后的文字会交给当前配置的翻译服务。首次使用有模型加载时间，后续请求会复用进程。关闭结果或重新截图会取消旧翻译。
+
+当前不支持跨屏框选、持续区域识别或专业表格排版还原。文字块采用保守的相邻行分组；复杂多栏、竖排、花体、小字的效果仍需继续优化。
+
+构建发布包前，除了 ASR worker，还需构建 OCR worker（构建机需要 Python 3.12，最终用户不需要）：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File src-tauri\ocr-worker\build-worker.ps1
+pnpm test:ocr-worker
+pnpm tauri build
+```
+
+OCR 依赖锁定在 `src-tauri/ocr-worker/requirements.lock.txt`。模型使用官方 RapidAI/RapidOCR 的 ModelScope 发布文件，按大小及 SHA-256 校验；权重不放入安装包，避免重复下载。运行组件随安装包分发，不能只复制主 exe 到另一台电脑。
+
 ## 数据与隐私
 
 应用数据默认位于 Tauri 的 app data 目录，当前 Windows bundle identifier 对应的常见路径为：

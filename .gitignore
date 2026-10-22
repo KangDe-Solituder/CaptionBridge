@@ -33,6 +33,10 @@ src-tauri/worker/.venv/
 src-tauri/worker/build/
 src-tauri/worker/dist/
 src-tauri/worker/*.spec
+src-tauri/ocr-worker/.venv-build/
+src-tauri/ocr-worker/build/
+src-tauri/ocr-worker/dist/
+src-tauri/ocr-worker/*.spec
 
 # Python / ASR worker
 __pycache__/

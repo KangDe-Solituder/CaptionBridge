@@ -55,15 +55,50 @@
         "skipTaskbar": true,
         "transparent": true,
         "resizable": false
+      },
+      {
+        "label": "ocr-capture",
+        "title": "框选截图",
+        "url": "index.html",
+        "width": 800,
+        "height": 600,
+        "visible": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "resizable": false
+      },
+      {
+        "label": "ocr-result",
+        "title": "截图翻译",
+        "url": "index.html",
+        "width": 520,
+        "height": 340,
+        "minWidth": 400,
+        "minHeight": 280,
+        "visible": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "transparent": true,
+        "resizable": true,
+        "center": true
       }
     ]
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/icon.ico"],
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
     "resources": {
-      "worker/dist/livecaption-asr-worker": "asr-worker"
+      "worker/dist/livecaption-asr-worker": "asr-worker",
+      "ocr-worker/dist/livecaption-ocr-worker": "ocr-worker"
     },
     "windows": {
       "nsis": {

@@ -11,6 +11,7 @@ mod models;
 mod native_caption_reader;
 mod native_selection_reader;
 mod network;
+mod ocr;
 mod secrets;
 mod segmenter;
 mod sessions;
@@ -47,6 +48,7 @@ use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub ocr: Arc<ocr::Service>,
     pub paths: AppPaths,
     pub settings: Arc<RwLock<AppSettings>>,
     pub caption: Arc<Mutex<Option<CaptionController>>>,
@@ -77,6 +79,7 @@ pub struct AppState {
 impl AppState {
     fn new(paths: AppPaths, settings: AppSettings) -> Self {
         Self {
+            ocr: Arc::new(ocr::Service::default()),
             paths,
             settings: Arc::new(RwLock::new(settings)),
             caption: Arc::new(Mutex::new(None)),
@@ -608,6 +611,9 @@ async fn test_model(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<u64, String> {
+    if model_id == ocr::MODEL_ID {
+        return ocr::test(&state).await;
+    }
     let _ = app.emit(
         "model:progress",
         models::ModelProgressEvent {
@@ -700,6 +706,9 @@ fn asr_model_test_error(
 
 #[tauri::command]
 async fn delete_model(model_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if model_id == ocr::MODEL_ID {
+        return state.ocr.delete_model(&state).await;
+    }
     let active = state
         .active_source
         .read()
@@ -1331,6 +1340,13 @@ fn run_app() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            ocr::start_ocr_capture,
+            ocr::get_ocr_capture,
+            ocr::get_ocr_result,
+            ocr::cancel_ocr,
+            ocr::recognize_ocr,
+            ocr::retry_ocr_translation,
+            ocr::open_ocr_resources,
             get_settings,
             save_settings,
             hide_selection_toolbar,
@@ -1370,6 +1386,18 @@ fn run_app() {
             check_asr_dependencies,
             open_asr_dependency_url
         ])
+        .on_window_event(|window, event| {
+            if matches!(window.label(), "ocr-capture" | "ocr-result") {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app.state::<AppState>();
+                        let _ = ocr::cancel_ocr(app.clone(), state).await;
+                    });
+                }
+            }
+        })
         .setup(|app| {
             let state = app.state::<AppState>().inner().clone();
             let settings = state
@@ -1425,7 +1453,8 @@ fn build_tray(app: &mut tauri::App) -> Result<(), tauri::Error> {
     let open = MenuItem::with_id(app, "open", "打开 LiveCaption", true, None::<&str>)?;
     let toggle = MenuItem::with_id(app, "toggle_captions", "切换实时字幕", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &toggle, &quit])?;
+    let screenshot = MenuItem::with_id(app, "screenshot", "截图翻译", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &screenshot, &toggle, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main-tray");
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
@@ -1435,6 +1464,16 @@ fn build_tray(app: &mut tauri::App) -> Result<(), tauri::Error> {
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
+            "screenshot" => {
+                let app = app.clone();
+                let state = app.state::<AppState>().inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = ocr::start(app.clone(), state).await {
+                        show_main_window(&app);
+                        let _ = app.emit_to("main", "ocr:error", error);
+                    }
+                });
+            }
             "toggle_captions" => {
                 let app_handle = app.clone();
                 let state = app.state::<AppState>().inner().clone();
@@ -1456,6 +1495,7 @@ fn build_tray(app: &mut tauri::App) -> Result<(), tauri::Error> {
                     let _ =
                         set_caption_running_inner(app_handle.clone(), state.clone(), false).await;
                     shutdown_idle_asr_worker(&state, "退出应用").await;
+                    state.ocr.shutdown().await;
                     app_handle.exit(0);
                 });
             }

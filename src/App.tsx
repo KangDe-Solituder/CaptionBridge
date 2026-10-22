@@ -13,6 +13,7 @@ import { Slider } from "./components/Slider";
 import { Toggle } from "./components/Toggle";
 import { OverlayWindow } from "./windows/OverlayWindow";
 import { ToolbarWindow } from "./windows/ToolbarWindow";
+import { OcrCaptureWindow, OcrResultWindow, startOcrCapture } from "./windows/OcrWindow";
 import {
   clearRuntimeLogs, correctCaptionSession, deleteApiKey, deleteCaptionSession, exportCaptionSession,
   exportGlossary, getGlossary, getRuntimeLogs, getRuntimeStatus, getSettings, importGlossary,
@@ -51,6 +52,8 @@ const builtInModels: ModelInfo[] = [
 ];
 
 export function App() {
+  if (windowLabel === "ocr-capture") return <OcrCaptureWindow />;
+  if (windowLabel === "ocr-result") return <OcrResultWindow />;
   if (windowLabel === "overlay") return <OverlayWindow />;
   if (windowLabel === "selection-toolbar") return <ToolbarWindow />;
   return <MainWindow />;
@@ -169,6 +172,8 @@ function MainWindow() {
     if (!isTauri) return;
     void getRuntimeStatus().then(setStatus).catch(() => undefined);
     const unsubs = [
+      listen<void>("ocr:resources", () => { setPage("settings"); setSettingsTab("resources"); }),
+      listen<string>("ocr:error", e => setMessage(e.payload)),
       listen<SettingsView>("settings:changed", e => setView(e.payload)),
       listen<TranslationResult>("translation:finished", e => setSelectionResult(e.payload)),
       listen("caption:translated", () => scheduleSessionRefresh()),
@@ -347,6 +352,7 @@ function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; 
 
 function SelectionPage({ settings, status, result }: { settings: AppSettings; status: RuntimeStatus; result: TranslationResult }) {
   const automatic = settings.selection.trigger_mode === "automatic";
+  const [ocrError, setOcrError] = useState("");
   return <div className="page">
     <PageHeader eyebrow="QUICK TRANSLATE" title="划词翻译" description={automatic ? "选中文字后，翻译按钮会立即出现在光标旁。" : "选中文字，用快捷键唤出轻巧的翻译按钮。"}
       action={<StatusDot on={status.selection_hotkey_registered} text={status.selection_hotkey_registered ? "服务已就绪" : "服务未启用"} />} />
@@ -355,6 +361,7 @@ function SelectionPage({ settings, status, result }: { settings: AppSettings; st
       <div><span className="overline">{automatic ? "自动感知选区" : "全局快捷键"}</span><h2>{automatic ? "松开鼠标，即刻出现" : `${displayHotkey(settings.selection.hotkey)} · 随时唤起`}</h2><p>浮动工具只在有效选区旁出现，不抢焦点，不打断当前应用。</p></div>
       <div className="flow-steps"><span>选择</span><ArrowRight /><span>点击翻译</span><ArrowRight /><span>查看结果</span></div>
     </section>
+    <section className="workflow-strip"><div className="workflow-icon"><Languages /></div><div><h2>截图翻译</h2><p>框选图片或屏幕文字，识别后按文字块翻译。首次使用请在设置 → 资源下载 OCR 模型。</p>{ocrError && <p role="alert">{ocrError}</p>}</div><button className="primary" onClick={() => { setOcrError(""); void startOcrCapture().catch(e => setOcrError(String(e))); }}>识屏 · 截图翻译</button></section>
     <section className="recent-section"><div className="section-label"><span>最近翻译</span>{result.translated_text && <small>{result.latency_ms}ms</small>}</div>{result.translated_text ? <ResultBlock result={result} /> : <div className="quiet-empty"><Languages /><div><h3>还没有翻译记录</h3><p>去任意应用选中一段文字试试。</p></div></div>}</section>
   </div>;
 }
@@ -855,13 +862,15 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
         <div className="settings-group"><div className="settings-group-title"><div><h2>字幕来源</h2><p>运行中切换会先检查新来源，成功后开启全新会话。</p></div>{props.status.caption_state === "switching" && <span><Loader2 className="spin" />正在切换字幕来源</span>}</div>
           <div className="source-grid">
             <SourceCard title="Windows Live Caption" description="读取 Windows 系统字幕；不占用 GPU。" state="系统组件" selected={s.captions.source.type === "windows_live_caption"} onClick={() => void props.onSelectSource({ type: "windows_live_caption" })} />
-            {props.models.map(model => <SourceCard key={model.id} title={model.display_name} description={model.recommended ? "日语优化、速度优先，推荐默认使用。" : "复杂音频精度优先，显存占用更高。"} state={modelStatusText(model.status)} badge={model.recommended ? "推荐" : undefined} selected={s.captions.source.type === "local_asr" && s.captions.source.model_id === model.id} onClick={() => void props.onSelectSource({ type: "local_asr", model_id: model.id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "auto", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : true })} />)}
+            {props.models.filter(model => !model.id.startsWith("ocr-")).map(model => <SourceCard key={model.id} title={model.display_name} description={model.recommended ? "日语优化、速度优先，推荐默认使用。" : "复杂音频精度优先，显存占用更高。"} state={modelStatusText(model.status)} badge={model.recommended ? "推荐" : undefined} selected={s.captions.source.type === "local_asr" && s.captions.source.model_id === model.id} onClick={() => void props.onSelectSource({ type: "local_asr", model_id: model.id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "auto", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : true })} />)}
           </div>
         </div>
         <SettingRow title="本地 ASR 运行环境" description="检查 Worker、NVIDIA 驱动、CUDA/cuDNN 实际加载状态和 CTranslate2 GPU 可用性；旧 Worker 会自动改用模型推理验证。">
           <button className="ghost" onClick={() => void runDependencyCheck()} disabled={checkingDependencies}>{checkingDependencies ? <Loader2 className="spin" /> : <Activity />}检查依赖</button>
         </SettingRow>
-        <ModelManager models={props.models} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
+        <ModelManager models={props.models.filter(model => !model.id.startsWith("ocr-"))} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
+        <div className="settings-group"><div className="settings-group-title"><div><h2>OCR 来源</h2><p>PP-OCRv5 Mobile · 本地 CPU 识别中、英、日文。按需加载，闲置 60 秒释放；无需安装 Python。</p></div></div><p>用于截图翻译。模型约 21.4 MiB，识别在本机完成；识别出的文字交给当前翻译服务。</p></div>
+        <ModelManager title="OCR 模型管理" models={props.models.filter(model => model.id.startsWith("ocr-"))} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
         <div className="settings-group resource-network">
           <div className="settings-group-title"><div><h2>网络与下载</h2><p>镜像和代理只用于本应用下载模型与 GPU 运行组件，不会修改 Windows 或其他软件的代理设置。</p></div></div>
           <Field label="模型镜像" hint="官方 Hugging Face 连接失败后使用；两条线路执行相同 SHA-256 校验。"><input value={s.captions.model_mirror_url} onChange={e => update({ ...s, captions: { ...s.captions, model_mirror_url: e.target.value } })} /></Field>
@@ -993,7 +1002,7 @@ function formatBytes(bytes: number) {
   return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
-function ModelManager({ models, activeModel, modelDirectory, refresh, message }: { models: ModelInfo[]; activeModel?: string; modelDirectory: string; refresh: () => void; message: (text: string) => void }) {
+function ModelManager({ models, activeModel, modelDirectory, refresh, message, title = "字幕模型管理" }: { title?: string; models: ModelInfo[]; activeModel?: string; modelDirectory: string; refresh: () => void; message: (text: string) => void }) {
   const [busy, setBusy] = useState<Record<string, string>>({});
   const action = async (modelId: string, label: string, run: () => Promise<unknown>) => {
     setBusy(current => ({ ...current, [modelId]: label }));
@@ -1007,7 +1016,7 @@ function ModelManager({ models, activeModel, modelDirectory, refresh, message }:
     finally { setBusy(current => { const next = { ...current }; delete next[modelId]; return next; }); }
   };
   return <div className="settings-group model-manager">
-    <div className="settings-group-title"><div><h2>模型管理</h2><p title={modelDirectory}>模型存放于工作区 Model；启动时自动检查可用状态。</p></div><div><button className="ghost" onClick={() => void openModelsDir()}><ExternalLink />模型目录</button><button className="ghost" onClick={refresh}><RefreshCw />重新检查</button></div></div>
+    <div className="settings-group-title"><div><h2>{title}</h2><p title={modelDirectory}>按需下载和加载，可随时校验、测试或删除。</p></div><div><button className="ghost" onClick={() => void openModelsDir()}><ExternalLink />模型目录</button><button className="ghost" onClick={refresh}><RefreshCw />重新检查</button></div></div>
     {models.map(model => {
       const progress = model.expected_size_bytes ? Math.min(100, model.downloaded_bytes / model.expected_size_bytes * 100) : 0;
       const installed = model.status === "available" || model.status === "active";

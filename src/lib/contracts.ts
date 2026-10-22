@@ -1,4 +1,4 @@
-export type TranslationMode = "selection" | "live_caption";
+export type TranslationMode = "selection" | "live_caption" | "screenshot";
 export type CaptionRuntimeState = "stopped" | "starting" | "running" | "stopping" | "switching" | "loading_model" | "error";
 export type CaptionSourceHealth = "unknown" | "ready" | "quiet" | "status_prompt" | "stale" | "reconnecting" | "error";
 export type AsmrChannelState = "inactive" | "searching" | "locked_left" | "locked_right" | "locked_mix" | "pending_left" | "pending_right" | "fallback_mono";

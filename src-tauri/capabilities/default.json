@@ -2,7 +2,13 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default LiveCaption desktop capability",
-  "windows": ["main", "overlay", "selection-toolbar"],
+  "windows": [
+    "main",
+    "overlay",
+    "selection-toolbar",
+    "ocr-capture",
+    "ocr-result"
+  ],
   "permissions": [
     "core:default",
     "core:event:default",

@@ -1,7 +1,9 @@
+import { startOcrCapture } from "./OcrWindow";
+import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { MotionConfig, motion } from "motion/react";
-import { ArrowRight, Check, Copy, Languages, Loader2, Minus, RotateCcw, X } from "lucide-react";
+import { ArrowRight, Check, Copy, Languages, Loader2, Minus, RotateCcw, ScanText, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { getSettings, hideSelectionToolbar, translateSelection } from "../lib/api";
 import type { AppSettings, SelectionReadyEvent, SettingsView, TranslationResult } from "../lib/contracts";
@@ -87,7 +89,7 @@ export function ToolbarWindow() {
           <span className="toolbar-divider" />
           <button className="toolbar-action" disabled={!selection} onClick={() => selection && void copyText(selection.text)}>{copyIcon}<span>{copied ? "已复制" : "复制"}</span></button>
           <span className="toolbar-divider" />
-          <button className="toolbar-action close-action" onClick={() => void dismissCurrentSelectionToolbar()}><X /><span>关闭</span></button>
+          <button className="toolbar-action close-action" title="框选屏幕文字并翻译" onClick={() => void startOcrCapture().catch(async error => { await invoke("open_ocr_resources"); await emitTo("main", "ocr:error", String(error)); })}><ScanText /><span>识屏</span></button>
         </main>
       ) : (
         <main

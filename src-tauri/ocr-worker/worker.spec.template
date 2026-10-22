@@ -1,0 +1,11 @@
+from PyInstaller.utils.hooks import collect_all, copy_metadata
+data, bins, hidden = collect_all('rapidocr')
+# Weights are installed through Settings > Resources, never hidden in the app.
+data = [(src, dest) for src, dest in data if not src.endswith('.onnx')]
+a = Analysis(['ocr_worker.py'], pathex=[], binaries=bins,
+             datas=data + copy_metadata('rapidocr'), hiddenimports=hidden,
+             excludes=['tkinter', 'matplotlib', 'torch', 'paddle', 'tensorflow'])
+pyz = PYZ(a.pure)
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
+          name='livecaption-ocr-worker', console=True)
+coll = COLLECT(exe, a.binaries, a.datas, name='livecaption-ocr-worker')

@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 & (Join-Path $PSScriptRoot 'verify-worker.ps1')
+& (Join-Path $PSScriptRoot '../ocr-worker/verify-worker.ps1')
 
 & pnpm.cmd build
 if ($LASTEXITCODE -ne 0) {

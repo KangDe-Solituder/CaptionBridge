@@ -113,10 +113,16 @@ pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
                 source_window = foreground;
             }
             mouse_was_down = mouse_down;
-            let app_window_focused = ["main", "selection-toolbar", "overlay"]
-                .iter()
-                .any(|label| app_window_blocks_selection(&app, label));
-            if app_window_focused {
+            let app_window_focused = [
+                "main",
+                "selection-toolbar",
+                "overlay",
+                "ocr-capture",
+                "ocr-result",
+            ]
+            .iter()
+            .any(|label| app_window_blocks_selection(&app, label));
+            if app_window_focused || state.ocr.capturing.load(Ordering::SeqCst) {
                 generation.fetch_add(1, Ordering::Relaxed);
                 was_down = false;
                 mouse_started = None;
@@ -336,6 +342,9 @@ fn emit_selection_result(
     point: POINT,
     result: Result<String, String>,
 ) {
+    if state.ocr.capturing.load(Ordering::SeqCst) {
+        return;
+    }
     match result.and_then(nonempty_selection) {
         Ok(text) => {
             let event = SelectionReadyEvent {

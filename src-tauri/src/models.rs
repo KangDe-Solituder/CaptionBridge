@@ -50,6 +50,7 @@ pub struct AsrGpuRuntimeProgressEvent {
 #[serde(rename_all = "snake_case")]
 pub enum TranslationMode {
     Selection,
+    Screenshot,
     LiveCaption,
 }
 

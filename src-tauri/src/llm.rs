@@ -49,12 +49,17 @@ pub fn create_payload(
 ) -> Result<Value, String> {
     let (task, style) = match request.mode {
         TranslationMode::Selection => ("selection translation", "natural and concise"),
+        TranslationMode::Screenshot => (
+            "screenshot text translation",
+            "complete and faithful; preserve all numbers and line breaks",
+        ),
         TranslationMode::LiveCaption => ("live caption translation", "short, stable, and readable"),
     };
 
     let max_tokens = match request.mode {
         TranslationMode::LiveCaption => settings.llm.max_tokens.min(256),
         TranslationMode::Selection => settings.llm.max_tokens.min(768),
+        TranslationMode::Screenshot => settings.llm.max_tokens.clamp(1024, 4096),
     };
     let source_hint = if request.source_language.trim().is_empty()
         || request.source_language.eq_ignore_ascii_case("auto")

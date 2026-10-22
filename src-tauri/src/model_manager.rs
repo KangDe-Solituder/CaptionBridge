@@ -116,6 +116,42 @@ pub const MANIFESTS: &[ModelManifest] = &[
     },
 ];
 
+pub const OCR_MANIFEST: ModelManifest = ModelManifest {
+    id: crate::ocr::MODEL_ID,
+    display_name: "PP-OCRv5 Mobile · 截图识别",
+    repository: "RapidAI/RapidOCR",
+    revision: "v3.10.0",
+    license: "Apache-2.0",
+    recommended: true,
+    files: &[
+        ManifestFile {
+            name: "det.onnx",
+            size: 4_819_576,
+            sha256: "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
+        },
+        ManifestFile {
+            name: "rec.onnx",
+            size: 16_631_306,
+            sha256: "5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5",
+        },
+        ManifestFile {
+            name: "cls.onnx",
+            size: 1_018_508,
+            sha256: "54379ae5174d026780215fc748a7f31910dee36818e63d49e17dc598ecc82df7",
+        },
+    ],
+};
+fn ocr_model_url(name: &str) -> String {
+    let path = match name {
+        "det.onnx" => "det/ch_PP-OCRv5_det_mobile.onnx",
+        "rec.onnx" => "rec/ch_PP-OCRv5_rec_mobile.onnx",
+        _ => "cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
+    };
+    format!(
+        "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/{path}"
+    )
+}
+
 #[derive(Clone, Default)]
 pub struct DownloadRegistry {
     inner: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
@@ -154,6 +190,7 @@ impl DownloadRegistry {
 pub fn manifest(id: &str) -> Result<&'static ModelManifest, String> {
     MANIFESTS
         .iter()
+        .chain(std::iter::once(&OCR_MANIFEST))
         .find(|m| m.id == id)
         .ok_or_else(|| format!("未知模型：{id}"))
 }
@@ -172,7 +209,7 @@ fn installed_size(dir: &Path, item: &ModelManifest) -> u64 {
 
 pub async fn list_models(paths: &AppPaths, downloads: &DownloadRegistry) -> Vec<ModelInfo> {
     let mut list = Vec::new();
-    for item in MANIFESTS {
+    for item in MANIFESTS.iter().chain(std::iter::once(&OCR_MANIFEST)) {
         let dir = paths.models_dir.join(item.id);
         let size = installed_size(&dir, item);
         let downloading = downloads.is_active(item.id).await;
@@ -309,7 +346,12 @@ async fn download_model_inner(
             file.name
         );
         let mut last_error = String::new();
-        for url in [official, mirror_url] {
+        let urls = if item.id == crate::ocr::MODEL_ID {
+            vec![ocr_model_url(file.name)]
+        } else {
+            vec![official, mirror_url]
+        };
+        for url in urls {
             match download_file(&client, &url, &part, file.size, cancel, |current| {
                 let before: u64 = item
                     .files
