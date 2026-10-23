@@ -429,6 +429,19 @@ pub struct OcrSettings {
     pub source_language: String,
     pub target_language: String,
     pub source_placement: String,
+    pub resident_toolbar: bool,
+    pub mouse_shortcuts: bool,
+    pub mouse_button_1: MouseAction,
+    pub mouse_button_2: MouseAction,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseAction {
+    #[default]
+    Default,
+    Toolbar,
+    Capture,
 }
 
 impl Default for OcrSettings {
@@ -438,13 +451,35 @@ impl Default for OcrSettings {
             source_language: "auto".into(),
             target_language: String::new(),
             source_placement: "inline".into(),
+            resident_toolbar: false,
+            mouse_shortcuts: false,
+            mouse_button_1: MouseAction::Default,
+            mouse_button_2: MouseAction::Default,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolbarModule {
+    Selection,
+    Ocr,
+    Captions,
+}
+
+pub fn default_toolbar_order() -> Vec<ToolbarModule> {
+    vec![
+        ToolbarModule::Selection,
+        ToolbarModule::Ocr,
+        ToolbarModule::Captions,
+    ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub schema_version: u32,
+    #[serde(default = "default_toolbar_order")]
+    pub toolbar_order: Vec<ToolbarModule>,
     pub llm: LlmProviderSettings,
     #[serde(default)]
     pub llm_profiles: Vec<LlmProfile>,
@@ -461,7 +496,8 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            schema_version: 10,
+            schema_version: 11,
+            toolbar_order: default_toolbar_order(),
             llm: LlmProviderSettings::default(),
             llm_profiles: Vec::new(),
             selection: SelectionSettings::default(),
@@ -555,13 +591,6 @@ pub enum CaptionTimeSource {
 pub struct CaptionTranslatedEvent {
     pub segment: CaptionSegment,
     pub result: TranslationResult,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SelectionReadyEvent {
-    pub text: String,
-    pub x: i32,
-    pub y: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

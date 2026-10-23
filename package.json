@@ -7,8 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test:ui": "node --experimental-strip-types --experimental-test-isolation=none --test tests/*.test.mjs",
     "test:asr-worker": "python -m unittest discover -s src-tauri/worker -p \"test_*.py\"",
-    "quality": "pnpm test:asr-worker && pnpm test:ocr-worker && pnpm build && cargo test --manifest-path src-tauri/Cargo.toml && cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "quality": "pnpm test:ui && pnpm test:asr-worker && pnpm test:ocr-worker && pnpm build && cargo test --manifest-path src-tauri/Cargo.toml && cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

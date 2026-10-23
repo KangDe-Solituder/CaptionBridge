@@ -25,6 +25,31 @@ use tokio::{
 pub const MODEL_ID: &str = "ocr-ppocr-v5-mobile";
 const IDLE_SECONDS: u64 = 60;
 
+#[derive(Debug, PartialEq)]
+enum CaptureWindowAction {
+    Keep,
+    Hide,
+    HideAndRestore,
+}
+
+fn capture_window_action(
+    label: &str,
+    visible: bool,
+    minimized: bool,
+    foreground: bool,
+) -> CaptureWindowAction {
+    if !visible || minimized {
+        return CaptureWindowAction::Keep;
+    }
+    match label {
+        "overlay" => CaptureWindowAction::HideAndRestore,
+        "main" if foreground => CaptureWindowAction::HideAndRestore,
+        // A main window behind the source application must not be raised after
+        // capture. Leave it in the tray until the user explicitly opens it.
+        _ => CaptureWindowAction::Hide,
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Block {
     pub id: u32,
@@ -249,12 +274,17 @@ pub async fn start(app: AppHandle, state: AppState) -> Result<(), String> {
         .ocr
         .enabled
     {
-        return Err("截图翻译已关闭，请在设置 → 功能中启用".into());
+        return Err("截图翻译已关闭，请在设置 → 功能 → 工具栏中启用".into());
     }
     if state.ocr.capturing.swap(true, Ordering::SeqCst) {
         return Err("正在框选，请先完成或按 Esc 取消".into());
     }
     let id = state.ocr.advance();
+    // Snapshot this before hiding any window: hiding the foreground window can
+    // activate another app-owned window and give a misleading focus result.
+    let foreground =
+        unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as isize;
+    crate::toolbar::suspend(&app, &state);
     let result = async {
         let manifest = model_manager::manifest(MODEL_ID)?;
         if !manifest.files.iter().all(|f| {
@@ -283,11 +313,19 @@ pub async fn start(app: AppHandle, state: AppState) -> Result<(), String> {
             .ok_or("未找到当前屏幕")?;
         for label in ["main", "overlay", "selection-toolbar", "ocr-result"] {
             if let Some(window) = app.get_webview_window(label) {
-                if window.is_visible().unwrap_or(false) {
-                    if label != "selection-toolbar" && label != "ocr-result" {
+                let action = capture_window_action(
+                    label,
+                    window.is_visible().unwrap_or(false),
+                    window.is_minimized().unwrap_or(true),
+                    window
+                        .hwnd()
+                        .is_ok_and(|handle| handle.0 as isize == foreground),
+                );
+                if action != CaptureWindowAction::Keep {
+                    window.hide().map_err(|e| e.to_string())?;
+                    if action == CaptureWindowAction::HideAndRestore {
                         state.ocr.hidden.lock().await.push(label.to_string());
                     }
-                    window.hide().map_err(|e| e.to_string())?;
                 }
             }
         }
@@ -589,6 +627,44 @@ pub fn open_ocr_resources(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_capture_never_restores_background_or_minimized_main() {
+        assert_eq!(
+            capture_window_action("main", true, false, false),
+            CaptureWindowAction::Hide
+        );
+        assert_eq!(
+            capture_window_action("main", true, true, false),
+            CaptureWindowAction::Keep
+        );
+        assert_eq!(
+            capture_window_action("main", false, false, false),
+            CaptureWindowAction::Keep
+        );
+    }
+
+    #[test]
+    fn capture_restores_only_the_foreground_main_and_visible_captions() {
+        assert_eq!(
+            capture_window_action("main", true, false, true),
+            CaptureWindowAction::HideAndRestore
+        );
+        assert_eq!(
+            capture_window_action("overlay", true, false, false),
+            CaptureWindowAction::HideAndRestore
+        );
+        assert_eq!(
+            capture_window_action("overlay", false, false, false),
+            CaptureWindowAction::Keep
+        );
+        for label in ["selection-toolbar", "ocr-result"] {
+            assert_eq!(
+                capture_window_action(label, true, false, false),
+                CaptureWindowAction::Hide
+            );
+        }
+    }
 
     #[tokio::test]
     #[ignore = "requires built OCR worker and downloaded models; exercises the actual Rust UTF-8 pipe"]

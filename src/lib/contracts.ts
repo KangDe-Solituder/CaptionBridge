@@ -11,7 +11,10 @@ export interface LlmProviderSettings {
 export interface LlmProfile { id: string; name: string; config: LlmProviderSettings; api_key_configured: boolean; }
 export interface SelectionSettings { enabled: boolean; clipboard_fallback_enabled: boolean; hotkey: string; trigger_mode: "hotkey" | "automatic"; }
 export interface DownloadSettings { proxy_enabled: boolean; proxy_url: string; }
-export interface OcrSettings { enabled: boolean; source_language: string; target_language: string; source_placement: "inline" | "bottom"; }
+export type MouseAction = "default" | "toolbar" | "capture";
+export interface MouseCapabilities { detected: boolean; buttons: number; hook_ready: boolean; error?: string | null; }
+export interface ToolbarSnapshot { text: string; x: number; y: number; mode: "hidden" | "docked" | "transient" | "expanded"; revision: number; }
+export interface OcrSettings { enabled: boolean; source_language: string; target_language: string; source_placement: "inline" | "bottom"; resident_toolbar: boolean; mouse_shortcuts: boolean; mouse_button_1: MouseAction; mouse_button_2: MouseAction; }
 export interface CaptionSettings {
   source: CaptionSourceConfig;
   enabled: boolean; auto_launch: boolean; poll_milliseconds: number;
@@ -34,7 +37,9 @@ export interface VisualSettings {
   theme: "system" | "light" | "dark"; blur_enabled: boolean;
   blur_scope: "floating" | "all" | "off"; reduce_motion: boolean;
 }
+export type ToolbarModule = "selection" | "ocr" | "captions";
 export interface AppSettings {
+  toolbar_order: ToolbarModule[];
   llm_profiles: LlmProfile[];
   schema_version: number; llm: LlmProviderSettings; selection: SelectionSettings;
   captions: CaptionSettings; overlay: OverlaySettings; visual: VisualSettings; downloads: DownloadSettings;
@@ -60,7 +65,6 @@ export interface RuntimeStatus {
   selected_source: CaptionSourceConfig; active_source?: CaptionSourceConfig; active_model?: string; asr_latency_ms: number;
   asmr_channel_state: AsmrChannelState;
 }
-export interface SelectionReadyEvent { text: string; x: number; y: number; }
 export interface CaptionTranslatedEvent { segment: CaptionSegment; result: TranslationResult; }
 export interface RuntimeLogEntry { timestamp: string; level: string; message: string; }
 export type ModelStatus = "not_installed" | "downloading" | "verifying" | "available" | "loading" | "active" | "corrupt" | "incompatible" | "failed";

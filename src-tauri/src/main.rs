@@ -17,6 +17,7 @@ mod secrets;
 mod segmenter;
 mod sessions;
 mod settings;
+mod toolbar;
 mod windows_integration;
 
 use std::{
@@ -50,6 +51,7 @@ use tokio::sync::Mutex;
 #[derive(Clone)]
 pub struct AppState {
     pub ocr: Arc<ocr::Service>,
+    pub toolbar: Arc<toolbar::Service>,
     pub paths: AppPaths,
     pub settings: Arc<RwLock<AppSettings>>,
     pub caption: Arc<Mutex<Option<CaptionController>>>,
@@ -81,6 +83,7 @@ impl AppState {
     fn new(paths: AppPaths, settings: AppSettings) -> Self {
         Self {
             ocr: Arc::new(ocr::Service::default()),
+            toolbar: Arc::new(toolbar::Service::default()),
             paths,
             settings: Arc::new(RwLock::new(settings)),
             caption: Arc::new(Mutex::new(None)),
@@ -199,39 +202,55 @@ async fn save_settings(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SettingsView, String> {
-    let mut current = state.settings.write().map_err(|e| e.to_string())?;
-    request.settings.llm = current.llm.clone();
-    request.settings.llm_profiles = current.llm_profiles.clone();
-    settings::normalize(&mut request.settings);
-    network::validate_download_settings(&request.settings.downloads)?;
-    if !request.settings.llm.extra_body_json.trim().is_empty() {
-        let value: serde_json::Value = serde_json::from_str(&request.settings.llm.extra_body_json)
-            .map_err(|e| e.to_string())?;
-        if !value.is_object() {
-            return Err("Extra Body JSON 必须是对象".into());
+    let view = {
+        let mut current = state.settings.write().map_err(|e| e.to_string())?;
+        request.settings.llm = current.llm.clone();
+        request.settings.llm_profiles = current.llm_profiles.clone();
+        settings::normalize(&mut request.settings);
+        network::validate_download_settings(&request.settings.downloads)?;
+        if !request.settings.llm.extra_body_json.trim().is_empty() {
+            let value: serde_json::Value =
+                serde_json::from_str(&request.settings.llm.extra_body_json)
+                    .map_err(|e| e.to_string())?;
+            if !value.is_object() {
+                return Err("Extra Body JSON 必须是对象".into());
+            }
         }
-    }
-    windows_integration::validate_hotkey(&request.settings.selection.hotkey)?;
+        windows_integration::validate_hotkey(&request.settings.selection.hotkey)?;
 
-    state
-        .selection_hotkey_registered
-        .store(request.settings.selection.enabled, Ordering::Relaxed);
+        state
+            .selection_hotkey_registered
+            .store(request.settings.selection.enabled, Ordering::Relaxed);
 
-    settings::save(&state.paths, &request.settings)?;
-    *current = request.settings.clone();
-    state.log("info", "设置已保存");
-    let view = SettingsView {
-        settings: request.settings,
-        api_key_configured: state.api_key_configured.load(Ordering::Relaxed),
-        model_directory: state.paths.models_dir.to_string_lossy().into_owned(),
+        settings::save(&state.paths, &request.settings)?;
+        *current = request.settings.clone();
+        state.log("info", "设置已保存");
+        let view = SettingsView {
+            settings: request.settings,
+            api_key_configured: state.api_key_configured.load(Ordering::Relaxed),
+            model_directory: state.paths.models_dir.to_string_lossy().into_owned(),
+        };
+        let _ = app.emit("settings:changed", &view);
+        view
     };
-    let _ = app.emit("settings:changed", &view);
+    if state.toolbar.mode() != toolbar::Mode::Hidden && !state.ocr.capturing.load(Ordering::SeqCst)
+    {
+        toolbar::dismiss(&app, &state)?;
+    }
+    let stop_captions = !view.settings.captions.enabled
+        && !matches!(
+            *state.caption_state.read().map_err(|e| e.to_string())?,
+            CaptionRuntimeState::Stopped
+        );
+    if stop_captions {
+        set_caption_running_inner(app, state.inner().clone(), false).await?;
+    }
     Ok(view)
 }
 
 #[tauri::command]
-fn hide_selection_toolbar(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    windows_integration::hide_selection_toolbar(&app).map_err(|error| {
+async fn hide_selection_toolbar(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    toolbar::dismiss(&app, &state).map_err(|error| {
         state.log("warn", format!("划词工具条隐藏失败：{error}"));
         error
     })
@@ -280,6 +299,7 @@ fn translation_glossary(state: &AppState) -> Vec<models::GlossaryPair> {
 #[tauri::command]
 async fn translate_selection(
     mut request: TranslationRequest,
+    stream_id: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<TranslationResult, String> {
@@ -290,7 +310,15 @@ async fn translate_selection(
     let _ = app.emit("translation:started", &request);
     let delta_app = app.clone();
     let result = llm::translate_with_delta(settings, key, request, move |text| {
-        let _ = delta_app.emit("translation:delta", text);
+        if let Some(id) = &stream_id {
+            let _ = delta_app.emit_to(
+                "selection-toolbar",
+                "toolbar:translation-delta",
+                serde_json::json!({"stream_id": id, "text": text}),
+            );
+        } else {
+            let _ = delta_app.emit("translation:delta", text);
+        }
     })
     .await?;
     let _ = app.emit("translation:finished", &result);
@@ -303,6 +331,15 @@ async fn set_caption_running_inner(
     running: bool,
 ) -> Result<(), String> {
     if running {
+        if !state
+            .settings
+            .read()
+            .map_err(|e| e.to_string())?
+            .captions
+            .enabled
+        {
+            return Err("请先在设置 → 功能 → 工具栏中启用实时字幕".into());
+        }
         let mut controller = state.caption.lock().await;
         if controller.is_some() {
             let active = matches!(
@@ -363,6 +400,17 @@ async fn set_caption_running(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     set_caption_running_inner(app, state.inner().clone(), running).await
+}
+
+#[tauri::command]
+async fn start_captions_from_toolbar(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    toolbar::dismiss(&app, &state)?;
+    // Launch captions in place; the session owns the overlay window.
+    // Do not navigate or activate the main window from this quick action.
+    set_caption_running_inner(app, state.inner().clone(), true).await
 }
 
 #[tauri::command]
@@ -1341,6 +1389,9 @@ fn run_app() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             ocr::start_ocr_capture,
+            toolbar::get_mouse_capabilities,
+            toolbar::get_toolbar_snapshot,
+            toolbar::expand_toolbar,
             ocr::get_ocr_capture,
             ocr::get_ocr_result,
             ocr::cancel_ocr,
@@ -1357,6 +1408,7 @@ fn run_app() {
             test_llm,
             translate_selection,
             set_caption_running,
+            start_captions_from_toolbar,
             refresh_caption,
             reset_asr_channel_routing,
             get_runtime_status,
@@ -1463,6 +1515,7 @@ fn run_app() {
                 state.clone(),
             );
             windows_integration::start_toolbar_dismiss_watcher(app.handle().clone(), state.clone());
+            toolbar::start(app.handle().clone(), state.clone());
             state.log("info", "LiveCaption 已启动");
             build_tray(app)?;
             Ok(())
@@ -1513,6 +1566,7 @@ fn build_tray(app: &mut tauri::App) -> Result<(), tauri::Error> {
             "quit" => {
                 let app_handle = app.clone();
                 let state = app.state::<AppState>().inner().clone();
+                state.toolbar.shutdown();
                 tauri::async_runtime::spawn(async move {
                     let _ =
                         set_caption_running_inner(app_handle.clone(), state.clone(), false).await;

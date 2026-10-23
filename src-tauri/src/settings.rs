@@ -148,6 +148,20 @@ pub fn save(paths: &AppPaths, settings: &AppSettings) -> Result<(), String> {
 pub fn normalize(settings: &mut AppSettings) {
     let defaults = AppSettings::default();
     settings.schema_version = defaults.schema_version;
+    let mut order = Vec::new();
+    for module in settings
+        .toolbar_order
+        .iter()
+        .chain(defaults.toolbar_order.iter())
+    {
+        if !order.contains(module) {
+            order.push(*module);
+        }
+    }
+    settings.toolbar_order = order;
+    if !settings.selection.enabled && !settings.ocr.enabled && !settings.captions.enabled {
+        settings.selection.enabled = true;
+    }
     settings.ocr.source_language = settings.ocr.source_language.trim().to_string();
     if settings.ocr.source_language.is_empty() || settings.ocr.source_language.len() > 80 {
         settings.ocr.source_language = "auto".into();
@@ -229,6 +243,27 @@ mod tests {
     use crate::models::{AudioChannelMode, ChannelSwitchSensitivity, OverlayDragMode};
 
     #[test]
+    fn toolbar_order_migrates_and_repairs_without_losing_enabled_modules() {
+        use crate::models::ToolbarModule::{Captions, Ocr, Selection};
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("toolbar_order");
+        let mut settings: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(settings.toolbar_order, vec![Selection, Ocr, Captions]);
+        settings.toolbar_order = vec![Captions, Captions, Selection];
+        settings.ocr.enabled = false;
+        normalize(&mut settings);
+        assert_eq!(settings.toolbar_order, vec![Captions, Selection, Ocr]);
+        assert!(!settings.ocr.enabled);
+        let saved = serde_json::to_string(&settings).unwrap();
+        let restored: AppSettings = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.toolbar_order, settings.toolbar_order);
+        settings.selection.enabled = false;
+        settings.captions.enabled = false;
+        normalize(&mut settings);
+        assert!(settings.selection.enabled);
+    }
+
+    #[test]
     fn settings_roundtrip_preserves_release_sensitive_values() {
         let test_dir =
             std::env::temp_dir().join(format!("livecaption-settings-{}", uuid::Uuid::new_v4()));
@@ -300,7 +335,7 @@ mod tests {
     #[test]
     fn new_install_defaults_to_kotoba() {
         let settings = AppSettings::default();
-        assert_eq!(settings.schema_version, 10);
+        assert_eq!(settings.schema_version, 11);
         assert_eq!(
             settings.captions.source.model_id(),
             Some("kotoba-whisper-v2.0-faster")
@@ -362,7 +397,7 @@ mod tests {
             migrated.captions.source,
             crate::models::CaptionSourceConfig::WindowsLiveCaption
         ));
-        assert_eq!(migrated.schema_version, 10);
+        assert_eq!(migrated.schema_version, 11);
         let _ = fs::remove_dir_all(test_dir);
     }
 
@@ -385,7 +420,7 @@ mod tests {
             migrated.captions.source.channel_mode(),
             Some(AudioChannelMode::Auto)
         );
-        assert_eq!(migrated.schema_version, 10);
+        assert_eq!(migrated.schema_version, 11);
         let _ = fs::remove_dir_all(test_dir);
     }
 
@@ -411,7 +446,7 @@ mod tests {
             migrated.captions.source.suppress_non_speech_segments(),
             Some(true)
         );
-        assert_eq!(migrated.schema_version, 10);
+        assert_eq!(migrated.schema_version, 11);
         let _ = fs::remove_dir_all(test_dir);
     }
 
@@ -429,7 +464,7 @@ mod tests {
         let migrated = load(&paths).unwrap();
         assert!(!migrated.downloads.proxy_enabled);
         assert!(migrated.downloads.proxy_url.is_empty());
-        assert_eq!(migrated.schema_version, 10);
+        assert_eq!(migrated.schema_version, 11);
         let _ = fs::remove_dir_all(test_dir);
     }
 }

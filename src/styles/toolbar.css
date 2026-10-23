@@ -13,7 +13,7 @@
 .selection-toolbar.floating, :root[data-blur="true"] .selection-toolbar.floating { background: var(--surface); backdrop-filter: none; }
 .toolbar-action {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  min-width: 70px; height: 35px; padding: 0 10px; border-radius: 10px;
+  width: 78px; min-width: 78px; flex: none; height: 34px; padding: 0 10px; border-radius: 10px;
   cursor: pointer; background: transparent; font-size: var(--t-md); font-weight: 550;
   transition: background var(--dur-fast) ease, color var(--dur-fast) ease, transform var(--dur-fast) ease;
 }
@@ -26,8 +26,11 @@
   box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 32%, transparent);
 }
 .toolbar-action.primary-action:hover { background: var(--accent); filter: brightness(1.08); }
-.toolbar-action.close-action { min-width: 60px; color: var(--muted); }
-.toolbar-action.close-action:hover { color: var(--danger); background: var(--danger-soft); }
+.toolbar-action.capture-action { min-width: 60px; color: var(--accent); }
+.toolbar-action.capture-action:hover { background: var(--accent-soft); }
+.toolbar-action:disabled, .toolbar-action:disabled:hover {
+  color: var(--faint); background: transparent; box-shadow: none; filter: none; opacity: .6; transform: none;
+}
 .toolbar-action svg { width: 15px; height: 15px; }
 .toolbar-divider { width: 1px; height: 20px; flex: none; background: var(--line); }
 

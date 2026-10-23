@@ -15,7 +15,7 @@ const MIN_SELECTION_DRAG_DURATION: Duration = Duration::from_millis(80);
 const SELECTION_REQUEST_MAX_AGE: Duration = Duration::from_millis(1500);
 
 use arboard::Clipboard;
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition};
+use tauri::{AppHandle, Manager};
 use windows::Win32::{
     Foundation::POINT,
     System::DataExchange::GetClipboardSequenceNumber,
@@ -30,7 +30,7 @@ use windows::Win32::{
 };
 
 use crate::{
-    models::{SelectionReadyEvent, SelectionTriggerMode},
+    models::SelectionTriggerMode,
     native_selection_reader::{Selection, SelectionReader},
     AppState,
 };
@@ -166,6 +166,7 @@ pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
                                 queue_selection(
                                     &requests,
                                     &generation,
+                                    state.toolbar.generation.load(Ordering::SeqCst),
                                     end,
                                     clipboard_fallback,
                                     false,
@@ -192,7 +193,14 @@ pub fn start_selection_hotkey_watcher(app: AppHandle, state: AppState) {
                 }
                 if !key_down(hotkey.key) && !hotkey.modifiers.iter().any(|key| key_down(*key)) {
                     if let Some(point) = cursor_position() {
-                        queue_selection(&requests, &generation, point, clipboard_fallback, true);
+                        queue_selection(
+                            &requests,
+                            &generation,
+                            state.toolbar.generation.load(Ordering::SeqCst),
+                            point,
+                            clipboard_fallback,
+                            true,
+                        );
                     }
                 }
             }
@@ -222,6 +230,7 @@ fn is_intentional_selection_drag(start: POINT, end: POINT, elapsed: Duration) ->
 
 struct SelectionRequest {
     generation: u64,
+    toolbar_generation: u64,
     source_window: isize,
     point: POINT,
     use_focused_element: bool,
@@ -263,12 +272,14 @@ impl SelectionRequests {
 fn queue_selection(
     requests: &SelectionRequests,
     generation: &AtomicU64,
+    toolbar_generation: u64,
     point: POINT,
     clipboard_fallback: bool,
     use_focused_element: bool,
 ) {
     requests.submit(SelectionRequest {
         generation: generation.fetch_add(1, Ordering::Relaxed) + 1,
+        toolbar_generation,
         source_window: unsafe { GetForegroundWindow() }.0 as isize,
         point,
         use_focused_element,
@@ -299,6 +310,7 @@ fn start_selection_reader(
                     request.started.elapsed(),
                 ) && !key_down(VK_LBUTTON.0 as i32)
                     && !key_down(VK_ESCAPE.0 as i32)
+                    && state.toolbar.generation.load(Ordering::SeqCst) == request.toolbar_generation
             };
             let result = capture_selected_text(
                 request.clipboard_fallback,
@@ -347,13 +359,7 @@ fn emit_selection_result(
     }
     match result.and_then(nonempty_selection) {
         Ok(text) => {
-            let event = SelectionReadyEvent {
-                text,
-                x: point.x,
-                y: point.y,
-            };
-            let _ = app.emit("selection:ready", &event);
-            if let Err(error) = show_toolbar_at_point(app, point) {
+            if let Err(error) = crate::toolbar::show_selection(app, state, point, text) {
                 state.log("warn", format!("划词工具条显示失败：{error}"));
             }
         }
@@ -469,15 +475,8 @@ pub fn start_toolbar_dismiss_watcher(app: AppHandle, state: AppState) {
 
             let escape_down = key_down(VK_ESCAPE.0 as i32);
             if escape_down && !escape_was_down {
-                let compact = window
-                    .outer_size()
-                    .ok()
-                    .map(|size| size.width as f64 / window.scale_factor().unwrap_or(1.0) <= 320.0)
-                    .unwrap_or(false);
-                if compact {
-                    if let Err(error) = hide_selection_toolbar(&app) {
-                        state.log("warn", format!("划词工具条隐藏失败：{error}"));
-                    }
+                if let Err(error) = crate::toolbar::dismiss(&app, &state) {
+                    state.log("warn", format!("划词工具条隐藏失败：{error}"));
                 }
             }
             escape_was_down = escape_down;
@@ -493,9 +492,8 @@ pub fn start_toolbar_dismiss_watcher(app: AppHandle, state: AppState) {
                         && cursor.y >= position.y
                         && cursor.x < position.x + size.width as i32
                         && cursor.y < position.y + size.height as i32;
-                    let logical_width = size.width as f64 / window.scale_factor().unwrap_or(1.0);
-                    if !inside && logical_width <= 320.0 {
-                        if let Err(error) = hide_selection_toolbar(&app) {
+                    if !inside && state.toolbar.mode() != crate::toolbar::Mode::Expanded {
+                        if let Err(error) = crate::toolbar::dismiss(&app, &state) {
                             state.log("warn", format!("划词工具条隐藏失败：{error}"));
                         }
                     }
@@ -541,75 +539,6 @@ fn capture_selected_text_via_copy(is_current: &impl Fn() -> bool) -> Result<Stri
         Err("没有读取到选中文本".into())
     } else {
         Ok(trimmed)
-    }
-}
-
-fn show_toolbar_at_point(app: &AppHandle, point: POINT) -> Result<(), String> {
-    let window = app
-        .get_webview_window("selection-toolbar")
-        .ok_or_else(|| "工具条窗口不存在".to_string())?;
-    window
-        .set_focusable(false)
-        .map_err(|error| format!("无法恢复不可聚焦状态：{error}"))?;
-    window
-        .set_size(LogicalSize::new(246.0, 44.0))
-        .map_err(|error| format!("无法恢复工具条尺寸：{error}"))?;
-    let size = window.outer_size().unwrap_or(tauri::PhysicalSize {
-        width: 246,
-        height: 44,
-    });
-    let monitor = window.available_monitors().ok().and_then(|monitors| {
-        monitors.into_iter().find(|monitor| {
-            let work_area = monitor.work_area();
-            point.x >= work_area.position.x
-                && point.x < work_area.position.x + work_area.size.width as i32
-                && point.y >= work_area.position.y
-                && point.y < work_area.position.y + work_area.size.height as i32
-        })
-    });
-    let (left, top, right, bottom) = monitor
-        .map(|monitor| {
-            let work_area = monitor.work_area();
-            (
-                work_area.position.x,
-                work_area.position.y,
-                work_area.position.x + work_area.size.width as i32,
-                work_area.position.y + work_area.size.height as i32,
-            )
-        })
-        .unwrap_or((0, 0, 1920, 1080));
-    let max_x = (right - size.width as i32).max(left);
-    let max_y = (bottom - size.height as i32).max(top);
-    let preferred_x = point.x.saturating_add(12);
-    let preferred_y = point.y.saturating_sub(size.height as i32 + 12);
-    let x = preferred_x.clamp(left, max_x);
-    let y = if preferred_y < top {
-        point.y.saturating_add(18).clamp(top, max_y)
-    } else {
-        preferred_y.clamp(top, max_y)
-    };
-    window
-        .set_position(PhysicalPosition { x, y })
-        .map_err(|error| format!("无法移动工具条：{error}"))?;
-    window
-        .show()
-        .map_err(|error| format!("无法显示工具条：{error}"))?;
-    Ok(())
-}
-
-pub fn hide_selection_toolbar(app: &AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window("selection-toolbar")
-        .ok_or_else(|| "工具条窗口不存在".to_string())?;
-    let focus_error = window.set_focusable(false).err();
-    let hide_error = window.hide().err();
-    match (focus_error, hide_error) {
-        (None, None) => Ok(()),
-        (Some(focus), None) => Err(format!("无法恢复不可聚焦状态：{focus}")),
-        (None, Some(hide)) => Err(format!("无法隐藏工具条：{hide}")),
-        (Some(focus), Some(hide)) => Err(format!(
-            "无法恢复不可聚焦状态：{focus}；无法隐藏工具条：{hide}"
-        )),
     }
 }
 
@@ -1042,6 +971,7 @@ mod tests {
         for generation in 1..=100 {
             requests.submit(SelectionRequest {
                 generation,
+                toolbar_generation: 0,
                 source_window: 1,
                 point: POINT {
                     x: generation as i32,

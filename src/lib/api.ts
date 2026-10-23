@@ -10,7 +10,7 @@ export const testLlm = () => invoke<TranslationResult>("test_llm");
 export const saveLlmProfile = (input: { id?: string; name: string; config: import("./contracts").LlmProviderSettings; api_key?: string; clear_api_key: boolean }) => invoke<SettingsView>("save_llm_profile", { input });
 export const activateLlmProfile = (id: string) => invoke<SettingsView>("activate_llm_profile", { id });
 export const removeLlmProfile = (id: string) => invoke<SettingsView>("remove_llm_profile", { id });
-export const translateSelection = (request: TranslationRequest) => invoke<TranslationResult>("translate_selection", { request });
+export const translateSelection = (request: TranslationRequest, streamId?: string) => invoke<TranslationResult>("translate_selection", { request, streamId });
 export const setCaptionRunning = (running: boolean) => invoke<void>("set_caption_running", { running });
 export const refreshCaption = () => invoke<void>("refresh_caption");
 export const resetAsrChannelRouting = () => invoke<void>("reset_asr_channel_routing");
