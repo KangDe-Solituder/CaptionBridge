@@ -231,7 +231,9 @@ Windows 运行态验收清单见 [`QUALITY_ACCEPTANCE.md`](QUALITY_ACCEPTANCE.md
 
 OCR 在 CPU 本地运行，按需启动，闲置 60 秒后退出。截图只在内存中使用，不保存到日志或会话，也不上传给翻译服务；识别后的文字会交给当前配置的翻译服务。首次使用有模型加载时间，后续请求会复用进程。关闭结果或重新截图会取消旧翻译。
 
-当前不支持跨屏框选、持续区域识别或专业表格排版还原。文字块采用保守的相邻行分组；复杂多栏、竖排、花体、小字的效果仍需继续优化。
+当前不支持跨屏框选、持续区域识别或专业表格排版还原。OCR 先合并同一行的相邻文字片段，再根据行距、首行缩进、字号和栏间空白恢复段落；同一段的自然换行一起送入翻译，原文保留换行。标题、独立列表项和不同栏保留边界，双栏按先左后右阅读。常规段落不再在 600 字符处拆开，超长内容仍按最多 2400 字符分块。复杂图文混排、竖排、花体、小字的效果仍需继续优化。
+
+OCR Worker 使用显式 UTF-8 字节协议，不依赖 Windows 默认代码页；包含中文、日文或 emoji 的模型路径也可正常加载。若旧版出现“校验可用，但测试提示模型未安装”，应更新 OCR 运行组件，无需重复下载模型。
 
 `pnpm tauri build` 会校验 OCR worker；缺失、源码变更或协议检查失败时会自动重建，再次校验通过后才打包。ASR worker 仍按前述步骤准备。OCR 构建机需要 Python 3.12（锁定的 NumPy 依赖要求），最终用户不需要 Python。脚本自动查找 Windows Python Launcher 或默认 uv 目录中的 3.12；也可显式指定解释器：
 
@@ -242,6 +244,8 @@ pnpm tauri build
 ```
 
 OCR 依赖锁定在 `src-tauri/ocr-worker/requirements.lock.txt`。模型使用官方 RapidAI/RapidOCR 的 ModelScope 发布文件，按大小及 SHA-256 校验；权重不放入安装包，避免重复下载。运行组件随安装包分发，不能只复制主 exe 到另一台电脑。ASR/OCR 资源通过显式的 `kind` 字段分类，共用模型下载、校验和删除机制；目前 OCR 只有一种 CPU 通用模型，无需选择 GPU 资源。
+
+`pnpm test:ocr-worker` 包含段落布局和协议回归测试。设置 `OCR_TEST_MODEL_DIR` 为已下载模型目录，再用 OCR 构建虚拟环境中的 Python 运行同一测试目录，可额外执行真实识别测试（中文缩进段落、英文双栏和 Unicode 路径）；`OCR_TEST_WORKER` 可指定已打包的 Worker exe。`cargo test --manifest-path src-tauri/Cargo.toml worker_loads_models_through_utf8_protocol -- --ignored` 验证主程序实际使用的 Rust → Worker 通道。
 
 ## 数据与隐私
 

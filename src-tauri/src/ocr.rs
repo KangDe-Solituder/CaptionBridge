@@ -591,6 +591,26 @@ pub fn open_ocr_resources(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires built OCR worker and downloaded models; exercises the actual Rust UTF-8 pipe"]
+    async fn worker_loads_models_through_utf8_protocol() {
+        let paths = crate::settings::AppPaths::shared().unwrap();
+        model_manager::verify_model(&paths, MODEL_ID).unwrap();
+        let mut worker = Worker::start().unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(90),
+            worker
+                .request(json!({"command": "test", "model_path": paths.models_dir.join(MODEL_ID)})),
+        )
+        .await;
+        let _ = worker.child.kill().await;
+        let response = result.unwrap().unwrap();
+        let blocks = response["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1, "{response}");
+        assert!(blocks[0]["text"].as_str().unwrap().contains("OCR test 123"));
+    }
+
     #[test]
     fn crop_rejects_overflow_and_out_of_bounds() {
         assert!(validate_rect([u32::MAX, 0, 8, 8], 1920, 1080).is_err());
