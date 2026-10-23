@@ -6,6 +6,7 @@ mod captions;
 mod glossary;
 mod gpu_runtime;
 mod llm;
+mod llm_profiles;
 mod model_manager;
 mod models;
 mod native_caption_reader;
@@ -177,7 +178,7 @@ impl AppState {
 }
 
 #[tauri::command]
-fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String> {
+async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String> {
     let settings = state
         .settings
         .read()
@@ -193,11 +194,14 @@ fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String> {
 }
 
 #[tauri::command]
-fn save_settings(
+async fn save_settings(
     mut request: SettingsSaveRequest,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SettingsView, String> {
+    let mut current = state.settings.write().map_err(|e| e.to_string())?;
+    request.settings.llm = current.llm.clone();
+    request.settings.llm_profiles = current.llm_profiles.clone();
     settings::normalize(&mut request.settings);
     network::validate_download_settings(&request.settings.downloads)?;
     if !request.settings.llm.extra_body_json.trim().is_empty() {
@@ -208,20 +212,13 @@ fn save_settings(
         }
     }
     windows_integration::validate_hotkey(&request.settings.selection.hotkey)?;
-    if let Some(key) = request.api_key.as_deref().filter(|v| !v.trim().is_empty()) {
-        secrets::set_api_key(key)?;
-        if secrets::get_api_key()?.is_none() {
-            return Err("API Key 写入凭据管理器后无法回读".into());
-        }
-        state.api_key_configured.store(true, Ordering::Relaxed);
-    }
 
     state
         .selection_hotkey_registered
         .store(request.settings.selection.enabled, Ordering::Relaxed);
 
     settings::save(&state.paths, &request.settings)?;
-    *state.settings.write().map_err(|e| e.to_string())? = request.settings.clone();
+    *current = request.settings.clone();
     state.log("info", "设置已保存");
     let view = SettingsView {
         settings: request.settings,
@@ -241,27 +238,13 @@ fn hide_selection_toolbar(app: AppHandle, state: State<'_, AppState>) -> Result<
 }
 
 #[tauri::command]
-fn delete_api_key(state: State<'_, AppState>) -> Result<(), String> {
-    secrets::delete_api_key()?;
-    state.api_key_configured.store(false, Ordering::Relaxed);
-    Ok(())
-}
-
-#[tauri::command]
 async fn test_download_proxy(proxy_url: String) -> Result<String, String> {
     network::test_download_proxy(&proxy_url).await
 }
 
 #[tauri::command]
-async fn test_llm(
-    api_key: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<TranslationResult, String> {
-    let settings = state.settings.read().map_err(|e| e.to_string())?.clone();
-    let key = match api_key.filter(|v| !v.trim().is_empty()) {
-        Some(value) => secrets::normalize_api_key(&value)?,
-        None => secrets::get_api_key()?.ok_or_else(|| "请先保存 API Key".to_string())?,
-    };
+async fn test_llm(state: State<'_, AppState>) -> Result<TranslationResult, String> {
+    let (settings, key) = translation_context(&state)?;
     llm::translate(
         settings.clone(),
         key,
@@ -275,6 +258,14 @@ async fn test_llm(
         },
     )
     .await
+}
+
+fn translation_context(state: &AppState) -> Result<(AppSettings, String), String> {
+    // Keep the endpoint/model snapshot and credential lookup under the same lock.
+    // Editing a profile must never pair its old endpoint with its new API key.
+    let settings = state.settings.read().map_err(|e| e.to_string())?;
+    let key = secrets::translation_key(&settings)?;
+    Ok((settings.clone(), key))
 }
 
 fn translation_glossary(state: &AppState) -> Vec<models::GlossaryPair> {
@@ -292,8 +283,7 @@ async fn translate_selection(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<TranslationResult, String> {
-    let settings = state.settings.read().map_err(|e| e.to_string())?.clone();
-    let key = secrets::get_api_key()?.ok_or_else(|| "请先保存 API Key".to_string())?;
+    let (settings, key) = translation_context(&state)?;
     if request.glossary.is_empty() {
         request.glossary = translation_glossary(&state);
     }
@@ -330,9 +320,7 @@ async fn set_caption_running_inner(
                 stale.join.abort();
             }
         }
-        if secrets::get_api_key()?.is_none() {
-            return Err("请先保存 API Key".into());
-        }
+        secrets::translation_key(&*state.settings.read().map_err(|e| e.to_string())?)?;
         state.set_caption_state(&app, CaptionRuntimeState::Starting);
         state.log("info", "正在启动实时字幕翻译");
         *controller = Some(captions::spawn_caption_session(app, state.clone()));
@@ -1093,12 +1081,11 @@ async fn correct_caption_session(
             return Err("该记录正在纠错中".to_string());
         }
     }
-    let settings = state.settings.read().map_err(|e| e.to_string())?.clone();
-    let api_key = match secrets::get_api_key()? {
-        Some(key) => key,
-        None => {
+    let (settings, api_key) = match translation_context(&state) {
+        Ok(context) => context,
+        Err(error) => {
             state.correction_tasks.lock().await.remove(&id);
-            return Err("请先保存 API Key".to_string());
+            return Err(error);
         }
     };
     let glossary_pairs = if use_glossary {
@@ -1363,7 +1350,9 @@ fn run_app() {
             get_settings,
             save_settings,
             hide_selection_toolbar,
-            delete_api_key,
+            llm_profiles::save_llm_profile,
+            llm_profiles::activate_llm_profile,
+            llm_profiles::remove_llm_profile,
             test_download_proxy,
             test_llm,
             translate_selection,
@@ -1435,16 +1424,25 @@ fn run_app() {
             // close handling, and tray commands remain responsive.
             let credential_app = app.handle().clone();
             let credential_state = state.clone();
+            let needs_legacy_probe =
+                settings.llm_profiles.is_empty() && settings.llm.profile_id.is_none();
             std::thread::spawn(move || {
-                let configured = secrets::has_api_key();
-                credential_state
-                    .api_key_configured
-                    .store(configured, Ordering::Relaxed);
-                if let Ok(settings) = credential_state.settings.read().map(|value| value.clone()) {
+                let legacy_has_key = needs_legacy_probe && secrets::has_api_key();
+                if let Ok(mut current) = credential_state.settings.write() {
+                    llm_profiles::migrate_legacy(&mut current, legacy_has_key);
+                    if let Err(error) = settings::save(&credential_state.paths, &current) {
+                        credential_state.log("warn", format!("翻译配置迁移保存失败：{error}"));
+                    }
+                    let configured = current.llm_profiles.iter().any(|p| {
+                        Some(&p.id) == current.llm.profile_id.as_ref() && p.api_key_configured
+                    });
+                    credential_state
+                        .api_key_configured
+                        .store(configured, Ordering::Relaxed);
                     let _ = credential_app.emit(
-                        "settings:changed",
+                        "llm:profiles-changed",
                         SettingsView {
-                            settings,
+                            settings: current.clone(),
                             api_key_configured: configured,
                             model_directory: credential_state
                                 .paths

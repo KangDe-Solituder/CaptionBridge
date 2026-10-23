@@ -4,7 +4,8 @@ import type { AppSettings, TranslationResult } from "./contracts";
 export const emptyResult: TranslationResult = { source_text: "", translated_text: "", model: "", latency_ms: 0, first_token_ms: 0, cached: false };
 
 export const previewSettings: AppSettings = {
-  schema_version: 9,
+  schema_version: 10,
+  llm_profiles: [],
   ocr: { enabled: true, source_language: "auto", target_language: "", source_placement: "inline" },
   llm: { endpoint: "https://api.openai.com/v1", model: "gpt-4o-mini", target_language: "中文", extra_body_json: "", timeout_milliseconds: 5000, max_tokens: 768, temperature: 0.2, thinking_enabled: false },
   selection: { enabled: true, clipboard_fallback_enabled: true, hotkey: "Alt+KeyQ", trigger_mode: "automatic" },

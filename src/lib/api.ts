@@ -2,12 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, AsrDependencyReport, CaptionSourceConfig, Glossary, GlossaryImportResult, ModelInfo, RuntimeLogEntry, RuntimeStatus, SessionPageView, SessionSummary, SettingsView, TranslationRequest, TranslationResult } from "./contracts";
 
 export const getSettings = () => invoke<SettingsView>("get_settings");
-export const saveSettings = (settings: AppSettings, apiKey?: string) =>
-  invoke<SettingsView>("save_settings", { request: { settings, api_key: apiKey || null } });
+export const saveSettings = (settings: AppSettings) =>
+  invoke<SettingsView>("save_settings", { request: { settings } });
 export const hideSelectionToolbar = () => invoke<void>("hide_selection_toolbar");
-export const deleteApiKey = () => invoke<void>("delete_api_key");
 export const testDownloadProxy = (proxyUrl: string) => invoke<string>("test_download_proxy", { proxyUrl });
-export const testLlm = (apiKey?: string) => invoke<TranslationResult>("test_llm", { apiKey: apiKey || null });
+export const testLlm = () => invoke<TranslationResult>("test_llm");
+export const saveLlmProfile = (input: { id?: string; name: string; config: import("./contracts").LlmProviderSettings; api_key?: string; clear_api_key: boolean }) => invoke<SettingsView>("save_llm_profile", { input });
+export const activateLlmProfile = (id: string) => invoke<SettingsView>("activate_llm_profile", { id });
+export const removeLlmProfile = (id: string) => invoke<SettingsView>("remove_llm_profile", { id });
 export const translateSelection = (request: TranslationRequest) => invoke<TranslationResult>("translate_selection", { request });
 export const setCaptionRunning = (running: boolean) => invoke<void>("set_caption_running", { running });
 export const refreshCaption = () => invoke<void>("refresh_caption");

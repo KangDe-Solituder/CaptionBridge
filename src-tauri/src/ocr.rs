@@ -483,12 +483,10 @@ async fn translate_blocks(app: AppHandle, state: AppState, id: u64) {
     if view.status != "translating" {
         return;
     }
-    let settings = match state.settings.read() {
-        Ok(v) => v.clone(),
+    let (settings, key) = match state.settings.read() {
+        Ok(settings) => (settings.clone(), crate::secrets::translation_key(&settings)),
         Err(_) => return,
     };
-    let key = crate::secrets::get_api_key()
-        .and_then(|v| v.ok_or("请先在设置 → 应用 → 翻译服务中保存 API Key".into()));
     let glossary = crate::translation_glossary(&state);
     for block in view.blocks {
         if !state.ocr.current(id) {

@@ -4,9 +4,11 @@ export type CaptionSourceHealth = "unknown" | "ready" | "quiet" | "status_prompt
 export type AsmrChannelState = "inactive" | "searching" | "locked_left" | "locked_right" | "locked_mix" | "pending_left" | "pending_right" | "fallback_mono";
 
 export interface LlmProviderSettings {
+  profile_id?: string | null;
   endpoint: string; model: string; target_language: string; extra_body_json: string;
   timeout_milliseconds: number; max_tokens: number; temperature: number; thinking_enabled: boolean;
 }
+export interface LlmProfile { id: string; name: string; config: LlmProviderSettings; api_key_configured: boolean; }
 export interface SelectionSettings { enabled: boolean; clipboard_fallback_enabled: boolean; hotkey: string; trigger_mode: "hotkey" | "automatic"; }
 export interface DownloadSettings { proxy_enabled: boolean; proxy_url: string; }
 export interface OcrSettings { enabled: boolean; source_language: string; target_language: string; source_placement: "inline" | "bottom"; }
@@ -33,6 +35,7 @@ export interface VisualSettings {
   blur_scope: "floating" | "all" | "off"; reduce_motion: boolean;
 }
 export interface AppSettings {
+  llm_profiles: LlmProfile[];
   schema_version: number; llm: LlmProviderSettings; selection: SelectionSettings;
   captions: CaptionSettings; overlay: OverlaySettings; visual: VisualSettings; downloads: DownloadSettings;
   ocr: OcrSettings;

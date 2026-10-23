@@ -1,3 +1,4 @@
+import { LlmProfiles } from "./components/LlmProfiles";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
@@ -15,7 +16,7 @@ import { OverlayWindow } from "./windows/OverlayWindow";
 import { ToolbarWindow } from "./windows/ToolbarWindow";
 import { OcrCaptureWindow, OcrResultWindow, startOcrCapture } from "./windows/OcrWindow";
 import {
-  clearRuntimeLogs, correctCaptionSession, deleteApiKey, deleteCaptionSession, exportCaptionSession,
+  clearRuntimeLogs, correctCaptionSession, deleteCaptionSession, exportCaptionSession,
   exportGlossary, getGlossary, getRuntimeLogs, getRuntimeStatus, getSettings, importGlossary,
   listCaptionSessions, newCaptionSession, openLogsDir, openSessionsDir, readCaptionSession, resetAsrChannelRouting,
   saveGlossary, saveSettings, setCaptionRunning, testLlm, listModels, downloadModel, cancelModelDownload,
@@ -103,8 +104,7 @@ function MainWindow() {
     const initial = new URLSearchParams(location.search).get("page");
     return initial === "captions" || initial === "glossary" || initial === "settings" ? initial : "selection";
   });
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>(() => { const saved = localStorage.getItem("settings-category"); return saved === "resources" || saved === "application" || saved === "appearance" ? saved : "features"; });
-  const [apiKey, setApiKey] = useState("");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>(() => { const saved = localStorage.getItem("settings-category"); return saved === "resources" || saved === "application" || saved === "features" ? saved : "appearance"; });
   const [status, setStatus] = useState<RuntimeStatus>({ caption_running: false, caption_state: "stopped", selection_hotkey_registered: false, source_health: "unknown", last_caption_update_ms: 0, reader_restarts: 0, source_error_count: 0, translation_queue_depth: 0, last_translation_latency_ms: 0, last_translation_first_token_ms: 0, selected_source: previewSettings.captions.source, asr_latency_ms: 0, asmr_channel_state: "inactive" });
   const [models, setModels] = useState<ModelInfo[]>(builtInModels);
   const [message, setMessage] = useState("");
@@ -175,12 +175,12 @@ function MainWindow() {
   }, []);
 
   useEffect(() => {
-    void loadInitialSettings();
-    if (!isTauri) return;
+    if (!isTauri) { void loadInitialSettings(); return; }
     void getRuntimeStatus().then(setStatus).catch(() => undefined);
     const unsubs = [
       listen<void>("ocr:resources", () => { setSettingsAnchor("ocr-models"); setPage("settings"); setSettingsTab("resources"); }),
       listen<string>("ocr:error", e => setMessage(e.payload)),
+      listen<SettingsView>("llm:profiles-changed", e => setView(current => current ? mergeProfileView(current, e.payload) : e.payload)),
       listen<SettingsView>("settings:changed", e => { if (!switchingSource.current) setView(e.payload); }),
       listen<TranslationResult>("translation:finished", e => setSelectionResult(e.payload)),
       listen("caption:translated", () => scheduleSessionRefresh()),
@@ -198,6 +198,9 @@ function MainWindow() {
       listen<void>("caption:session-reset", () => { setViewingSession(null); void refreshSessions(); }),
       listen<string>("runtime:error", e => setMessage(e.payload)),
     ];
+    // Subscribe before loading so a legacy-profile migration cannot be missed
+    // between the initial snapshot and listener registration.
+    void Promise.all(unsubs).then(() => loadInitialSettings()).catch(() => loadInitialSettings());
     const interval = window.setInterval(() => void getRuntimeStatus().then(setStatus).catch(() => undefined), 1200);
     void refreshModels();
     void refreshSessions();
@@ -226,15 +229,16 @@ function MainWindow() {
     if (!settings) return;
     setSaving(true); setMessage("");
     try {
-      const saved = await saveSettings(settings, apiKey || undefined);
-      setView(saved); setApiKey(""); setMessage("设置已保存");
+      const saved = await saveSettings(settings);
+      setView(saved); setMessage("设置已保存");
     } catch (error) { setMessage(String(error)); }
     finally { setSaving(false); }
   };
 
   const runTest = async () => {
+    if (!isTauri) { setMessage("预览环境不发送网络请求"); return; }
     setTesting(true); setMessage("");
-    try { const result = await testLlm(apiKey || undefined); setSelectionResult(result); setMessage("LLM 连接正常"); }
+    try { const result = await testLlm(); setSelectionResult(result); setMessage("LLM 连接正常"); }
     catch (error) { setMessage(String(error)); }
     finally { setTesting(false); }
   };
@@ -332,7 +336,7 @@ function MainWindow() {
               {page === "captions" && <CaptionPage status={status} sessions={sessions} viewingSession={viewingSession} onSelectSession={selectSession} onToggle={toggleCaptions} onMessage={setMessage} />}
               {page === "glossary" && <GlossaryPage onMessage={setMessage} />}
               {page === "settings" && (
-                <SettingsPage tab={settingsTab} setTab={setSettingsTab} anchor={settingsAnchor} onAnchorHandled={() => setSettingsAnchor(undefined)} view={view} apiKey={apiKey} setApiKey={setApiKey}
+                <SettingsPage tab={settingsTab} setTab={setSettingsTab} anchor={settingsAnchor} onAnchorHandled={() => setSettingsAnchor(undefined)} view={view} onProfilesChanged={next => setView(current => current ? mergeProfileView(current, next) : next)}
                   update={update} onSave={persist} saving={saving} testing={testing} onTest={runTest}
                   models={models} status={status} onSelectSource={selectSource} refreshModels={() => void refreshModels(true)} onMessage={setMessage}
                   logs={logs} logQuery={logQuery} setLogQuery={setLogQuery}
@@ -798,9 +802,9 @@ function GlossaryPage({ onMessage }: { onMessage: (message: string) => void }) {
   </div>;
 }
 
-function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab: SettingsTab; setTab: (v: SettingsTab) => void; view: SettingsView; apiKey: string; setApiKey: (v: string) => void; update: (v: AppSettings) => void; onSave: () => void; saving: boolean; testing: boolean; onTest: () => void; logs: RuntimeLogEntry[]; logQuery: string; setLogQuery: (v: string) => void; onClearLogs: () => void; models: ModelInfo[]; status: RuntimeStatus; onSelectSource: (source: CaptionSourceConfig) => Promise<void>; refreshModels: () => void; onMessage: (message: string) => void }) {
-  const { tab, setTab, view, apiKey, setApiKey, update } = props; const s = view.settings;
-  const [tocOpen, setTocOpen] = useState(true);
+function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab: SettingsTab; setTab: (v: SettingsTab) => void; view: SettingsView; onProfilesChanged: (view: SettingsView) => void; update: (v: AppSettings) => void; onSave: () => void; saving: boolean; testing: boolean; onTest: () => void; logs: RuntimeLogEntry[]; logQuery: string; setLogQuery: (v: string) => void; onClearLogs: () => void; models: ModelInfo[]; status: RuntimeStatus; onSelectSource: (source: CaptionSourceConfig) => Promise<void>; refreshModels: () => void; onMessage: (message: string) => void }) {
+  const { tab, setTab, view, update } = props; const s = view.settings;
+  const [tocOpen, setTocOpen] = useState(false);
   const [activeChapter, setActiveChapter] = useState("");
   const pendingChapter = useRef<string | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -884,7 +888,7 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
     catch (error) { props.onMessage(String(error)); }
     finally { setTestingProxy(false); }
   };
-  const tabs: { id: SettingsTab; label: string }[] = [{ id: "features", label: "功能" }, { id: "resources", label: "资源" }, { id: "application", label: "应用" }, { id: "appearance", label: "外观" }];
+  const tabs: { id: SettingsTab; label: string }[] = [{ id: "appearance", label: "外观" }, { id: "features", label: "功能" }, { id: "resources", label: "资源" }, { id: "application", label: "应用" }];
   const filteredLogs = props.logs.filter(l => `${l.level} ${l.message}`.toLowerCase().includes(props.logQuery.toLowerCase()));
   return <div className="page settings-page" ref={contentRef}>
     <PageHeader eyebrow="PREFERENCES" title="设置" description="让翻译，按照你的习惯运行。" action={<button className="primary" onClick={props.onSave} disabled={props.saving}>{props.saving ? <Loader2 className="spin" /> : <Check />}保存设置</button>} />
@@ -964,15 +968,7 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
     </section></>}{tab === "application" && <><section className="settings-chapter" id="settings-translation" aria-labelledby="heading-translation">
       <header className="chapter-heading"><div><h2 id="heading-translation">翻译服务</h2><p>划词、字幕和截图翻译共用连接配置。</p></div></header>
 
-        <Field label="Endpoint"><input value={s.llm.endpoint} onChange={e => update({ ...s, llm: { ...s.llm, endpoint: e.target.value } })} /></Field>
-        <div className="two-cols"><Field label="Model"><input value={s.llm.model} onChange={e => update({ ...s, llm: { ...s.llm, model: e.target.value } })} /></Field><Field label="目标语言"><input value={s.llm.target_language} onChange={e => update({ ...s, llm: { ...s.llm, target_language: e.target.value } })} /></Field></div>
-        <Field label="API Key" hint={view.api_key_configured ? "已安全保存在 Windows 凭据管理器" : "尚未保存"}><div className="input-actions"><input type="password" placeholder={view.api_key_configured ? "输入新 Key 可替换" : "sk-..."} value={apiKey} onChange={e => setApiKey(e.target.value)} />{view.api_key_configured && <button title="删除 API Key" onClick={async () => { await deleteApiKey(); setApiKey(""); location.reload(); }}><Trash2 /></button>}</div></Field>
-        <details className="settings-advanced"><summary>高级请求设置<span>思考模式、响应时限与附加参数</span></summary>
-        <SettingRow title="启用思考" description="向兼容接口发送 enable_thinking=true；Extra Body 可覆盖它。"><Toggle label="启用思考" checked={s.llm.thinking_enabled} onChange={thinking_enabled => update({ ...s, llm: { ...s.llm, thinking_enabled } })} /></SettingRow>
-        <Field label={`实时字幕首 token 截止 · ${(s.llm.timeout_milliseconds / 1000).toFixed(1)} 秒`} hint="判定时统一容忍 0.5 秒；例如设置 5 秒，5.5 秒内到达的首 token 仍会接受"><Slider min={1000} max={5000} step={250} value={Math.min(s.llm.timeout_milliseconds, 5000)} onChange={timeout_milliseconds => update({ ...s, llm: { ...s.llm, timeout_milliseconds } })} /></Field>
-        <Field label="Extra Body JSON"><textarea value={s.llm.extra_body_json} placeholder="{}" onChange={e => update({ ...s, llm: { ...s.llm, extra_body_json: e.target.value } })} /></Field>
-        </details>
-        <button className="ghost test-button" onClick={props.onTest} disabled={props.testing}>{props.testing ? <Loader2 className="spin" /> : <BrainCircuit />}测试 LLM 连接</button>
+      <LlmProfiles view={view} onChanged={props.onProfilesChanged} onMessage={props.onMessage} onTest={props.onTest} testing={props.testing} />
 
     </section><section className="settings-chapter" id="settings-diagnostics" aria-labelledby="heading-diagnostics">
       <header className="chapter-heading"><div><h2 id="heading-diagnostics">日志与诊断</h2><p>检查运行状态，定位识别或翻译中的问题。</p></div></header>
@@ -1133,4 +1129,8 @@ function HotkeyRecorder({ value, onChange }: { value: string; onChange: (v: stri
     const parts = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Super", e.code].filter(Boolean);
     onChange(parts.join("+")); setRecording(false); e.currentTarget.blur();
   }}>{recording ? "请按组合键…" : displayHotkey(value)}</button>;
+}
+
+function mergeProfileView(current: SettingsView, next: SettingsView): SettingsView {
+  return { ...current, api_key_configured: next.api_key_configured, settings: { ...current.settings, llm: next.settings.llm, llm_profiles: next.settings.llm_profiles } };
 }

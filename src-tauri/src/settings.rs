@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn new_install_defaults_to_kotoba() {
         let settings = AppSettings::default();
-        assert_eq!(settings.schema_version, 9);
+        assert_eq!(settings.schema_version, 10);
         assert_eq!(
             settings.captions.source.model_id(),
             Some("kotoba-whisper-v2.0-faster")
@@ -362,7 +362,7 @@ mod tests {
             migrated.captions.source,
             crate::models::CaptionSourceConfig::WindowsLiveCaption
         ));
-        assert_eq!(migrated.schema_version, 9);
+        assert_eq!(migrated.schema_version, 10);
         let _ = fs::remove_dir_all(test_dir);
     }
 
@@ -385,7 +385,7 @@ mod tests {
             migrated.captions.source.channel_mode(),
             Some(AudioChannelMode::Auto)
         );
-        assert_eq!(migrated.schema_version, 9);
+        assert_eq!(migrated.schema_version, 10);
         let _ = fs::remove_dir_all(test_dir);
     }
 
@@ -411,7 +411,7 @@ mod tests {
             migrated.captions.source.suppress_non_speech_segments(),
             Some(true)
         );
-        assert_eq!(migrated.schema_version, 9);
+        assert_eq!(migrated.schema_version, 10);
         let _ = fs::remove_dir_all(test_dir);
     }
 
@@ -429,7 +429,7 @@ mod tests {
         let migrated = load(&paths).unwrap();
         assert!(!migrated.downloads.proxy_enabled);
         assert!(migrated.downloads.proxy_url.is_empty());
-        assert_eq!(migrated.schema_version, 9);
+        assert_eq!(migrated.schema_version, 10);
         let _ = fs::remove_dir_all(test_dir);
     }
 }

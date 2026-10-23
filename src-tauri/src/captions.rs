@@ -24,7 +24,6 @@ use crate::{
         CaptionTranslatedEvent, GlossaryPair, TranslationMode, TranslationRequest,
         TranslationResult, VadProfile,
     },
-    secrets,
     segmenter::BasicSegmenter,
     sessions::JsonlSession,
     windows_integration, AppState,
@@ -160,9 +159,8 @@ pub fn spawn_caption_session(app: AppHandle, state: AppState) -> CaptionControll
 }
 
 async fn run_session(app: AppHandle, state: AppState, stop: Arc<AtomicBool>) -> Result<(), String> {
-    let settings = state.settings.read().map_err(|e| e.to_string())?.clone();
+    let (settings, api_key) = crate::translation_context(&state)?;
     let source = settings.captions.source.clone();
-    let api_key = secrets::get_api_key()?.ok_or_else(|| "请先保存 API Key".to_string())?;
     // One session file per process lifetime: stopping and restarting captions
     // keeps appending to the same record; only a fresh process starts a new one.
     // The translator reads the shared slot per write, so "新建记录" swaps

@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::time::{timeout, timeout_at, Instant as TokioInstant};
@@ -161,10 +161,8 @@ where
         (!is_live_caption).then(|| TokioInstant::now() + SELECTION_FIRST_TOKEN_TIMEOUT);
 
     let translation = async {
-        let send = client
-            .post(endpoint)
+        let send = authenticated(client.post(endpoint), &api_key)
             .header(CONTENT_TYPE, "application/json")
-            .header(AUTHORIZATION, format!("Bearer {api_key}"))
             .json(&payload)
             .send();
         let mut response =
@@ -429,12 +427,13 @@ pub async fn correct_batch(
     });
     let response = timeout(
         CORRECTION_TIMEOUT,
-        client
-            .post(normalize_endpoint(&settings.llm.endpoint))
-            .header(CONTENT_TYPE, "application/json")
-            .header(AUTHORIZATION, format!("Bearer {api_key}"))
-            .json(&payload)
-            .send(),
+        authenticated(
+            client.post(normalize_endpoint(&settings.llm.endpoint)),
+            api_key,
+        )
+        .header(CONTENT_TYPE, "application/json")
+        .json(&payload)
+        .send(),
     )
     .await
     .map_err(|_| "纠错请求超时（180 秒）".to_string())?
@@ -719,4 +718,28 @@ mod tests {
         .is_err());
         assert!(parse_correction("没有 JSON", &entries).is_err());
     }
+}
+
+fn authenticated(request: reqwest::RequestBuilder, key: &str) -> reqwest::RequestBuilder {
+    if key.is_empty() {
+        request
+    } else {
+        request.bearer_auth(key)
+    }
+}
+
+#[test]
+fn local_requests_omit_auth_and_cloud_requests_use_selected_key() {
+    let client = reqwest::Client::new();
+    let local = authenticated(client.post("http://localhost:1234/v1"), "")
+        .build()
+        .unwrap();
+    assert!(!local.headers().contains_key(reqwest::header::AUTHORIZATION));
+    let cloud = authenticated(client.post("https://example.com/v1"), "test-profile-key")
+        .build()
+        .unwrap();
+    assert_eq!(
+        cloud.headers()[reqwest::header::AUTHORIZATION],
+        "Bearer test-profile-key"
+    );
 }

@@ -56,6 +56,8 @@ pub enum TranslationMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmProviderSettings {
+    #[serde(default)]
+    pub profile_id: Option<String>,
     pub endpoint: String,
     pub model: String,
     pub target_language: String,
@@ -70,6 +72,7 @@ pub struct LlmProviderSettings {
 impl Default for LlmProviderSettings {
     fn default() -> Self {
         Self {
+            profile_id: None,
             endpoint: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o-mini".to_string(),
             target_language: "中文".to_string(),
@@ -80,6 +83,14 @@ impl Default for LlmProviderSettings {
             thinking_enabled: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProfile {
+    pub id: String,
+    pub name: String,
+    pub config: LlmProviderSettings,
+    pub api_key_configured: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -435,6 +446,8 @@ impl Default for OcrSettings {
 pub struct AppSettings {
     pub schema_version: u32,
     pub llm: LlmProviderSettings,
+    #[serde(default)]
+    pub llm_profiles: Vec<LlmProfile>,
     pub selection: SelectionSettings,
     pub captions: CaptionSettings,
     pub overlay: OverlaySettings,
@@ -448,8 +461,9 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            schema_version: 9,
+            schema_version: 10,
             llm: LlmProviderSettings::default(),
+            llm_profiles: Vec::new(),
             selection: SelectionSettings::default(),
             captions: CaptionSettings::default(),
             overlay: OverlaySettings::default(),
@@ -470,7 +484,6 @@ pub struct SettingsView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsSaveRequest {
     pub settings: AppSettings,
-    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
