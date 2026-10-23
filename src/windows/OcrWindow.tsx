@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { Check, ChevronDown, ChevronUp, Copy, Grip, Loader2, MoreHorizontal, RefreshCw, ScanText, Settings, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { currentWindow, isTauri } from "../lib/window";
+import { getSettings } from "../lib/api";
+import type { SettingsView } from "../lib/contracts";
 import "./ocr.css";
 
 type Frame = { id: number; image: string; width: number; height: number };
@@ -43,7 +45,7 @@ export function OcrCaptureWindow() {
     const crop = [x, y, Math.min(frame.width - x, Math.round(rect[2] * sx)), Math.min(frame.height - y, Math.round(rect[3] * sy))];
     if (crop[2] < 8 || crop[3] < 8) { setError("选区太小，请重新拖动框选"); return; }
     submitting.current = true; setBusy(true);
-    try { await invoke("recognize_ocr", { id: frame.id, rect: crop, sourceLanguage: localStorage.getItem("ocr-source-language"), targetLanguage: localStorage.getItem("ocr-target-language") }); setFrame(undefined); }
+    try { await invoke("recognize_ocr", { id: frame.id, rect: crop }); setFrame(undefined); }
     catch (e) { setError(String(e)); }
     finally { submitting.current = false; setBusy(false); }
   }, [frame, rect]);
@@ -84,7 +86,8 @@ const languages = ["中文", "English", "日本語", "한국어", "Français", "
 export function OcrResultWindow() {
   const [view, setView] = useState<ResultView>(isTauri ? empty : preview);
   const [selected, setSelected] = useState(1);
-  const [placement, setPlacement] = useState(() => localStorage.getItem("ocr-source-placement") === "bottom" ? "bottom" : "inline");
+  const [placement, setPlacement] = useState("inline");
+  const defaultPlacement = useRef("inline");
   const [expanded, setExpanded] = useState(false);
   const [settings, setSettings] = useState(false);
   const [source, setSource] = useState("auto"), [target, setTarget] = useState("中文");
@@ -92,13 +95,25 @@ export function OcrResultWindow() {
   const [notice, setNotice] = useState("");
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const session = useRef(0);
+  useEffect(() => {
+    if (!isTauri) return;
+    let alive = true, received = false;
+    const apply = (value: SettingsView) => {
+      if (!alive) return;
+      defaultPlacement.current = value.settings.ocr.source_placement;
+      setPlacement(defaultPlacement.current);
+    };
+    const unsubscribe = listen<SettingsView>("settings:changed", event => { received = true; apply(event.payload); });
+    void unsubscribe.then(() => getSettings()).then(value => { if (!received) apply(value); }).catch(() => undefined);
+    return () => { alive = false; void unsubscribe.then(stop => stop()); };
+  }, []);
   const notify = (text: string) => { setNotice(text); clearTimeout(noticeTimer.current); noticeTimer.current = setTimeout(() => setNotice(""), 3500); };
   useEffect(() => {
     if (!isTauri) return;
     let alive = true, eventReceived = false;
     const apply = (value: ResultView) => {
       if (!alive || value.session < session.current) return;
-      if (value.session !== session.current) { setSelected(value.blocks[0]?.id ?? 1); setMenu(undefined); setSettings(false); setSource(value.source_language); setTarget(value.target_language); session.current = value.session; }
+      if (value.session !== session.current) { setPlacement(defaultPlacement.current); setSelected(value.blocks[0]?.id ?? 1); setMenu(undefined); setSettings(false); setSource(value.source_language); setTarget(value.target_language); session.current = value.session; }
       setView(value);
     };
     const unlisten = listen<ResultView>("ocr:result", e => { eventReceived = true; apply(e.payload); });
@@ -126,7 +141,6 @@ export function OcrResultWindow() {
     try { await navigator.clipboard.writeText(text); notify("已复制"); } catch (e) { notify(`复制失败：${String(e)}`); }
   };
   const retry = async () => {
-    localStorage.setItem("ocr-source-language", source); localStorage.setItem("ocr-target-language", target);
     if (!isTauri) { setSettings(false); return; }
     try { await invoke("retry_ocr_translation", { sourceLanguage: source, targetLanguage: target }); } catch (e) { notify(String(e)); }
   };
@@ -160,7 +174,7 @@ export function OcrResultWindow() {
     </footer>
     {settings && <><button className="ocr-backdrop" aria-label="关闭设置" onClick={() => setSettings(false)} /><section className="ocr-settings">
       <strong>截图翻译设置</strong>
-      <label>原文位置<select value={placement} onChange={e => { setPlacement(e.target.value); localStorage.setItem("ocr-source-placement", e.target.value); }}><option value="inline">每块译文下方</option><option value="bottom">底部显示选中块</option></select></label>
+      <label>原文位置<select value={placement} onChange={e => setPlacement(e.target.value)}><option value="inline">每块译文下方</option><option value="bottom">底部显示选中块</option></select></label>
       <div className="ocr-language-row"><label>原文语言<select value={source} onChange={e => setSource(e.target.value)}><option value="auto">自动检测</option>{languages.map(l => <option key={l}>{l}</option>)}</select></label><span>→</span><label>译文语言<select value={target} onChange={e => setTarget(e.target.value)}>{!languages.includes(target) && <option>{target}</option>}{languages.map(l => <option key={l}>{l}</option>)}</select></label></div>
       <p>语言设置用于翻译。OCR 当前使用中、英、日文通用模型。</p>
       <button className="ocr-apply" disabled={!view.blocks.length || view.status === "recognizing"} onClick={() => void retry()}>应用并重新翻译</button><button onClick={() => void openResources()}>管理 OCR 资源</button>

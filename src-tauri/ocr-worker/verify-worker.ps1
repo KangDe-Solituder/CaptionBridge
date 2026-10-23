@@ -11,7 +11,9 @@ foreach ($name in @('ocr_worker.py', 'requirements.lock.txt', 'worker.spec.templ
   $hash = Get-OcrFileHash (Join-Path $PSScriptRoot $name)
   if ($manifest.$name -ne $hash) { throw "OCR worker stale: $name changed. Rebuild OCR worker." }
 }
-'{"command":"ping"}' | & (Join-Path $workerDir 'livecaption-ocr-worker.exe') | ForEach-Object {
+$responses = @('{"command":"ping"}' | & (Join-Path $workerDir 'livecaption-ocr-worker.exe'))
+if ($LASTEXITCODE -ne 0 -or $responses.Count -ne 1) { throw 'OCR worker did not return one ping response' }
+$responses | ForEach-Object {
   $response = $_ | ConvertFrom-Json
   if (-not $response.ok -or $response.protocol -ne 1) { throw 'OCR worker protocol mismatch' }
 }

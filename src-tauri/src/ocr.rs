@@ -242,6 +242,15 @@ pub async fn start_ocr_capture(app: AppHandle, state: State<'_, AppState>) -> Re
 }
 pub async fn start(app: AppHandle, state: AppState) -> Result<(), String> {
     let _transition = state.ocr.transition.lock().await;
+    if !state
+        .settings
+        .read()
+        .map_err(|e| e.to_string())?
+        .ocr
+        .enabled
+    {
+        return Err("截图翻译已关闭，请在设置 → 功能中启用".into());
+    }
     if state.ocr.capturing.swap(true, Ordering::SeqCst) {
         return Err("正在框选，请先完成或按 Esc 取消".into());
     }
@@ -252,7 +261,7 @@ pub async fn start(app: AppHandle, state: AppState) -> Result<(), String> {
             std::fs::metadata(state.paths.models_dir.join(MODEL_ID).join(f.name))
                 .is_ok_and(|m| m.len() == f.size)
         }) {
-            return Err("请先在设置 → 资源 → OCR 来源下载或修复 OCR 模型".to_string());
+            return Err("请先在设置 → 资源 → 文字识别 · OCR 下载或修复模型".to_string());
         }
         let main = app.get_webview_window("main").ok_or("主窗口不可用")?;
         let monitors = main.available_monitors().map_err(|e| e.to_string())?;
@@ -376,18 +385,17 @@ pub async fn recognize_ocr(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let _transition = state.ocr.transition.lock().await;
+    let defaults = state.settings.read().map_err(|e| e.to_string())?.clone();
     let source = source_language
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "auto".into());
-    let target = target_language
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            state
-                .settings
-                .read()
-                .map(|s| s.llm.target_language.clone())
-                .unwrap_or_else(|_| "中文".into())
-        });
+        .unwrap_or(defaults.ocr.source_language);
+    let target = target_language.filter(|s| !s.trim().is_empty()).unwrap_or({
+        if defaults.ocr.target_language.is_empty() {
+            defaults.llm.target_language
+        } else {
+            defaults.ocr.target_language
+        }
+    });
     if source.len() > 80 || target.len() > 80 {
         return Err("请选择有效语言".into());
     }
@@ -480,7 +488,7 @@ async fn translate_blocks(app: AppHandle, state: AppState, id: u64) {
         Err(_) => return,
     };
     let key = crate::secrets::get_api_key()
-        .and_then(|v| v.ok_or("请先在设置 → 翻译服务中保存 API Key".into()));
+        .and_then(|v| v.ok_or("请先在设置 → 应用 → 翻译服务中保存 API Key".into()));
     let glossary = crate::translation_glossary(&state);
     for block in view.blocks {
         if !state.ocr.current(id) {

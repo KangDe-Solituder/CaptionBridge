@@ -46,6 +46,12 @@ LiveCaption 的目标是在不打断当前应用的情况下，提供两条快�
 - 当前会话持续写入 JSONL，并可导出为 `SRT`、`WebVTT`、`TXT` 或 `JSON`。
 - 日志页提供运行日志、源健康状态、重连次数、翻译队列和延迟指标。
 
+### 设置与窗口行为
+
+设置采用「功能 / 资源 / 应用 / 外观」四个横向分类，各分类以连续章节呈现。导航与正文共同占据内容区中间 90% 的宽度，章节间用居中短线区分。右侧目录独立滑出，跳转后保持展开，手动收起时不改变正文宽度；减少动画设置会关闭抽屉过渡。设置页记住上次打开的分类。ASR/OCR 的功能偏好与模型下载、校验测试分别管理；OCR 默认语言及原文位置随普通设置保存，旧配置自动采用兼容默认值。
+
+主窗口右上角 X 收回到托盘，后台字幕与服务继续运行；彻底关闭请使用托盘菜单「退出」。关闭事件由原生窗口层处理。
+
 ## 工作方式
 
 ```text
@@ -78,7 +84,7 @@ Windows Live Captions ┤
 
 LLM 翻译需要一个 OpenAI-compatible endpoint 和 API Key。实时使用 Windows Live Captions 时，需要系统已启用对应功能；使用本地 ASR 时则需要下载约 1.5–1.6 GB 的模型文件。
 
-ASMR 双声道跟随只在“设置 → 字幕 → 音频模式”选择“ASMR”后生效。“智能锁定”会结合语音概率、响度起伏和频谱特征锁定人声侧；句间静音不会释放锁定，只有另一侧出现持续且高于既有噪声基线的人声证据时才会平滑换边。界面可选择稳健、标准或灵敏切换，并显示当前锁定状态。ASR 仍只处理一路选中的单声道音频。普通模式不会启用双声道分析，行为和资源开销保持不变。若输出设备不能提供双声道，Worker 会自动回退到原有单声道采集。
+ASMR 双声道跟随只在“设置 → 功能 → 实时字幕 → 音频模式”选择“ASMR”后生效。“智能锁定”会结合语音概率、响度起伏和频谱特征锁定人声侧；句间静音不会释放锁定，只有另一侧出现持续且高于既有噪声基线的人声证据时才会平滑换边。界面可选择稳健、标准或灵敏切换，并显示当前锁定状态。ASR 仍只处理一路选中的单声道音频。普通模式不会启用双声道分析，行为和资源开销保持不变。若输出设备不能提供双声道，Worker 会自动回退到原有单声道采集。
 
 ## 安装与运行
 
@@ -142,7 +148,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build-worker.ps1 `
   -Python $Python
 ```
 
-安装后的应用会优先从用户缓存目录、Worker 自身目录、系统 `PATH`、`CUDA_PATH`、标准 NVIDIA 安装目录，以及项目/用户 Python 虚拟环境的 `nvidia-cublas`、`nvidia-cudnn` 目录中查找 CUDA 12/cuDNN 9。可以在“设置 → 字幕 → 本地 ASR 运行环境”点击“检查依赖”：新版 Worker 会逐个加载 CUDA 12 cuBLAS 和完整的 8 个 cuDNN 9 DLL，并把已发现的目录加入本次 Worker 的运行路径；如果已有模型，还会关闭 VAD 捷径并强制执行一次真实 Whisper GPU encoder dry-run。若运行库缺失或实际加载失败，检查窗口才会提供“下载 GPU Runtime”按钮，下载完成并校验后自动重新检查。旧版 Worker 不支持诊断命令时，应用仍会改用已安装模型执行兼容验证。仅发现入口 DLL、仅加载模型或对静音执行被 VAD 跳过的检查，都不再判定为推理可用。
+安装后的应用会优先从用户缓存目录、Worker 自身目录、系统 `PATH`、`CUDA_PATH`、标准 NVIDIA 安装目录，以及项目/用户 Python 虚拟环境的 `nvidia-cublas`、`nvidia-cudnn` 目录中查找 CUDA 12/cuDNN 9。可以在“设置 → 资源 → 本地 ASR 运行环境”点击“检查依赖”：新版 Worker 会逐个加载 CUDA 12 cuBLAS 和完整的 8 个 cuDNN 9 DLL，并把已发现的目录加入本次 Worker 的运行路径；如果已有模型，还会关闭 VAD 捷径并强制执行一次真实 Whisper GPU encoder dry-run。若运行库缺失或实际加载失败，检查窗口才会提供“下载 GPU Runtime”按钮，下载完成并校验后自动重新检查。旧版 Worker 不支持诊断命令时，应用仍会改用已安装模型执行兼容验证。仅发现入口 DLL、仅加载模型或对静音执行被 VAD 跳过的检查，都不再判定为推理可用。
 
 如确实需要生成包含 GPU 运行库的自包含 worker，可以显式使用以下参数：
 
@@ -171,7 +177,7 @@ src-tauri\worker\dist\livecaption-asr-worker\livecaption-asr-worker.exe
 - **`ERR_PNPM_IGNORED_BUILDS: esbuild`**：确认已检出 `pnpm-workspace.yaml`，然后重新执行 `pnpm install --frozen-lockfile`。
 - **`resource path worker\\dist\\livecaption-asr-worker doesn't exist`**：本地 ASR worker 尚未构建；按上面的步骤生成 `livecaption-asr-worker.exe`。
 - **旧 Worker 不支持轻量探测**：这是 `git pull` 后仍在使用被 Git 忽略的旧 exe，并不表示推理版本不兼容。检查器会自动用当前已安装模型执行真实 CUDA dry-run；验证成功即可继续使用。只有希望使用更快的轻量诊断时才需要重新执行 `build-worker.ps1`。
-- **本地 ASR 提示缺少 CUDA/cuDNN**：在“设置 → 字幕”运行依赖检查并点击“下载 GPU Runtime”。当前 CTranslate2 版本需要 CUDA 12 的 cuBLAS 和完整 cuDNN 9 文件组；不能直接使用只包含 `cublas64_13.dll` 的 CUDA 13 目录，也不能只复制 `cudnn64_9.dll`。有可用模型时，检查器和模型测试都会实际进入 GPU encoder，而不是让 VAD 跳过静音。
+- **本地 ASR 提示缺少 CUDA/cuDNN**：在“设置 → 资源”运行依赖检查并点击“下载 GPU Runtime”。当前 CTranslate2 版本需要 CUDA 12 的 cuBLAS 和完整 cuDNN 9 文件组；不能直接使用只包含 `cublas64_13.dll` 的 CUDA 13 目录，也不能只复制 `cudnn64_9.dll`。有可用模型时，检查器和模型测试都会实际进入 GPU encoder，而不是让 VAD 跳过静音。
 - **NSIS 报 `Internal compiler error #12345: error mmapping datablock`**：通常是把约 2 GB 的 CUDA/cuDNN DLL 一并装入 worker 导致。重新使用不带 `-BundleGpuRuntime` 的默认命令构建 worker，再执行 `pnpm tauri build`。
 - **PowerShell 阻止 `build-worker.ps1`**：使用上面进程级的 `powershell.exe -ExecutionPolicy Bypass -File ...` 命令。
 - **Vite 报 `EBUSY ... src-tauri\\target\\...\\livecaption.exe`**：当前配置已从 Vite 监听中排除 `src-tauri`。拉取最新代码、结束旧的开发进程后重新执行 `pnpm tauri dev`。
@@ -227,15 +233,15 @@ OCR 在 CPU 本地运行，按需启动，闲置 60 秒后退出。截图只在�
 
 当前不支持跨屏框选、持续区域识别或专业表格排版还原。文字块采用保守的相邻行分组；复杂多栏、竖排、花体、小字的效果仍需继续优化。
 
-构建发布包前，除了 ASR worker，还需构建 OCR worker（构建机需要 Python 3.12，最终用户不需要）：
+`pnpm tauri build` 会校验 OCR worker；缺失、源码变更或协议检查失败时会自动重建，再次校验通过后才打包。ASR worker 仍按前述步骤准备。OCR 构建机需要 Python 3.12（锁定的 NumPy 依赖要求），最终用户不需要 Python。脚本自动查找 Windows Python Launcher 或默认 uv 目录中的 3.12；也可显式指定解释器：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File src-tauri\ocr-worker\build-worker.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File src-tauri\ocr-worker\build-worker.ps1 -Python "C:\path\to\Python312\python.exe"
 pnpm test:ocr-worker
 pnpm tauri build
 ```
 
-OCR 依赖锁定在 `src-tauri/ocr-worker/requirements.lock.txt`。模型使用官方 RapidAI/RapidOCR 的 ModelScope 发布文件，按大小及 SHA-256 校验；权重不放入安装包，避免重复下载。运行组件随安装包分发，不能只复制主 exe 到另一台电脑。
+OCR 依赖锁定在 `src-tauri/ocr-worker/requirements.lock.txt`。模型使用官方 RapidAI/RapidOCR 的 ModelScope 发布文件，按大小及 SHA-256 校验；权重不放入安装包，避免重复下载。运行组件随安装包分发，不能只复制主 exe 到另一台电脑。ASR/OCR 资源通过显式的 `kind` 字段分类，共用模型下载、校验和删除机制；目前 OCR 只有一种 CPU 通用模型，无需选择 GPU 资源。
 
 ## 数据与隐私
 

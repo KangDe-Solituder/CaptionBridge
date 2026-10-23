@@ -9,6 +9,7 @@ export interface LlmProviderSettings {
 }
 export interface SelectionSettings { enabled: boolean; clipboard_fallback_enabled: boolean; hotkey: string; trigger_mode: "hotkey" | "automatic"; }
 export interface DownloadSettings { proxy_enabled: boolean; proxy_url: string; }
+export interface OcrSettings { enabled: boolean; source_language: string; target_language: string; source_placement: "inline" | "bottom"; }
 export interface CaptionSettings {
   source: CaptionSourceConfig;
   enabled: boolean; auto_launch: boolean; poll_milliseconds: number;
@@ -34,6 +35,7 @@ export interface VisualSettings {
 export interface AppSettings {
   schema_version: number; llm: LlmProviderSettings; selection: SelectionSettings;
   captions: CaptionSettings; overlay: OverlaySettings; visual: VisualSettings; downloads: DownloadSettings;
+  ocr: OcrSettings;
 }
 export interface SettingsView { settings: AppSettings; api_key_configured: boolean; model_directory: string; }
 export interface TranslationRequest {
@@ -60,6 +62,7 @@ export interface CaptionTranslatedEvent { segment: CaptionSegment; result: Trans
 export interface RuntimeLogEntry { timestamp: string; level: string; message: string; }
 export type ModelStatus = "not_installed" | "downloading" | "verifying" | "available" | "loading" | "active" | "corrupt" | "incompatible" | "failed";
 export interface ModelInfo {
+  kind: "asr" | "ocr";
   id: string; display_name: string; repository: string; revision: string; license: string;
   expected_size_bytes: number; installed_size_bytes: number; status: ModelStatus;
   downloaded_bytes: number; error?: string; recommended: boolean;

@@ -38,16 +38,22 @@ document.documentElement.dataset.theme = bootTheme === "system"
 
 const builtInModels: ModelInfo[] = [
   {
-    id: "kotoba-whisper-v2.0-faster", display_name: "Kotoba Whisper v2.0 Faster",
+    kind: "asr", id: "kotoba-whisper-v2.0-faster", display_name: "Kotoba Whisper v2.0 Faster",
     repository: "kotoba-tech/kotoba-whisper-v2.0-faster", revision: "f44edd35eaeb2274e85ac7b31fb2c6f59ff1c4bc",
     license: "MIT", expected_size_bytes: 1_516_480_096, installed_size_bytes: 0,
     status: "not_installed", downloaded_bytes: 0, recommended: true,
   },
   {
-    id: "whisper-large-v3-turbo", display_name: "Whisper large-v3-turbo",
+    kind: "asr", id: "whisper-large-v3-turbo", display_name: "Whisper large-v3-turbo",
     repository: "dropbox-dash/faster-whisper-large-v3-turbo", revision: "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
     license: "MIT", expected_size_bytes: 1_621_665_983, installed_size_bytes: 0,
     status: "not_installed", downloaded_bytes: 0, recommended: false,
+  },
+  {
+    kind: "ocr", id: "ocr-ppocr-v5-mobile", display_name: "PP-OCRv5 Mobile · 截图识别",
+    repository: "RapidAI/RapidOCR", revision: "v3.10.0", license: "Apache-2.0",
+    expected_size_bytes: 22_469_390, installed_size_bytes: 0,
+    status: "not_installed", downloaded_bytes: 0, recommended: true,
   },
 ];
 
@@ -60,8 +66,7 @@ export function App() {
 }
 
 type Page = "selection" | "captions" | "glossary" | "settings";
-type SettingsTab = "features" | "resources" | "llm" | "appearance" | "logs";
-type FeatureModule = "selection" | "captions";
+type SettingsTab = "features" | "resources" | "application" | "appearance";
 
 // previews mirror the backend convention: newest session first
 const demoSessions: SessionSummary[] = [
@@ -89,6 +94,8 @@ function formatEntryTime(iso: string) {
 }
 
 function MainWindow() {
+  const switchingSource = useRef(false);
+  const [settingsAnchor, setSettingsAnchor] = useState<string>();
   const [view, setView] = useState<SettingsView | null>(null);
   const [bootError, setBootError] = useState("");
   // browser preview may deep-link a page with ?page=captions|glossary|settings
@@ -96,7 +103,7 @@ function MainWindow() {
     const initial = new URLSearchParams(location.search).get("page");
     return initial === "captions" || initial === "glossary" || initial === "settings" ? initial : "selection";
   });
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("features");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>(() => { const saved = localStorage.getItem("settings-category"); return saved === "resources" || saved === "application" || saved === "appearance" ? saved : "features"; });
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<RuntimeStatus>({ caption_running: false, caption_state: "stopped", selection_hotkey_registered: false, source_health: "unknown", last_caption_update_ms: 0, reader_restarts: 0, source_error_count: 0, translation_queue_depth: 0, last_translation_latency_ms: 0, last_translation_first_token_ms: 0, selected_source: previewSettings.captions.source, asr_latency_ms: 0, asmr_channel_state: "inactive" });
   const [models, setModels] = useState<ModelInfo[]>(builtInModels);
@@ -172,9 +179,9 @@ function MainWindow() {
     if (!isTauri) return;
     void getRuntimeStatus().then(setStatus).catch(() => undefined);
     const unsubs = [
-      listen<void>("ocr:resources", () => { setPage("settings"); setSettingsTab("resources"); }),
+      listen<void>("ocr:resources", () => { setSettingsAnchor("ocr-models"); setPage("settings"); setSettingsTab("resources"); }),
       listen<string>("ocr:error", e => setMessage(e.payload)),
-      listen<SettingsView>("settings:changed", e => setView(e.payload)),
+      listen<SettingsView>("settings:changed", e => { if (!switchingSource.current) setView(e.payload); }),
       listen<TranslationResult>("translation:finished", e => setSelectionResult(e.payload)),
       listen("caption:translated", () => scheduleSessionRefresh()),
       listen<void>("caption:sessions-changed", () => void refreshSessions()),
@@ -184,6 +191,8 @@ function MainWindow() {
       listen<ModelProgressEvent>("model:progress", e => {
         const p = e.payload;
         setModels(items => items.map(item => item.id === p.model_id ? { ...item, status: p.status, downloaded_bytes: p.downloaded_bytes, error: p.error } : item));
+        if (p.status === "failed") setMessage(`模型下载失败：${p.error ?? "请查看日志后重试"}`);
+        else if (p.status === "available") setMessage("模型已下载并通过校验");
         if (p.status === "available" || p.status === "corrupt" || p.status === "failed" || p.status === "incompatible") void refreshModels();
       }),
       listen<void>("caption:session-reset", () => { setViewingSession(null); void refreshSessions(); }),
@@ -193,22 +202,19 @@ function MainWindow() {
     void refreshModels();
     void refreshSessions();
     const modelRefreshRetries = [600, 2_000].map(delay => window.setTimeout(() => void refreshModels(), delay));
-    const closeRequested = "__TAURI_INTERNALS__" in window
-      ? currentWindow.onCloseRequested(event => { event.preventDefault(); void currentWindow.hide(); })
-      : undefined;
     return () => {
       clearInterval(interval);
       modelRefreshRetries.forEach(clearTimeout);
       if (sessionRefreshTimer.current) clearTimeout(sessionRefreshTimer.current);
       unsubs.forEach(p => void p.then(u => u()));
-      if (closeRequested) void closeRequested.then(u => u());
     };
   }, [loadInitialSettings, refreshModels, refreshSessions, scheduleSessionRefresh]);
 
   useEffect(() => {
-    if (settingsTab !== "logs" || page !== "settings") return;
-    void getRuntimeLogs().then(setLogs);
-    const id = window.setInterval(() => void getRuntimeLogs().then(setLogs), 2000);
+    if (!isTauri || settingsTab !== "application" || page !== "settings") return;
+    const refresh = () => void getRuntimeLogs().then(setLogs).catch(() => undefined);
+    refresh();
+    const id = window.setInterval(refresh, 2000);
     return () => clearInterval(id);
   }, [page, settingsTab]);
 
@@ -273,12 +279,21 @@ function MainWindow() {
   };
 
   const selectSource = async (source: CaptionSourceConfig) => {
+    if (switchingSource.current) return;
+    if (!isTauri) {
+      setView(current => current ? { ...current, settings: { ...current.settings, captions: { ...current.settings.captions, source } } } : current);
+      return;
+    }
+    switchingSource.current = true;
     try {
       await switchCaptionSource(source);
-      setView(await getSettings());
+      const saved = await getSettings();
+      // Source selection applies immediately, but must not discard edits in other chapters.
+      setView(current => current ? { ...current, settings: { ...current.settings, captions: { ...current.settings.captions, source: saved.settings.captions.source } } } : saved);
       setStatus(await getRuntimeStatus());
       setMessage(status.caption_running ? "正在切换字幕来源" : "字幕来源已更新");
     } catch (error) { setMessage(String(error)); }
+    finally { switchingSource.current = false; }
   };
 
   if (!settings || !view) return (
@@ -317,7 +332,7 @@ function MainWindow() {
               {page === "captions" && <CaptionPage status={status} sessions={sessions} viewingSession={viewingSession} onSelectSession={selectSession} onToggle={toggleCaptions} onMessage={setMessage} />}
               {page === "glossary" && <GlossaryPage onMessage={setMessage} />}
               {page === "settings" && (
-                <SettingsPage tab={settingsTab} setTab={setSettingsTab} view={view} apiKey={apiKey} setApiKey={setApiKey}
+                <SettingsPage tab={settingsTab} setTab={setSettingsTab} anchor={settingsAnchor} onAnchorHandled={() => setSettingsAnchor(undefined)} view={view} apiKey={apiKey} setApiKey={setApiKey}
                   update={update} onSave={persist} saving={saving} testing={testing} onTest={runTest}
                   models={models} status={status} onSelectSource={selectSource} refreshModels={() => void refreshModels(true)} onMessage={setMessage}
                   logs={logs} logQuery={logQuery} setLogQuery={setLogQuery}
@@ -783,9 +798,50 @@ function GlossaryPage({ onMessage }: { onMessage: (message: string) => void }) {
   </div>;
 }
 
-function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => void; view: SettingsView; apiKey: string; setApiKey: (v: string) => void; update: (v: AppSettings) => void; onSave: () => void; saving: boolean; testing: boolean; onTest: () => void; logs: RuntimeLogEntry[]; logQuery: string; setLogQuery: (v: string) => void; onClearLogs: () => void; models: ModelInfo[]; status: RuntimeStatus; onSelectSource: (source: CaptionSourceConfig) => Promise<void>; refreshModels: () => void; onMessage: (message: string) => void }) {
+function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab: SettingsTab; setTab: (v: SettingsTab) => void; view: SettingsView; apiKey: string; setApiKey: (v: string) => void; update: (v: AppSettings) => void; onSave: () => void; saving: boolean; testing: boolean; onTest: () => void; logs: RuntimeLogEntry[]; logQuery: string; setLogQuery: (v: string) => void; onClearLogs: () => void; models: ModelInfo[]; status: RuntimeStatus; onSelectSource: (source: CaptionSourceConfig) => Promise<void>; refreshModels: () => void; onMessage: (message: string) => void }) {
   const { tab, setTab, view, apiKey, setApiKey, update } = props; const s = view.settings;
-  const [featureModule, setFeatureModule] = useState<FeatureModule>("captions");
+  const [tocOpen, setTocOpen] = useState(true);
+  const [activeChapter, setActiveChapter] = useState("");
+  const pendingChapter = useRef<string | null>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const chapters: Record<SettingsTab, { id: string; title: string }[]> = {
+    features: [{ id: "selection", title: "划词翻译" }, { id: "captions", title: "实时字幕" }, { id: "ocr", title: "截图翻译" }],
+    resources: [{ id: "asr-models", title: "语音识别 · ASR" }, { id: "ocr-models", title: "文字识别 · OCR" }, { id: "network", title: "网络与下载" }],
+    application: [{ id: "translation", title: "翻译服务" }, { id: "diagnostics", title: "日志与诊断" }],
+    appearance: [{ id: "theme", title: "主题与动效" }, { id: "overlay", title: "字幕浮窗" }],
+  };
+  const jumpTo = (id: string) => {
+    document.getElementById(`settings-${id}`)?.scrollIntoView({ behavior: s.visual.reduce_motion ? "instant" : "smooth", block: "start" });
+    setActiveChapter(id);
+  };
+  const navigateTo = (next: SettingsTab, chapter: string) => {
+    if (next === tab) jumpTo(chapter);
+    else { pendingChapter.current = chapter; setTab(next); }
+  };
+  useEffect(() => {
+    localStorage.setItem("settings-category", tab);
+    const scroller = contentRef.current?.closest(".content");
+    const target = pendingChapter.current;
+    pendingChapter.current = null;
+    if (target) document.getElementById(`settings-${target}`)?.scrollIntoView({ block: "start" });
+    else scroller?.scrollTo({ top: 0 });
+    const updateChapter = () => {
+      const sections = Array.from(contentRef.current?.querySelectorAll<HTMLElement>(".settings-chapter") ?? []);
+      const top = (scroller?.getBoundingClientRect().top ?? 0) + 48;
+      const atBottom = scroller && scroller.scrollTop > 0 && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 3;
+      const current = atBottom ? sections.at(-1) : sections.filter(section => section.getBoundingClientRect().top <= top).at(-1) ?? sections[0];
+      if (current) setActiveChapter(current.id.replace("settings-", ""));
+    };
+    updateChapter();
+    scroller?.addEventListener("scroll", updateChapter, { passive: true });
+    return () => scroller?.removeEventListener("scroll", updateChapter);
+  }, [tab]);
+  useEffect(() => {
+    if (!props.anchor) return;
+    document.getElementById(`settings-${props.anchor}`)?.scrollIntoView({ block: "start" });
+    setActiveChapter(props.anchor);
+    props.onAnchorHandled();
+  }, [props.anchor]);
   const [dependencyReport, setDependencyReport] = useState<AsrDependencyReport>();
   const [gpuRuntime, setGpuRuntime] = useState<AsrGpuRuntimeInfo>();
   const [dependencyDialogOpen, setDependencyDialogOpen] = useState(false);
@@ -828,60 +884,40 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
     catch (error) { props.onMessage(String(error)); }
     finally { setTestingProxy(false); }
   };
-  const tabs: { id: SettingsTab; label: string }[] = [{ id: "features", label: "功能" }, { id: "resources", label: "资源" }, { id: "llm", label: "LLM" }, { id: "appearance", label: "外观" }, { id: "logs", label: "日志" }];
+  const tabs: { id: SettingsTab; label: string }[] = [{ id: "features", label: "功能" }, { id: "resources", label: "资源" }, { id: "application", label: "应用" }, { id: "appearance", label: "外观" }];
   const filteredLogs = props.logs.filter(l => `${l.level} ${l.message}`.toLowerCase().includes(props.logQuery.toLowerCase()));
-  const selectedModelId = s.captions.source.type === "local_asr" ? s.captions.source.model_id : undefined;
-  const selectedModel = props.models.find(model => model.id === selectedModelId);
-  const captionSourceLabel = s.captions.source.type === "windows_live_caption" ? "Windows Live Caption" : selectedModel?.display_name ?? selectedModelId ?? "本地 ASR";
-  return <div className="page settings-page">
-    <PageHeader eyebrow="PREFERENCES" title="设置" description="配置连接、快捷键和视觉体验。" action={tab !== "logs" && <button className="primary" onClick={props.onSave} disabled={props.saving}>{props.saving ? <Loader2 className="spin" /> : <Check />}保存设置</button>} />
+  return <div className="page settings-page" ref={contentRef}>
+    <PageHeader eyebrow="PREFERENCES" title="设置" description="让翻译，按照你的习惯运行。" action={<button className="primary" onClick={props.onSave} disabled={props.saving}>{props.saving ? <Loader2 className="spin" /> : <Check />}保存设置</button>} />
     <div className="settings-tabs" role="tablist" aria-label="设置分类">
-      {tabs.map(t => (
-        <button role="tab" aria-selected={tab === t.id} data-active={tab === t.id} onClick={() => setTab(t.id)} key={t.id}>
-          {tab === t.id && <motion.span className="tab-thumb" layoutId="settings-tab" transition={{ type: "spring", stiffness: 480, damping: 40 }} />}
-          <span>{t.label}</span>
-        </button>
-      ))}
+      {tabs.map(t => <button id={`tab-${t.id}`} role="tab" aria-selected={tab === t.id} aria-controls="settings-panel" data-active={tab === t.id} key={t.id} onClick={() => setTab(t.id)} onKeyDown={event => {
+        const direction = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+        if (!direction && event.key !== "Home" && event.key !== "End") return;
+        event.preventDefault();
+        const next = tabs[event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (tabs.findIndex(item => item.id === t.id) + direction + tabs.length) % tabs.length];
+        setTab(next.id); document.getElementById(`tab-${next.id}`)?.focus();
+      }} tabIndex={tab === t.id ? 0 : -1}>
+        {tab === t.id && <motion.span className="tab-thumb" layoutId="settings-tab" transition={{ type: "spring", stiffness: 480, damping: 40 }} />}<span>{t.label}</span>
+      </button>)}
     </div>
-    <section className="settings-sheet">
-      {tab === "features" && <div className="feature-modules" role="tablist" aria-label="功能模块">
-        <button role="tab" aria-selected={featureModule === "selection"} data-active={featureModule === "selection"} onClick={() => setFeatureModule("selection")}>
-          <span className="feature-module-icon"><Clipboard /></span><span><strong>划词翻译</strong><small>{s.selection.trigger_mode === "automatic" ? "自动出现" : displayHotkey(s.selection.hotkey)} · {s.selection.clipboard_fallback_enabled ? "剪贴板回退" : "仅 UI Automation"}</small></span><i>{s.selection.enabled ? "已启用" : "已关闭"}</i>
-        </button>
-        <button role="tab" aria-selected={featureModule === "captions"} data-active={featureModule === "captions"} onClick={() => setFeatureModule("captions")}>
-          <span className="feature-module-icon"><Captions /></span><span><strong>实时字幕</strong><small>{captionSourceLabel} · {s.captions.source.type === "local_asr" ? (s.captions.audio_mode === "asmr" ? "ASMR" : "普通音频") : "系统字幕"}</small></span><i>{s.captions.enabled ? "已启用" : "已关闭"}</i>
-        </button>
-      </div>}
-      {tab === "features" && featureModule === "selection" && <>
+    <div className="settings-layout" data-toc-open={tocOpen}>
+    <div id="settings-panel" role="tabpanel" aria-labelledby={`tab-${tab}`}>
+{tab === "features" && <><section className="settings-chapter" id="settings-selection" aria-labelledby="heading-selection">
+      <header className="chapter-heading"><div><h2 id="heading-selection">划词翻译</h2><p>选中文字，就近获取翻译。</p></div></header>
+
         <SettingRow title="启用划词翻译" description="在其他应用中选中文字后提供轻量翻译工具。"><Toggle label="启用划词翻译" checked={s.selection.enabled} onChange={enabled => update({ ...s, selection: { ...s.selection, enabled } })} /></SettingRow>
         <SettingRow title="划词触发方式" description="自动模式只在明确拖选结束后显示按钮；双击选词不会触发。"><Segmented value={s.selection.trigger_mode} options={[{ label: "快捷键", value: "hotkey" }, { label: "自动出现", value: "automatic" }]} onChange={trigger_mode => update({ ...s, selection: { ...s.selection, trigger_mode } })} /></SettingRow>
         {s.selection.trigger_mode === "hotkey" && <SettingRow title="划词触发快捷键" description="至少包含一个修饰键；Ctrl+Win+L 保留给 Windows 实时字幕。"><HotkeyRecorder value={s.selection.hotkey} onChange={hotkey => update({ ...s, selection: { ...s.selection, hotkey } })} /></SettingRow>}
         <SettingRow title="剪贴板回退" description="无法通过 UI Automation 读取选区时，允许短暂读取剪贴板。"><Toggle label="启用回退" checked={s.selection.clipboard_fallback_enabled} onChange={clipboard_fallback_enabled => update({ ...s, selection: { ...s.selection, clipboard_fallback_enabled } })} /></SettingRow>
-      </>}
-      {tab === "resources" && <>
-        <div className="settings-group"><div className="settings-group-title"><div><h2>字幕来源</h2><p>运行中切换会先检查新来源，成功后开启全新会话。</p></div>{props.status.caption_state === "switching" && <span><Loader2 className="spin" />正在切换字幕来源</span>}</div>
+
+    </section><section className="settings-chapter" id="settings-captions" aria-labelledby="heading-captions">
+      <header className="chapter-heading"><div><h2 id="heading-captions">实时字幕</h2><p>选择字幕来源，调整音频识别和翻译行为。</p></div><button className="ghost chapter-link" onClick={() => navigateTo("resources", "asr-models")}>管理 ASR 资源<ArrowRight /></button></header>
+
+        <div className="settings-group"><div className="settings-group-title"><div><h3>字幕来源</h3><p>选择后立即生效；运行中会先检查新来源，成功后开启全新会话。</p></div>{props.status.caption_state === "switching" && <span><Loader2 className="spin" />正在切换字幕来源</span>}</div>
           <div className="source-grid">
             <SourceCard title="Windows Live Caption" description="读取 Windows 系统字幕；不占用 GPU。" state="系统组件" selected={s.captions.source.type === "windows_live_caption"} onClick={() => void props.onSelectSource({ type: "windows_live_caption" })} />
-            {props.models.filter(model => !model.id.startsWith("ocr-")).map(model => <SourceCard key={model.id} title={model.display_name} description={model.recommended ? "日语优化、速度优先，推荐默认使用。" : "复杂音频精度优先，显存占用更高。"} state={modelStatusText(model.status)} badge={model.recommended ? "推荐" : undefined} selected={s.captions.source.type === "local_asr" && s.captions.source.model_id === model.id} onClick={() => void props.onSelectSource({ type: "local_asr", model_id: model.id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "auto", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : true })} />)}
+            {props.models.filter(model => model.kind === "asr").map(model => <SourceCard key={model.id} title={model.display_name} description={model.recommended ? "日语优化、速度优先，推荐默认使用。" : "复杂音频精度优先，显存占用更高。"} state={modelStatusText(model.status)} badge={model.recommended ? "推荐" : undefined} selected={s.captions.source.type === "local_asr" && s.captions.source.model_id === model.id} onClick={() => void props.onSelectSource({ type: "local_asr", model_id: model.id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "auto", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : true })} />)}
           </div>
         </div>
-        <SettingRow title="本地 ASR 运行环境" description="检查 Worker、NVIDIA 驱动、CUDA/cuDNN 实际加载状态和 CTranslate2 GPU 可用性；旧 Worker 会自动改用模型推理验证。">
-          <button className="ghost" onClick={() => void runDependencyCheck()} disabled={checkingDependencies}>{checkingDependencies ? <Loader2 className="spin" /> : <Activity />}检查依赖</button>
-        </SettingRow>
-        <ModelManager models={props.models.filter(model => !model.id.startsWith("ocr-"))} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
-        <div className="settings-group"><div className="settings-group-title"><div><h2>OCR 来源</h2><p>PP-OCRv5 Mobile · 本地 CPU 识别中、英、日文。按需加载，闲置 60 秒释放；无需安装 Python。</p></div></div><p>用于截图翻译。模型约 21.4 MiB，识别在本机完成；识别出的文字交给当前翻译服务。</p></div>
-        <ModelManager title="OCR 模型管理" models={props.models.filter(model => model.id.startsWith("ocr-"))} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
-        <div className="settings-group resource-network">
-          <div className="settings-group-title"><div><h2>网络与下载</h2><p>镜像和代理只用于本应用下载模型与 GPU 运行组件，不会修改 Windows 或其他软件的代理设置。</p></div></div>
-          <Field label="模型镜像" hint="官方 Hugging Face 连接失败后使用；两条线路执行相同 SHA-256 校验。"><input value={s.captions.model_mirror_url} onChange={e => update({ ...s, captions: { ...s.captions, model_mirror_url: e.target.value } })} /></Field>
-          <SettingRow title="应用专用代理" description="关闭后立即清空代理地址；下载请求不会退回系统代理，避免配置意外泄漏到其他应用。"><Toggle label="启用下载代理" checked={s.downloads.proxy_enabled} onChange={proxy_enabled => update({ ...s, downloads: { proxy_enabled, proxy_url: proxy_enabled ? s.downloads.proxy_url : "" } })} /></SettingRow>
-          {s.downloads.proxy_enabled && <Field label="代理地址" hint="支持 HTTP/HTTPS 代理，例如 http://127.0.0.1:10809。保存后仅本应用的模型和运行库下载使用。">
-            <div className="proxy-input-actions"><input inputMode="url" placeholder="http://127.0.0.1:10809" value={s.downloads.proxy_url} onChange={e => update({ ...s, downloads: { ...s.downloads, proxy_url: e.target.value } })} /><button className="ghost" onClick={() => void testProxyConnection()} disabled={testingProxy || !s.downloads.proxy_url.trim()}>{testingProxy ? <Loader2 className="spin" /> : <Activity />}测试连接</button></div>
-          </Field>}
-        </div>
-      </>}
-      {tab === "features" && featureModule === "captions" && <>
-        <div className="settings-group feature-summary"><div className="settings-group-title"><div><h2>实时字幕</h2><p>当前使用 {captionSourceLabel}。来源、模型、运行环境和网络下载统一在“资源”中管理。</p></div><button className="ghost" onClick={() => setTab("resources")}>管理资源<ArrowRight /></button></div></div>
         <SettingRow title="启用实时字幕" description="启动后读取当前字幕来源，并按下方规则组织上下文和音频。"><Toggle label="启用实时字幕" checked={s.captions.enabled} onChange={enabled => update({ ...s, captions: { ...s.captions, enabled } })} /></SettingRow>
         <SettingRow title="翻译上下文" description="上下文来自已接受的 final 原文，不受上一条 LLM 成败影响。"><Segmented value={String(s.captions.context_segments)} options={[0, 1, 2, 4].map(value => ({ label: `${value} 条`, value: String(value) }))} onChange={value => update({ ...s, captions: { ...s.captions, context_segments: Number(value) } })} /></SettingRow>
         {s.captions.source.type === "local_asr" && <>
@@ -892,6 +928,7 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
               <SettingRow title="声道切换灵敏度" description="稳健模式需要更长的人声证据；灵敏模式更快，但更容易被复杂噪音影响。"><Segmented value={s.captions.source.channel_switch_sensitivity} options={[{ label: "稳健", value: "stable" }, { label: "标准", value: "standard" }, { label: "灵敏", value: "responsive" }]} onChange={channel_switch_sensitivity => { const source = s.captions.source; if (source.type === "local_asr") update({ ...s, captions: { ...s.captions, source: { ...source, channel_switch_sensitivity } } }); }} /></SettingRow>
               <SettingRow title="疑似非语音字幕抑制" description="在人声证据不足时不把摩擦、敲击等短片段送入 ASR。"><Toggle label="疑似非语音字幕抑制" checked={s.captions.source.suppress_non_speech_segments} onChange={suppress_non_speech_segments => { const source = s.captions.source; if (source.type === "local_asr") update({ ...s, captions: { ...s.captions, source: { ...source, suppress_non_speech_segments } } }); }} /></SettingRow>
               <SettingRow title="当前人声声道" description={asmrChannelStateText[props.status.asmr_channel_state]}><button className="ghost" disabled={!props.status.caption_running} onClick={() => void resetAsrChannelRouting().catch(error => props.onMessage(String(error)))}><RotateCcw />重新检测</button></SettingRow>
+
             </>}
           </div>}
         </>}
@@ -899,31 +936,72 @@ function SettingsPage(props: { tab: SettingsTab; setTab: (v: SettingsTab) => voi
           <SettingRow title="自动启动 Live Captions" description="开始翻译时自动打开 Windows 系统字幕。"><Toggle label="自动启动" checked={s.captions.auto_launch} onChange={auto_launch => update({ ...s, captions: { ...s.captions, auto_launch } })} /></SettingRow>
           <div className="three-cols"><Field label="轮询间隔 (ms)"><input type="number" min="80" value={s.captions.poll_milliseconds} onChange={e => update({ ...s, captions: { ...s.captions, poll_milliseconds: Number(e.target.value) } })} /></Field><Field label="稳定时间 (ms)"><input type="number" min="100" value={s.captions.stable_milliseconds} onChange={e => update({ ...s, captions: { ...s.captions, stable_milliseconds: Number(e.target.value) } })} /></Field><Field label="最长分段 (ms)"><input type="number" min="500" value={s.captions.max_duration_milliseconds} onChange={e => update({ ...s, captions: { ...s.captions, max_duration_milliseconds: Number(e.target.value) } })} /></Field></div>
         </>}
-      </>}
-      {tab === "llm" && <>
+    </section><section className="settings-chapter" id="settings-ocr" aria-labelledby="heading-ocr">
+      <header className="chapter-heading"><div><h2 id="heading-ocr">截图翻译</h2><p>框选屏幕文字，识别后按文字块翻译。</p></div><button className="ghost chapter-link" onClick={() => navigateTo("resources", "ocr-models")}>管理 OCR 资源<ArrowRight /></button></header>
+      <SettingRow title="启用截图翻译" description="从工具栏或托盘启动框选，识别文字后逐块翻译。"><Toggle label="启用截图翻译" checked={s.ocr.enabled} onChange={enabled => update({ ...s, ocr: { ...s.ocr, enabled } })} /></SettingRow>
+      <div className="two-cols"><Field label="默认原文语言" hint="用于翻译；OCR 模型支持中、英、日文识别。"><select value={s.ocr.source_language} onChange={e => update({ ...s, ocr: { ...s.ocr, source_language: e.target.value } })}><option value="auto">自动检测</option>{["中文", "English", "日本語"].map(language => <option key={language}>{language}</option>)}</select></Field>
+      <Field label="默认译文语言" hint="留空时跟随应用中的翻译服务设置。"><input maxLength={40} placeholder={`跟随翻译服务 · ${s.llm.target_language}`} value={s.ocr.target_language} onChange={e => update({ ...s, ocr: { ...s.ocr, target_language: e.target.value } })} /></Field></div>
+      <SettingRow title="原文位置" description="设置结果窗口的默认布局；也可以在结果窗口临时调整。"><Segmented value={s.ocr.source_placement} options={[{ label: "每块译文下方", value: "inline" }, { label: "底部显示选中块", value: "bottom" }]} onChange={source_placement => update({ ...s, ocr: { ...s.ocr, source_placement } })} /></SettingRow>
+    </section></>}{tab === "resources" && <><section className="settings-chapter" id="settings-asr-models" aria-labelledby="heading-asr-models">
+      <header className="chapter-heading"><div><h2 id="heading-asr-models">语音识别 · ASR</h2><p>管理语音模型与 GPU 运行环境，供实时字幕使用。</p></div><button className="ghost chapter-link" onClick={() => navigateTo("features", "captions")}>字幕设置<ArrowRight /></button></header>
+              <SettingRow title="本地 ASR 运行环境" description="检查 Worker、NVIDIA 驱动、CUDA/cuDNN 实际加载状态和 CTranslate2 GPU 可用性；旧 Worker 会自动改用模型推理验证。">
+          <button className="ghost" onClick={() => void runDependencyCheck()} disabled={checkingDependencies}>{checkingDependencies ? <Loader2 className="spin" /> : <Activity />}检查依赖</button>
+        </SettingRow>
+        <ModelManager models={props.models.filter(model => model.kind === "asr")} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
+
+    </section><section className="settings-chapter" id="settings-ocr-models" aria-labelledby="heading-ocr-models">
+      <header className="chapter-heading"><div><h2 id="heading-ocr-models">文字识别 · OCR</h2><p>PP-OCRv5 Mobile · 本地 CPU 识别中、英、日文，闲置后自动释放。</p></div><button className="ghost chapter-link" onClick={() => navigateTo("features", "ocr")}>截图设置<ArrowRight /></button></header>
+              <ModelManager title="OCR 模型管理" models={props.models.filter(model => model.kind === "ocr")} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
+
+    </section><section className="settings-chapter" id="settings-network" aria-labelledby="heading-network">
+      <header className="chapter-heading"><div><h2 id="heading-network">网络与下载</h2><p>仅用于本应用的模型和运行组件下载，不影响其他软件。</p></div></header>
+                <Field label="模型镜像" hint="官方 Hugging Face 连接失败后使用；两条线路执行相同 SHA-256 校验。"><input value={s.captions.model_mirror_url} onChange={e => update({ ...s, captions: { ...s.captions, model_mirror_url: e.target.value } })} /></Field>
+          <SettingRow title="应用专用代理" description="关闭后立即清空代理地址；下载请求不会退回系统代理，避免配置意外泄漏到其他应用。"><Toggle label="启用下载代理" checked={s.downloads.proxy_enabled} onChange={proxy_enabled => update({ ...s, downloads: { proxy_enabled, proxy_url: proxy_enabled ? s.downloads.proxy_url : "" } })} /></SettingRow>
+          {s.downloads.proxy_enabled && <Field label="代理地址" hint="支持 HTTP/HTTPS 代理，例如 http://127.0.0.1:10809。保存后仅本应用的模型和运行库下载使用。">
+            <div className="proxy-input-actions"><input inputMode="url" placeholder="http://127.0.0.1:10809" value={s.downloads.proxy_url} onChange={e => update({ ...s, downloads: { ...s.downloads, proxy_url: e.target.value } })} /><button className="ghost" onClick={() => void testProxyConnection()} disabled={testingProxy || !s.downloads.proxy_url.trim()}>{testingProxy ? <Loader2 className="spin" /> : <Activity />}测试连接</button></div>
+          </Field>}
+
+    </section></>}{tab === "application" && <><section className="settings-chapter" id="settings-translation" aria-labelledby="heading-translation">
+      <header className="chapter-heading"><div><h2 id="heading-translation">翻译服务</h2><p>划词、字幕和截图翻译共用连接配置。</p></div></header>
+
         <Field label="Endpoint"><input value={s.llm.endpoint} onChange={e => update({ ...s, llm: { ...s.llm, endpoint: e.target.value } })} /></Field>
         <div className="two-cols"><Field label="Model"><input value={s.llm.model} onChange={e => update({ ...s, llm: { ...s.llm, model: e.target.value } })} /></Field><Field label="目标语言"><input value={s.llm.target_language} onChange={e => update({ ...s, llm: { ...s.llm, target_language: e.target.value } })} /></Field></div>
         <Field label="API Key" hint={view.api_key_configured ? "已安全保存在 Windows 凭据管理器" : "尚未保存"}><div className="input-actions"><input type="password" placeholder={view.api_key_configured ? "输入新 Key 可替换" : "sk-..."} value={apiKey} onChange={e => setApiKey(e.target.value)} />{view.api_key_configured && <button title="删除 API Key" onClick={async () => { await deleteApiKey(); setApiKey(""); location.reload(); }}><Trash2 /></button>}</div></Field>
+        <details className="settings-advanced"><summary>高级请求设置<span>思考模式、响应时限与附加参数</span></summary>
         <SettingRow title="启用思考" description="向兼容接口发送 enable_thinking=true；Extra Body 可覆盖它。"><Toggle label="启用思考" checked={s.llm.thinking_enabled} onChange={thinking_enabled => update({ ...s, llm: { ...s.llm, thinking_enabled } })} /></SettingRow>
         <Field label={`实时字幕首 token 截止 · ${(s.llm.timeout_milliseconds / 1000).toFixed(1)} 秒`} hint="判定时统一容忍 0.5 秒；例如设置 5 秒，5.5 秒内到达的首 token 仍会接受"><Slider min={1000} max={5000} step={250} value={Math.min(s.llm.timeout_milliseconds, 5000)} onChange={timeout_milliseconds => update({ ...s, llm: { ...s.llm, timeout_milliseconds } })} /></Field>
         <Field label="Extra Body JSON"><textarea value={s.llm.extra_body_json} placeholder="{}" onChange={e => update({ ...s, llm: { ...s.llm, extra_body_json: e.target.value } })} /></Field>
+        </details>
         <button className="ghost test-button" onClick={props.onTest} disabled={props.testing}>{props.testing ? <Loader2 className="spin" /> : <BrainCircuit />}测试 LLM 连接</button>
-      </>}
-      {tab === "appearance" && <>
-        <SettingRow title="字幕浮窗拖动" description="选择最顺手的移动方式；拖栏模式可避免误拖。"><Segmented value={s.overlay.drag_mode} options={[{ label: "Alt + 拖动", value: "alt" }, { label: "整体拖动", value: "anywhere" }, { label: "顶部拖栏", value: "handle" }]} onChange={drag_mode => update({ ...s, overlay: { ...s.overlay, drag_mode } })} /></SettingRow>
-        <SettingRow title="主题" description="跟随系统或固定使用浅色、深色主题。"><Segmented value={s.visual.theme} options={[{ label: "系统", value: "system" }, { label: "浅色", value: "light" }, { label: "深色", value: "dark" }]} onChange={theme => update({ ...s, visual: { ...s.visual, theme } })} /></SettingRow>
+
+    </section><section className="settings-chapter" id="settings-diagnostics" aria-labelledby="heading-diagnostics">
+      <header className="chapter-heading"><div><h2 id="heading-diagnostics">日志与诊断</h2><p>检查运行状态，定位识别或翻译中的问题。</p></div></header>
+
+        <div className="log-toolbar"><label><Search /><input value={props.logQuery} onChange={e => props.setLogQuery(e.target.value)} placeholder="搜索日志" /></label><button className="ghost" onClick={() => void openLogsDir()}><ExternalLink />目录</button><button className="ghost" onClick={props.onClearLogs}><Eraser />清空</button></div>
+        <div className="log-view">{filteredLogs.length ? [...filteredLogs].reverse().map((l, i) => <div className="log-line" key={`${l.timestamp}-${i}`}><span data-level={l.level}>{l.level.toUpperCase()}</span><time>{new Date(l.timestamp).toLocaleTimeString()}</time><p>{l.message}</p></div>) : <EmptyState icon={<FileText />} title="日志很安静" text="运行状态和错误信息会显示在这里。" />}</div>
+
+    </section></>}{tab === "appearance" && <><section className="settings-chapter" id="settings-theme" aria-labelledby="heading-theme">
+      <header className="chapter-heading"><div><h2 id="heading-theme">主题与动效</h2><p>调整整个应用的视觉体验。</p></div></header>
+              <SettingRow title="主题" description="跟随系统或固定使用浅色、深色主题。"><Segmented value={s.visual.theme} options={[{ label: "系统", value: "system" }, { label: "浅色", value: "light" }, { label: "深色", value: "dark" }]} onChange={theme => update({ ...s, visual: { ...s.visual, theme } })} /></SettingRow>
         <SettingRow title="高斯模糊" description="为字幕和划词浮窗启用半透明模糊背景。"><Toggle label="高斯模糊" checked={s.visual.blur_enabled} onChange={blur_enabled => update({ ...s, visual: { ...s.visual, blur_enabled } })} /></SettingRow>
         <SettingRow title="减少动画" description="关闭页面切换和浮窗展开动画。"><Toggle label="减少动画" checked={s.visual.reduce_motion} onChange={reduce_motion => update({ ...s, visual: { ...s.visual, reduce_motion } })} /></SettingRow>
+    </section><section className="settings-chapter" id="settings-overlay" aria-labelledby="heading-overlay">
+      <header className="chapter-heading"><div><h2 id="heading-overlay">字幕浮窗</h2><p>设置字幕的显示方式与拖动习惯。</p></div></header>
+      <SettingRow title="字幕浮窗拖动" description="选择最顺手的移动方式；拖栏模式可避免误拖。"><Segmented value={s.overlay.drag_mode} options={[{ label: "Alt + 拖动", value: "alt" }, { label: "整体拖动", value: "anywhere" }, { label: "顶部拖栏", value: "handle" }]} onChange={drag_mode => update({ ...s, overlay: { ...s.overlay, drag_mode } })} /></SettingRow>
         <Field label={`字幕字号 · ${s.overlay.font_size}px`}><Slider min={14} max={34} value={s.overlay.font_size} onChange={font_size => update({ ...s, overlay: { ...s.overlay, font_size } })} /></Field>
         <SettingRow title="字幕背景" description="透明模式只保留字幕文字和悬浮控制区。"><Toggle label="透明字幕背景" checked={s.overlay.transparent} onChange={transparent => update({ ...s, overlay: { ...s.overlay, transparent } })} /></SettingRow>
         <Field label={`字幕浮窗透明度 · ${Math.round(s.overlay.opacity * 100)}%`} hint="同时调整文字与背景的整体透明度"><Slider min={0.2} max={1} step={0.05} value={s.overlay.opacity} onChange={opacity => update({ ...s, overlay: { ...s.overlay, opacity } })} /></Field>
         <SettingRow title="字幕颜色" description="也可以直接在字幕浮窗右下角随时更换。"><label className="color-control"><input type="color" value={s.overlay.caption_color} onChange={e => update({ ...s, overlay: { ...s.overlay, caption_color: e.target.value } })} /><span>{s.overlay.caption_color.toUpperCase()}</span></label></SettingRow>
-      </>}
-      {tab === "logs" && <>
-        <div className="log-toolbar"><label><Search /><input value={props.logQuery} onChange={e => props.setLogQuery(e.target.value)} placeholder="搜索日志" /></label><button className="ghost" onClick={() => void openLogsDir()}><ExternalLink />目录</button><button className="ghost" onClick={props.onClearLogs}><Eraser />清空</button></div>
-        <div className="log-view">{filteredLogs.length ? [...filteredLogs].reverse().map((l, i) => <div className="log-line" key={`${l.timestamp}-${i}`}><span data-level={l.level}>{l.level.toUpperCase()}</span><time>{new Date(l.timestamp).toLocaleTimeString()}</time><p>{l.message}</p></div>) : <EmptyState icon={<FileText />} title="日志很安静" text="运行状态和错误信息会显示在这里。" />}</div>
-      </>}
-    </section>
+    </section></>}<footer className="settings-footer"><span>修改完成后，保存以应用设置。</span><button className="primary" onClick={props.onSave} disabled={props.saving}>{props.saving ? <Loader2 className="spin" /> : <Check />}保存设置</button></footer>
+    </div>
+    <aside className="settings-toc" aria-label="本页目录" data-open={tocOpen}>
+      <button className="toc-handle" aria-label={tocOpen ? "收起目录" : "展开本页目录"} aria-expanded={tocOpen} aria-controls="settings-toc-panel" onClick={() => setTocOpen(!tocOpen)}>{tocOpen ? <ChevronRight /> : <ChevronLeft />}<span>目录</span></button>
+      <div className="toc-panel" id="settings-toc-panel" inert={!tocOpen} aria-hidden={!tocOpen}>
+        <div className="toc-heading"><span>本页目录</span></div>
+        <nav>{chapters[tab].map((chapter, index) => <button key={chapter.id} aria-current={activeChapter === chapter.id ? "location" : undefined} onClick={() => jumpTo(chapter.id)}><span>{String(index + 1).padStart(2, "0")}</span>{chapter.title}</button>)}</nav><small>点击章节跳转 · 手动收起</small>
+      </div>
+    </aside>
+    </div>
     {createPortal(
       <AnimatePresence>
         {dependencyDialogOpen && <DependencyDialog report={dependencyReport} gpuRuntime={gpuRuntime} checking={checkingDependencies} error={dependencyError} onClose={() => setDependencyDialogOpen(false)} onCheck={() => void runDependencyCheck()} onDownload={() => void startGpuRuntimeDownload()} onCancel={() => void stopGpuRuntimeDownload()} />}
@@ -1016,7 +1094,7 @@ function ModelManager({ models, activeModel, modelDirectory, refresh, message, t
     finally { setBusy(current => { const next = { ...current }; delete next[modelId]; return next; }); }
   };
   return <div className="settings-group model-manager">
-    <div className="settings-group-title"><div><h2>{title}</h2><p title={modelDirectory}>按需下载和加载，可随时校验、测试或删除。</p></div><div><button className="ghost" onClick={() => void openModelsDir()}><ExternalLink />模型目录</button><button className="ghost" onClick={refresh}><RefreshCw />重新检查</button></div></div>
+    <div className="settings-group-title"><div><h3>{title}</h3><p title={modelDirectory}>按需下载和加载，可随时校验、测试或删除。</p></div><div><button className="ghost" onClick={() => void openModelsDir()}><ExternalLink />模型目录</button><button className="ghost" onClick={refresh}><RefreshCw />重新检查</button></div></div>
     {models.map(model => {
       const progress = model.expected_size_bytes ? Math.min(100, model.downloaded_bytes / model.expected_size_bytes * 100) : 0;
       const installed = model.status === "available" || model.status === "active";

@@ -148,6 +148,17 @@ pub fn save(paths: &AppPaths, settings: &AppSettings) -> Result<(), String> {
 pub fn normalize(settings: &mut AppSettings) {
     let defaults = AppSettings::default();
     settings.schema_version = defaults.schema_version;
+    settings.ocr.source_language = settings.ocr.source_language.trim().to_string();
+    if settings.ocr.source_language.is_empty() || settings.ocr.source_language.len() > 80 {
+        settings.ocr.source_language = "auto".into();
+    }
+    settings.ocr.target_language = settings.ocr.target_language.trim().to_string();
+    if settings.ocr.target_language.len() > 80 {
+        settings.ocr.target_language.clear();
+    }
+    if !matches!(settings.ocr.source_placement.as_str(), "inline" | "bottom") {
+        settings.ocr.source_placement = "inline".into();
+    }
     settings.llm.endpoint = settings
         .llm
         .endpoint
@@ -227,6 +238,10 @@ mod tests {
         expected.llm.model = "deepseek-v4-flash".to_string();
         expected.overlay.drag_mode = OverlayDragMode::Anywhere;
         expected.overlay.caption_color = "#c8a6ff".to_string();
+        expected.ocr.enabled = false;
+        expected.ocr.source_language = "日本語".into();
+        expected.ocr.target_language = "English".into();
+        expected.ocr.source_placement = "bottom".into();
 
         save(&paths, &expected).unwrap();
         let actual = load(&paths).unwrap();
@@ -234,6 +249,10 @@ mod tests {
         assert_eq!(actual.llm.model, expected.llm.model);
         assert_eq!(actual.overlay.drag_mode, OverlayDragMode::Anywhere);
         assert_eq!(actual.overlay.caption_color, "#c8a6ff");
+        assert!(!actual.ocr.enabled);
+        assert_eq!(actual.ocr.source_language, "日本語");
+        assert_eq!(actual.ocr.target_language, "English");
+        assert_eq!(actual.ocr.source_placement, "bottom");
 
         let _ = fs::remove_dir_all(test_dir);
     }
@@ -252,6 +271,30 @@ mod tests {
             assert_eq!(paths.models_dir, paths.data_dir.join("models"));
         }
         assert_eq!(paths.downloads_dir, paths.models_dir.join(".downloads"));
+    }
+
+    #[test]
+    fn existing_settings_without_ocr_keep_working() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("ocr");
+        let mut settings: AppSettings = serde_json::from_value(value).unwrap();
+        normalize(&mut settings);
+        assert!(settings.ocr.enabled);
+        assert_eq!(settings.ocr.source_language, "auto");
+        assert!(settings.ocr.target_language.is_empty());
+        assert_eq!(settings.ocr.source_placement, "inline");
+    }
+
+    #[test]
+    fn ocr_preferences_normalize_invalid_manual_values() {
+        let mut settings = AppSettings::default();
+        settings.ocr.source_language = "   ".into();
+        settings.ocr.target_language = "語".repeat(40);
+        settings.ocr.source_placement = "unknown".into();
+        normalize(&mut settings);
+        assert_eq!(settings.ocr.source_language, "auto");
+        assert!(settings.ocr.target_language.is_empty());
+        assert_eq!(settings.ocr.source_placement, "inline");
     }
 
     #[test]

@@ -16,7 +16,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
 use crate::{
-    models::{DownloadSettings, ModelInfo, ModelProgressEvent, ModelStatus},
+    models::{DownloadSettings, ModelInfo, ModelKind, ModelProgressEvent, ModelStatus},
     network,
     settings::AppPaths,
 };
@@ -30,6 +30,7 @@ pub struct ManifestFile {
 
 #[derive(Clone, Copy)]
 pub struct ModelManifest {
+    pub kind: ModelKind,
     pub id: &'static str,
     pub display_name: &'static str,
     pub repository: &'static str,
@@ -97,6 +98,7 @@ const TURBO_FILES: &[ManifestFile] = &[
 
 pub const MANIFESTS: &[ModelManifest] = &[
     ModelManifest {
+        kind: ModelKind::Asr,
         id: "kotoba-whisper-v2.0-faster",
         display_name: "Kotoba Whisper v2.0 Faster",
         repository: "kotoba-tech/kotoba-whisper-v2.0-faster",
@@ -106,6 +108,7 @@ pub const MANIFESTS: &[ModelManifest] = &[
         files: KOTOBA_FILES,
     },
     ModelManifest {
+        kind: ModelKind::Asr,
         id: "whisper-large-v3-turbo",
         display_name: "Whisper large-v3-turbo",
         repository: "dropbox-dash/faster-whisper-large-v3-turbo",
@@ -117,6 +120,7 @@ pub const MANIFESTS: &[ModelManifest] = &[
 ];
 
 pub const OCR_MANIFEST: ModelManifest = ModelManifest {
+    kind: ModelKind::Ocr,
     id: crate::ocr::MODEL_ID,
     display_name: "PP-OCRv5 Mobile · 截图识别",
     repository: "RapidAI/RapidOCR",
@@ -155,6 +159,7 @@ fn ocr_model_url(name: &str) -> String {
 #[derive(Clone, Default)]
 pub struct DownloadRegistry {
     inner: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    failures: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl DownloadRegistry {
@@ -163,6 +168,7 @@ impl DownloadRegistry {
         if active.contains_key(id) {
             return Err("该模型已在下载中".to_string());
         }
+        self.failures.lock().await.remove(id);
         let flag = Arc::new(AtomicBool::new(false));
         active.insert(id.to_string(), flag.clone());
         Ok(flag)
@@ -178,8 +184,21 @@ impl DownloadRegistry {
         }
     }
 
-    pub async fn finish(&self, id: &str) {
+    pub async fn finish(&self, id: &str, error: Option<String>) {
+        if let Some(error) = error {
+            self.failures.lock().await.insert(id.to_string(), error);
+        } else {
+            self.failures.lock().await.remove(id);
+        }
         self.inner.lock().await.remove(id);
+    }
+
+    pub async fn failure(&self, id: &str) -> Option<String> {
+        self.failures.lock().await.get(id).cloned()
+    }
+
+    pub async fn clear_failure(&self, id: &str) {
+        self.failures.lock().await.remove(id);
     }
 
     pub async fn is_active(&self, id: &str) -> bool {
@@ -213,8 +232,11 @@ pub async fn list_models(paths: &AppPaths, downloads: &DownloadRegistry) -> Vec<
         let dir = paths.models_dir.join(item.id);
         let size = installed_size(&dir, item);
         let downloading = downloads.is_active(item.id).await;
+        let error = downloads.failure(item.id).await;
         let status = if downloading {
             ModelStatus::Downloading
+        } else if error.is_some() {
+            ModelStatus::Failed
         } else if size == 0 {
             ModelStatus::NotInstalled
         } else if item
@@ -227,6 +249,7 @@ pub async fn list_models(paths: &AppPaths, downloads: &DownloadRegistry) -> Vec<
             ModelStatus::Corrupt
         };
         list.push(ModelInfo {
+            kind: item.kind,
             id: item.id.to_string(),
             display_name: item.display_name.to_string(),
             repository: item.repository.to_string(),
@@ -236,7 +259,7 @@ pub async fn list_models(paths: &AppPaths, downloads: &DownloadRegistry) -> Vec<
             installed_size_bytes: size,
             status,
             downloaded_bytes: partial_size(paths, item),
-            error: None,
+            error,
             recommended: item.recommended,
         });
     }
@@ -285,14 +308,24 @@ pub async fn download_model(
     id: String,
     mirror: String,
     download_settings: DownloadSettings,
+    cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let item = *manifest(&id)?;
-    let cancel = registry.begin(&id).await?;
     let result =
         download_model_inner(&app, &paths, &item, &mirror, &download_settings, &cancel).await;
-    registry.finish(&id).await;
+    let cancelled = cancel.load(Ordering::Relaxed);
+    registry
+        .finish(
+            &id,
+            if cancelled {
+                None
+            } else {
+                result.as_ref().err().cloned()
+            },
+        )
+        .await;
     if let Err(error) = &result {
-        let status = if cancel.load(Ordering::Relaxed) {
+        let status = if cancelled {
             ModelStatus::NotInstalled
         } else {
             ModelStatus::Failed
@@ -303,6 +336,16 @@ pub async fn download_model(
             status,
             partial_size(&paths, &item),
             Some(error.clone()),
+        );
+    } else {
+        // Publish completion only after clearing the active download, so a UI
+        // refresh cannot overwrite Available with a stale Downloading state.
+        emit_progress(
+            &app,
+            &item,
+            ModelStatus::Available,
+            expected_size(&item),
+            None,
         );
     }
     result
@@ -346,7 +389,7 @@ async fn download_model_inner(
             file.name
         );
         let mut last_error = String::new();
-        let urls = if item.id == crate::ocr::MODEL_ID {
+        let urls = if item.kind == ModelKind::Ocr {
             vec![ocr_model_url(file.name)]
         } else {
             vec![official, mirror_url]
@@ -380,7 +423,7 @@ async fn download_model_inner(
             }
         }
         if !last_error.is_empty() {
-            return Err(last_error);
+            return Err(format!("{} 下载失败：{last_error}", file.name));
         }
         total_done = partial_size(paths, item);
     }
@@ -403,7 +446,6 @@ async fn download_model_inner(
         }
         fs::rename(&part, &target).map_err(|e| e.to_string())?;
     }
-    emit_progress(app, item, ModelStatus::Available, expected_size(item), None);
     Ok(())
 }
 
@@ -423,7 +465,7 @@ async fn download_file<F: Fn(u64)>(
     let response = request
         .send()
         .await
-        .map_err(|e| format!("连接模型源失败：{e}"))?;
+        .map_err(|e| format!("连接模型源失败：{e:#}"))?;
     let append = existing > 0 && response.status() == StatusCode::PARTIAL_CONTENT;
     if !response.status().is_success() {
         return Err(format!("模型源返回 HTTP {}", response.status()));
@@ -513,9 +555,65 @@ pub fn delete_model(paths: &AppPaths, id: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn failed_download_survives_refresh_and_clears_on_retry() {
+        let registry = DownloadRegistry::default();
+        let paths = AppPaths::new(std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()));
+        let id = OCR_MANIFEST.id;
+        registry.begin(id).await.unwrap();
+        assert!(registry.begin(id).await.is_err());
+        registry.finish(id, Some("HTTP 403 Forbidden".into())).await;
+        let models = list_models(&paths, &registry).await;
+        let ocr = models.iter().find(|model| model.id == id).unwrap();
+        assert!(matches!(ocr.status, ModelStatus::Failed));
+        assert_eq!(ocr.error.as_deref(), Some("HTTP 403 Forbidden"));
+        registry.begin(id).await.unwrap();
+        assert!(registry.failure(id).await.is_none());
+        registry.finish(id, None).await;
+        assert!(!registry.is_active(id).await);
+        assert!(registry.failure(id).await.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "downloads pinned OCR models from the network"]
+    async fn ocr_download_sources_match_manifest() {
+        let dir =
+            std::env::temp_dir().join(format!("livecaption-ocr-download-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let settings = crate::settings::load(&AppPaths::shared().unwrap()).unwrap();
+        eprintln!(
+            "OCR download probe: proxy enabled = {}",
+            settings.downloads.proxy_enabled
+        );
+        let client =
+            network::download_client(&settings.downloads, std::time::Duration::from_secs(10))
+                .unwrap();
+        for file in OCR_MANIFEST.files {
+            let path = dir.join(file.name);
+            let result = download_file(
+                &client,
+                &ocr_model_url(file.name),
+                &path,
+                file.size,
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .await;
+            assert!(result.is_ok(), "{}: {:?}", file.name, result);
+            assert!(
+                verify_file(&path, file).unwrap(),
+                "{} hash mismatch",
+                file.name
+            );
+            eprintln!("{}: size and SHA-256 verified", file.name);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn manifests_are_pinned_and_complete() {
         for model in MANIFESTS {
+            assert_eq!(model.kind, ModelKind::Asr);
             assert_eq!(model.revision.len(), 40);
             assert!(model.files.iter().any(|f| f.name == "model.bin"));
             assert!(model
@@ -523,6 +621,11 @@ mod tests {
                 .iter()
                 .all(|f| f.sha256.len() == 64 && f.size > 0));
         }
+        let ocr = manifest(crate::ocr::MODEL_ID).unwrap();
+        assert_eq!(ocr.kind, ModelKind::Ocr);
+        assert_eq!(serde_json::to_value(ocr.kind).unwrap(), "ocr");
+        assert_eq!(expected_size(ocr), 22_469_390);
+        assert!(ocr.files.iter().all(|f| f.sha256.len() == 64 && f.size > 0));
     }
 
     #[test]

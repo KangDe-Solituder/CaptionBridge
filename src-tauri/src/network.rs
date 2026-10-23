@@ -28,6 +28,7 @@ pub fn download_client(
     // Keep download networking isolated from process/system proxy discovery.
     // The application uses a proxy only when the user explicitly enables it.
     let mut builder = reqwest::Client::builder()
+        .user_agent(concat!("LiveCaption/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(connect_timeout)
         .no_proxy();
     if settings.proxy_enabled {

@@ -412,6 +412,26 @@ impl Default for VisualSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OcrSettings {
+    pub enabled: bool,
+    pub source_language: String,
+    pub target_language: String,
+    pub source_placement: String,
+}
+
+impl Default for OcrSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            source_language: "auto".into(),
+            target_language: String::new(),
+            source_placement: "inline".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub schema_version: u32,
     pub llm: LlmProviderSettings,
@@ -421,6 +441,8 @@ pub struct AppSettings {
     pub visual: VisualSettings,
     #[serde(default)]
     pub downloads: DownloadSettings,
+    #[serde(default)]
+    pub ocr: OcrSettings,
 }
 
 impl Default for AppSettings {
@@ -433,6 +455,7 @@ impl Default for AppSettings {
             overlay: OverlaySettings::default(),
             visual: VisualSettings::default(),
             downloads: DownloadSettings::default(),
+            ocr: OcrSettings::default(),
         }
     }
 }
@@ -600,8 +623,16 @@ pub enum ModelStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelKind {
+    Asr,
+    Ocr,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
+    pub kind: ModelKind,
     pub id: String,
     pub display_name: String,
     pub repository: String,

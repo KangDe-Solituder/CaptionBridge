@@ -493,6 +493,7 @@ async fn download_model(
 ) -> Result<(), String> {
     let paths = state.paths.clone();
     let registry = state.model_downloads.clone();
+    model_manager::manifest(&model_id)?;
     let (mirror, download_settings) = {
         let settings = state.settings.read().map_err(|e| e.to_string())?;
         (
@@ -500,16 +501,24 @@ async fn download_model(
             settings.downloads.clone(),
         )
     };
+    network::validate_download_settings(&download_settings)?;
+    let cancel = registry.begin(&model_id).await?;
+    let download_state = state.inner().clone();
     tauri::async_runtime::spawn(async move {
-        let _ = model_manager::download_model(
+        let label = model_id.clone();
+        if let Err(error) = model_manager::download_model(
             app,
             paths,
             registry,
             model_id,
             mirror,
             download_settings,
+            cancel,
         )
-        .await;
+        .await
+        {
+            download_state.log("warn", format!("模型 {label} 下载未完成：{error}"));
+        }
     });
     Ok(())
 }
@@ -707,7 +716,9 @@ fn asr_model_test_error(
 #[tauri::command]
 async fn delete_model(model_id: String, state: State<'_, AppState>) -> Result<(), String> {
     if model_id == ocr::MODEL_ID {
-        return state.ocr.delete_model(&state).await;
+        state.ocr.delete_model(&state).await?;
+        state.model_downloads.clear_failure(&model_id).await;
+        return Ok(());
     }
     let active = state
         .active_source
@@ -724,7 +735,9 @@ async fn delete_model(model_id: String, state: State<'_, AppState>) -> Result<()
         worker.shutdown().await;
         state.log("info", format!("删除前已释放空闲模型：{idle_id}"));
     }
-    model_manager::delete_model(&state.paths, &model_id)
+    model_manager::delete_model(&state.paths, &model_id)?;
+    state.model_downloads.clear_failure(&model_id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1387,6 +1400,17 @@ fn run_app() {
             open_asr_dependency_url
         ])
         .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    // Keep tray/background services alive without a webview event round trip.
+                    api.prevent_close();
+                    if let Err(error) = window.hide() {
+                        window
+                            .state::<AppState>()
+                            .log("error", format!("关闭主窗口失败: {error}"));
+                    }
+                }
+            }
             if matches!(window.label(), "ocr-capture" | "ocr-result") {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
