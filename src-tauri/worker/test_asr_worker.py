@@ -210,6 +210,18 @@ class AcousticEvidenceTests(unittest.TestCase):
 
 
 class DependencyProbeTests(unittest.TestCase):
+    @patch("asr_worker.emit")
+    def test_python_runtime_imports_work_without_loading_gpu(self, emit) -> None:
+        worker = Worker()
+        worker.check_python_runtime()
+        emit.assert_called_once_with("health", healthy=True, detail="python_runtime_ok")
+        self.assertFalse(worker.gpu_runtime_preloaded)
+
+    @patch("ssl.create_default_context", side_effect=FileNotFoundError("missing SSL policy file"))
+    def test_missing_ssl_data_reports_runtime_stage(self, create_context) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Python SSL/HTTP runtime initialization failed"):
+            Worker().check_python_runtime()
+
     def test_cudnn_probe_requires_the_full_inference_runtime(self) -> None:
         self.assertEqual(len(CUDNN_RUNTIME_FILES), 8)
         self.assertIn("cudnn_ops64_9.dll", CUDNN_RUNTIME_FILES)

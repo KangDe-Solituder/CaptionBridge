@@ -399,7 +399,22 @@ class Worker:
             raise RuntimeError(f"gpu_runtime_load_failed:{' | '.join(details)}")
         self.gpu_runtime_preloaded = True
 
+    def check_python_runtime(self) -> None:
+        # Exercise the actual SSL/HTTP imports used by faster-whisper, even
+        # on build machines without CUDA. This does not make a network request.
+        try:
+            import ssl
+            ssl.create_default_context()
+            import requests  # noqa: F401
+        except Exception as error:
+            raise RuntimeError(
+                f"Python SSL/HTTP runtime initialization failed: {error}. "
+                "Rebuild or reinstall the ASR worker with its SSL runtime data."
+            ) from error
+        emit("health", healthy=True, detail="python_runtime_ok")
+
     def load(self, command: dict) -> None:
+        self.check_python_runtime()
         if command.get("device", "cuda") == "cuda":
             self.preload_gpu_runtime()
         from faster_whisper import WhisperModel
@@ -838,7 +853,8 @@ def main() -> None:
         try:
             command = json.loads(line)
             name = command.get("command")
-            if name == "load": worker.load(command)
+            if name == "check_python_runtime": worker.check_python_runtime()
+            elif name == "load": worker.load(command)
             elif name == "configure": worker.configure(command)
             elif name == "dry_run": worker.dry_run()
             elif name == "probe_dependencies": worker.probe_dependencies()

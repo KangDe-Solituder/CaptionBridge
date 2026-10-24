@@ -725,8 +725,14 @@ async fn test_model(
     let mut worker = asr_worker::AsrWorker::spawn(&state.paths).await?;
     let probe_result = worker.probe_dependencies().await;
     let result = async {
-        worker.load(&state.paths, &source).await?;
-        worker.dry_run().await
+        worker
+            .load(&state.paths, &source)
+            .await
+            .map_err(|error| format!("模型加载失败：{error}"))?;
+        worker
+            .dry_run()
+            .await
+            .map_err(|error| format!("GPU 推理测试失败：{error}"))
     }
     .await
     .map_err(|error| asr_model_test_error(&probe_result, &error));
@@ -762,7 +768,7 @@ fn asr_model_test_error(
         Err(error) => format!("；依赖轻量探测也失败：{error}"),
     };
     format!(
-        "ASR GPU 推理失败：{inference_error}{probe_detail}。请打开“设置 → 字幕 → 检查依赖”查看详情"
+        "ASR 测试失败：{inference_error}{probe_detail}。请打开“设置 → 模型与资源 → 检查依赖”查看详情"
     )
 }
 

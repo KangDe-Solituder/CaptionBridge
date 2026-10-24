@@ -48,10 +48,18 @@ foreach ($GeneratedDir in @($WorkerBuildCache, $WorkerOutputDir)) {
     }
   }
 }
+# Some Python distributions ship SSL policy certificates beside ssl.py.
+# Preserve those files at the frozen module's location; do not bypass TLS policy.
+$SslModuleDir = & $VenvPython -c "import pathlib, ssl; print(pathlib.Path(ssl.__file__).parent)"
+if ($LASTEXITCODE -ne 0) { throw 'Cannot locate Python SSL runtime data.' }
+$SslDataArgs = @()
+foreach ($Certificate in (Get-ChildItem -LiteralPath $SslModuleDir -Filter '*.pem' -File)) {
+  $SslDataArgs += @('--add-data', ($Certificate.FullName + ';.'))
+}
 & $VenvPython -m PyInstaller --noconfirm --clean --onedir --console --name livecaption-asr-worker `
   --workpath $BuildDir --distpath $DistDir --specpath $WorkerDir `
   --hidden-import pkg_resources `
-  --collect-all faster_whisper --collect-all ctranslate2 --collect-all soundcard `
+  --collect-all faster_whisper --collect-all ctranslate2 --collect-all soundcard @SslDataArgs `
   (Join-Path $WorkerDir 'asr_worker.py')
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed (exit $LASTEXITCODE)." }
 $InternalDir = Join-Path $WorkerDir 'dist\livecaption-asr-worker\_internal'
@@ -146,7 +154,7 @@ if ($BundleGpuRuntime) {
 $WorkerExe = Join-Path $WorkerDir 'dist\livecaption-asr-worker\livecaption-asr-worker.exe'
 $WorkerBuildManifest = Join-Path (Split-Path $WorkerExe -Parent) 'worker-build.json'
 $SourceHashes = [ordered]@{}
-foreach ($SourceName in @('asr_worker.py', 'requirements.lock.txt')) {
+foreach ($SourceName in @('asr_worker.py', 'requirements.lock.txt', 'build-worker.ps1')) {
   $SourcePath = Join-Path $WorkerDir $SourceName
   $SourceHashes[$SourceName] = Get-Sha256Hex $SourcePath
 }
