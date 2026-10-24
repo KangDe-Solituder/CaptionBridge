@@ -1,4 +1,5 @@
 import { HistoryFollow } from "./lib/history-follow";
+import { AppearanceChoices, SidebarThemeControl, SubtitlePreview, useSidebarDock } from "./components/WorkbenchAppearance";
 import { LlmProfiles } from "./components/LlmProfiles";
 import { ToolbarSettings } from "./components/ToolbarSettings";
 import { listen } from "@tauri-apps/api/event";
@@ -7,7 +8,7 @@ import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import {
   Activity, ArrowDownToLine, ArrowLeft, ArrowRight, BookMarked, BrainCircuit, Captions, Check, ChevronLeft, ChevronRight,
   Clipboard, Copy, Download, Eraser, ExternalLink, FileText, Languages, Loader2, MousePointer2,
-  Play, Plus, RefreshCw, RotateCcw, Search, Settings, Sparkles, Square, Trash2, Upload, Wand2, X,
+  Play, Plus, RefreshCw, RotateCcw, Search, Settings, Sparkles, Square, Trash2, Upload, Wand2, X, Pin, PinOff, ScanText, Palette, Cpu,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -21,7 +22,7 @@ import {
   clearRuntimeLogs, correctCaptionSession, deleteCaptionSession, exportCaptionSession,
   exportGlossary, getGlossary, getRuntimeLogs, getRuntimeStatus, getSettings, importGlossary,
   listCaptionSessions, newCaptionSession, openLogsDir, openSessionsDir, readCaptionSession, resetAsrChannelRouting,
-  saveGlossary, saveSettings, setCaptionRunning, testLlm, listModels, downloadModel, cancelModelDownload,
+  saveGlossary, saveSettings, setTheme, setCaptionRunning, testLlm, listModels, downloadModel, cancelModelDownload,
   verifyModel, testModel, deleteModel, openModelsDir, switchCaptionSource,
   checkAsrDependencies, openAsrDependencyUrl, downloadAsrGpuRuntime, cancelAsrGpuRuntime, testDownloadProxy,
 } from "./lib/api";
@@ -69,7 +70,7 @@ export function App() {
 }
 
 type Page = "selection" | "captions" | "glossary" | "settings";
-type SettingsTab = "features" | "resources" | "application" | "appearance";
+type SettingsTab = "features" | "resources" | "application" | "appearance" | "diagnostics";
 
 // previews mirror the backend convention: newest session first
 const demoSessions: SessionSummary[] = [
@@ -97,6 +98,7 @@ function formatEntryTime(iso: string) {
 }
 
 function MainWindow() {
+  const sidebar = useSidebarDock();
   const switchingSource = useRef(false);
   const [settingsAnchor, setSettingsAnchor] = useState<string>();
   const [view, setView] = useState<SettingsView | null>(null);
@@ -106,11 +108,12 @@ function MainWindow() {
     const initial = new URLSearchParams(location.search).get("page");
     return initial === "captions" || initial === "glossary" || initial === "settings" ? initial : "selection";
   });
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>(() => { const saved = localStorage.getItem("settings-category"); return saved === "resources" || saved === "application" || saved === "features" ? saved : "appearance"; });
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>(() => { const saved = localStorage.getItem("settings-category"); return saved === "resources" || saved === "application" || saved === "features" || saved === "diagnostics" ? saved : "appearance"; });
   const [status, setStatus] = useState<RuntimeStatus>({ caption_running: false, caption_state: "stopped", selection_hotkey_registered: false, source_health: "unknown", last_caption_update_ms: 0, reader_restarts: 0, source_error_count: 0, translation_queue_depth: 0, last_translation_latency_ms: 0, last_translation_first_token_ms: 0, selected_source: previewSettings.captions.source, asr_latency_ms: 0, asmr_channel_state: "inactive" });
   const [models, setModels] = useState<ModelInfo[]>(builtInModels);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const [savingTheme, setSavingTheme] = useState(false);
   const [testing, setTesting] = useState(false);
   const [selectionResult, setSelectionResult] = useState<TranslationResult>(emptyResult);
   const [sessions, setSessions] = useState<SessionSummary[]>(isTauri ? [] : demoSessions);
@@ -148,7 +151,9 @@ function MainWindow() {
       setView(await getSettings());
     } catch (error) {
       if (!("__TAURI_INTERNALS__" in window)) {
-        setView({ settings: previewSettings, api_key_configured: false, model_directory: "E:\\Personal\\个人兴趣\\Livecaption\\Model" });
+        const cachedTheme = localStorage.getItem("livecaption-theme");
+        const theme = cachedTheme === "light" || cachedTheme === "dark" ? cachedTheme : "system";
+        setView({ settings: { ...previewSettings, visual: { ...previewSettings.visual, theme } }, api_key_configured: false, model_directory: "E:\\Personal\\个人兴趣\\Livecaption\\Model" });
       } else {
         setBootError(`读取配置失败：${String(error)}`);
       }
@@ -184,6 +189,7 @@ function MainWindow() {
       listen<string>("ocr:error", e => setMessage(e.payload)),
       listen<SettingsView>("llm:profiles-changed", e => setView(current => current ? mergeProfileView(current, e.payload) : e.payload)),
       listen<SettingsView>("settings:changed", e => { if (!switchingSource.current) setView(e.payload); }),
+      listen<AppSettings["visual"]["theme"]>("settings:theme-changed", e => setView(current => current ? { ...current, settings: { ...current.settings, visual: { ...current.settings.visual, theme: e.payload } } } : current)),
       listen<TranslationResult>("translation:finished", e => setSelectionResult(e.payload)),
       listen("caption:translated", () => scheduleSessionRefresh()),
       listen<void>("caption:sessions-changed", () => void refreshSessions()),
@@ -216,7 +222,7 @@ function MainWindow() {
   }, [loadInitialSettings, refreshModels, refreshSessions, scheduleSessionRefresh]);
 
   useEffect(() => {
-    if (!isTauri || settingsTab !== "application" || page !== "settings") return;
+    if (!isTauri || settingsTab !== "diagnostics" || page !== "settings") return;
     const refresh = () => void getRuntimeLogs().then(setLogs).catch(() => undefined);
     refresh();
     const id = window.setInterval(refresh, 2000);
@@ -228,13 +234,23 @@ function MainWindow() {
   const update = useCallback((next: AppSettings) => setView(v => v ? { ...v, settings: next } : v), []);
 
   const persist = async () => {
-    if (!settings) return;
+    if (!settings || savingTheme) return;
     setSaving(true); setMessage("");
     try {
       const saved = await saveSettings(settings);
       setView(saved); setMessage("设置已保存");
     } catch (error) { setMessage(String(error)); }
     finally { setSaving(false); }
+  };
+
+  const changeTheme = async (theme: AppSettings["visual"]["theme"]) => {
+    if (savingTheme || saving) return;
+    setSavingTheme(true);
+    try {
+      if (isTauri) await setTheme(theme);
+      setView(current => current ? { ...current, settings: { ...current.settings, visual: { ...current.settings.visual, theme } } } : current);
+    } catch (error) { setMessage(`主题未保存：${String(error)}`); }
+    finally { setSavingTheme(false); }
   };
 
   const runTest = async () => {
@@ -312,16 +328,19 @@ function MainWindow() {
 
   return (
     <MotionConfig reducedMotion={settings.visual.reduce_motion ? "always" : "never"}>
-      <main className="shell">
+      <main className="shell" data-sidebar-fixed={sidebar.fixed}>
         <aside className="rail">
-          <Logo />
+          <div className="rail-brand"><Logo /><div className="rail-label"><strong>CaptionBridge</strong><small>你的翻译工作台</small></div></div>
           <nav>
-            <RailButton active={page === "selection"} label="划词翻译" onClick={() => setPage("selection")}><Clipboard /></RailButton>
+            <RailButton active={page === "selection"} label="快捷翻译" onClick={() => setPage("selection")}><Clipboard /></RailButton>
             <RailButton active={page === "captions"} label="实时字幕" onClick={() => setPage("captions")}><Captions /></RailButton>
             <RailButton active={page === "glossary"} label="术语表" onClick={() => setPage("glossary")}><BookMarked /></RailButton>
             <RailButton active={page === "settings"} label="设置" onClick={() => setPage("settings")}><Settings /></RailButton>
           </nav>
           <span className="rail-spacer" />
+          <SidebarThemeControl theme={settings.visual.theme} onChange={theme => void changeTheme(theme)} disabled={savingTheme || saving} />
+          <button className="rail-pin" aria-label={sidebar.fixed ? "取消固定侧栏" : "固定侧栏"} aria-pressed={sidebar.fixed} onClick={sidebar.toggle}>{sidebar.fixed ? <PinOff /> : <Pin />}<span className="rail-label">{sidebar.fixed ? "取消固定侧栏" : "固定侧栏"}</span></button>
+          {sidebar.mode !== "auto" && <button className="rail-reset" onClick={sidebar.reset} title="恢复宽窗口自动固定"><RotateCcw /><span className="rail-label">恢复自动</span></button>}
           <span className="version">v0.5</span>
         </aside>
 
@@ -334,12 +353,12 @@ function MainWindow() {
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: .2, ease: [0.22, 1, 0.36, 1] }}
             >
-              {page === "selection" && <SelectionPage settings={settings} status={status} result={selectionResult} />}
+              {page === "selection" && <SelectionPage settings={settings} status={status} result={selectionResult} testing={testing} onTest={runTest} onSettings={(tab, anchor) => { setSettingsTab(tab); setSettingsAnchor(anchor); setPage("settings"); }} />}
               {page === "captions" && <CaptionPage status={status} sessions={sessions} viewingSession={viewingSession} onSelectSession={selectSession} onToggle={toggleCaptions} onMessage={setMessage} />}
               {page === "glossary" && <GlossaryPage onMessage={setMessage} />}
               {page === "settings" && (
                 <SettingsPage tab={settingsTab} setTab={setSettingsTab} anchor={settingsAnchor} onAnchorHandled={() => setSettingsAnchor(undefined)} view={view} onProfilesChanged={next => setView(current => current ? mergeProfileView(current, next) : next)}
-                  update={update} onSave={persist} saving={saving} testing={testing} onTest={runTest}
+                  update={update} onSave={persist} saving={saving || savingTheme} testing={testing} onTest={runTest}
                   models={models} status={status} onSelectSource={selectSource} refreshModels={() => void refreshModels(true)} onMessage={setMessage}
                   logs={logs} logQuery={logQuery} setLogQuery={setLogQuery}
                   onClearLogs={async () => { await clearRuntimeLogs(); setLogs([]); }} />
@@ -371,18 +390,15 @@ function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; 
   return <header className="page-header"><div><span>{eyebrow}</span><h1>{title}</h1><p>{description}</p></div>{action}</header>;
 }
 
-function SelectionPage({ settings, status, result }: { settings: AppSettings; status: RuntimeStatus; result: TranslationResult }) {
+function SelectionPage({ settings, status, result, testing, onTest, onSettings }: { settings: AppSettings; status: RuntimeStatus; result: TranslationResult; testing: boolean; onTest: () => void; onSettings: (tab: SettingsTab, anchor: string) => void }) {
   const automatic = settings.selection.trigger_mode === "automatic";
   const [ocrError, setOcrError] = useState("");
-  return <div className="page">
-    <PageHeader eyebrow="QUICK TRANSLATE" title="划词翻译" description={automatic ? "选中文字后，翻译按钮会立即出现在光标旁。" : "选中文字，用快捷键唤出轻巧的翻译按钮。"}
-      action={<StatusDot on={status.selection_hotkey_registered} text={status.selection_hotkey_registered ? "服务已就绪" : "服务未启用"} />} />
-    <section className="workflow-strip">
-      <div className="workflow-icon">{automatic ? <MousePointer2 /> : <span>{displayHotkey(settings.selection.hotkey)}</span>}</div>
-      <div><span className="overline">{automatic ? "自动感知选区" : "全局快捷键"}</span><h2>{automatic ? "松开鼠标，即刻出现" : `${displayHotkey(settings.selection.hotkey)} · 随时唤起`}</h2><p>浮动工具只在有效选区旁出现，不抢焦点，不打断当前应用。</p></div>
-      <div className="flow-steps"><span>选择</span><ArrowRight /><span>点击翻译</span><ArrowRight /><span>查看结果</span></div>
-    </section>
-    <section className="workflow-strip"><div className="workflow-icon"><Languages /></div><div><h2>截图翻译</h2><p>框选图片或屏幕文字，识别后按文字块翻译。首次使用请在设置 → 资源下载 OCR 模型。</p>{ocrError && <p role="alert">{ocrError}</p>}</div><button className="primary" onClick={() => { setOcrError(""); void startOcrCapture().catch(e => setOcrError(String(e))); }}>识屏 · 截图翻译</button></section>
+  return <div className="page quick-page">
+    <PageHeader eyebrow="QUICK TRANSLATE" title="此刻，想翻译什么？" description="选中一段文字，或框住屏幕上的一个区域。" />
+    <div className="quick-layout"><section className="quick-actions">
+      <article><div className="workflow-icon"><MousePointer2 /></div><h2>划词翻译</h2><p>{automatic ? "选中有效文字后，在光标旁显示工具栏。" : "选中文字，用快捷键唤出翻译工具栏。"}</p><footer><span>{automatic ? "自动感知选区" : displayHotkey(settings.selection.hotkey)} · {settings.selection.enabled ? "已启用" : "已关闭"}</span><button className="ghost" aria-label="划词翻译设置" onClick={() => onSettings("features", "selection")}><Settings /></button></footer></article>
+      <article><div className="workflow-icon"><ScanText /></div><h2>截图翻译</h2><p>框选图片或屏幕文字，本地识别后按文字块翻译。</p>{ocrError && <p role="alert">{ocrError}</p>}<footer><button className="primary" disabled={!settings.ocr.enabled} onClick={() => { setOcrError(""); void startOcrCapture().catch(e => setOcrError(String(e))); }}><ScanText />开始截图</button><button className="ghost" aria-label="截图翻译设置" onClick={() => onSettings("features", "ocr")}><Settings /></button></footer></article>
+    </section><section className="translation-chain"><header><h2>当前翻译配置</h2><button className="ghost" aria-label="配置翻译服务" onClick={() => onSettings("application", "translation")}><Settings /></button></header><div className="chain-symbol"><Languages /></div><strong>{settings.llm.model || "尚未配置服务"}</strong><p>目标语言 · {settings.llm.target_language}</p><div className="chain-list"><span>划词快捷键<b>{status.selection_hotkey_registered ? "已注册" : "未注册"}</b></span><span>字幕来源<b>{sourceName(settings.captions.source)}</b></span></div><button className="ghost" disabled={testing || !settings.llm.profile_id} onClick={onTest}>{testing ? <Loader2 className="spin" /> : <Activity />}测试翻译连接</button><small>向当前模型发送一句示例文本，检查翻译连接。</small></section></div>
     <section className="recent-section"><div className="section-label"><span>最近翻译</span>{result.translated_text && <small>{result.latency_ms}ms</small>}</div>{result.translated_text ? <ResultBlock result={result} /> : <div className="quiet-empty"><Languages /><div><h3>还没有翻译记录</h3><p>去任意应用选中一段文字试试。</p></div></div>}</section>
   </div>;
 }
@@ -645,7 +661,7 @@ function CaptionPage({ status, sessions, viewingSession, onSelectSession, onTogg
     ? `${formatSessionDateTime(activeSummary?.created_at ?? "")} · ${activeSummary?.entry_count ?? 0} 条`
     : pageView?.total ? `${pageView.total} 条字幕 · 每页 ${SESSION_PAGE_SIZE} 条` : "启动后记录会自动出现在这里";
 
-  return <div className="page" ref={historyRoot}>
+  return <div className="page captions-page" ref={historyRoot}>
     <PageHeader eyebrow="LIVE CAPTIONS" title="实时字幕" description={`当前字幕来源：${activeName}。识别结果按顺序交给 LLM 翻译。`}
       action={<StatusDot on={status.caption_state === "running"} text={stateText[status.caption_state]} />} />
     <section className="caption-launcher" data-running={status.caption_running}>
@@ -654,6 +670,10 @@ function CaptionPage({ status, sessions, viewingSession, onSelectSession, onTogg
       <button className={status.caption_running ? "danger action" : "primary action"} disabled={busy} onClick={onToggle}>{busy ? <Loader2 className="spin" /> : status.caption_running ? <Square /> : <Play />}{actionText}</button>
     </section>
     <CaptionHealth status={status} />
+    <div className="caption-workspace">
+      <CaptionRecords sessions={sessions} viewingSession={viewingSession} running={status.caption_running} onSelect={onSelectSession} onMessage={onMessage} />
+      <section className="transcript-panel" aria-label={viewingSession ? "历史转录内容" : "本次转录内容"}>
+      {viewingSession && status.caption_running && <div className="live-background-status"><StatusDot on text="实时字幕仍在运行" /><button className="ghost" onClick={() => onSelectSession(null)}>返回本次转录<ArrowRight /></button></div>}
     <div className="section-heading">
       <div><h2>{viewingSession ? "历史记录" : "本次转录"}</h2><p>{headingText}</p></div>
       <div className="export-row">
@@ -722,89 +742,27 @@ function CaptionPage({ status, sessions, viewingSession, onSelectSession, onTogg
         <button disabled={pageView.page >= pageView.page_count} onClick={() => browsePage(pageView.page + 1)}>下一页<ChevronRight /></button>
       </nav>
     )}
-    <SessionTicker sessions={sessions} viewingSession={viewingSession} running={status.caption_running} onSelect={onSelectSession} onMessage={onMessage} />
+    </section></div>
   </div>;
 }
 
-function SessionTicker({ sessions, viewingSession, running, onSelect, onMessage }: {
+function CaptionRecords({ sessions, viewingSession, running, onSelect, onMessage }: {
   sessions: SessionSummary[]; viewingSession: string | null; running: boolean;
   onSelect: (id: string | null) => void; onMessage: (message: string) => void;
 }) {
-  const [hover, setHover] = useState<{ session: SessionSummary; top: number; left: number } | null>(null);
-  const closeTimer = useRef<number | undefined>(undefined);
-  const listRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const list = listRef.current;
-    if (list) list.scrollTop = list.scrollHeight;
-  }, [sessions.length]);
-
-  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
-
-  const openCard = (session: SessionSummary, target: HTMLElement) => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-    const rect = target.getBoundingClientRect();
-    setHover({ session, top: Math.min(rect.top, window.innerHeight - 210), left: rect.right + 12 });
-  };
-  const scheduleClose = () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-    closeTimer.current = window.setTimeout(() => setHover(null), 160);
-  };
-
   const remove = async (id: string) => {
     if (!window.confirm("删除这条转录记录？此操作不可撤销。")) return;
-    if (!isTauri) { onMessage("预览模式无法删除记录"); return; }
     try { await deleteCaptionSession(id); if (viewingSession === id) onSelect(null); }
     catch (error) { onMessage(String(error)); }
   };
-
-  if (!sessions.length) return null;
-  const ordered = [...sessions].reverse();
-  return <>
-    <div className="session-ticker" aria-label="转录记录">
-      <div className="ticker-track" ref={listRef}>
-        {ordered.map(session => (
-          <button
-            key={session.id}
-            className="ticker-tick"
-            data-current={session.is_current}
-            data-live={session.is_current && running}
-            data-active={session.is_current ? viewingSession === null : viewingSession === session.id}
-            style={{ width: Math.min(30, 10 + Math.round(Math.log2(session.entry_count + 1) * 5)) }}
-            title={session.id}
-            onMouseEnter={e => openCard(session, e.currentTarget)}
-            onMouseLeave={scheduleClose}
-            onFocus={e => openCard(session, e.currentTarget)}
-            onBlur={scheduleClose}
-            onClick={() => onSelect(session.is_current ? null : session.id)}
-          />
-        ))}
-      </div>
-    </div>
-    {hover && createPortal(
-      <motion.div
-        className="ticker-card"
-        style={{ top: hover.top, left: hover.left }}
-        initial={{ opacity: 0, x: -6, scale: .97 }}
-        animate={{ opacity: 1, x: 0, scale: 1 }}
-        transition={{ duration: .16, ease: [0.22, 1, 0.36, 1] }}
-        onMouseEnter={() => { if (closeTimer.current) clearTimeout(closeTimer.current); }}
-        onMouseLeave={scheduleClose}
-      >
-        <header>
-          <strong>{formatSessionDateTime(hover.session.created_at)}</strong>
-          {hover.session.is_current && <i>本次</i>}
-        </header>
-        <p className="ticker-card-source">{hover.session.first_source || "（还没有转录内容）"}</p>
-        {hover.session.first_translation && <p className="ticker-card-translation">{hover.session.first_translation}</p>}
-        <footer>
-          <small>{hover.session.entry_count} 条{hover.session.has_correction ? " · 已纠错" : ""}</small>
-          <button onClick={() => void remove(hover.session.id)}><Trash2 />删除</button>
-        </footer>
-      </motion.div>,
-      document.body,
-    )}
-  </>;
+  return <aside className="caption-records" aria-label="转录记录"><h2>转录记录</h2>
+    {!sessions.length && <p className="records-empty">启动字幕后，转录记录会出现在这里。</p>}
+    {sessions.map(session => <article key={session.id} data-active={session.is_current ? viewingSession === null : viewingSession === session.id}>
+      <button className="record-select" aria-pressed={session.is_current ? viewingSession === null : viewingSession === session.id} onClick={() => onSelect(session.is_current ? null : session.id)}>
+        <strong>{session.is_current ? "本次转录" : formatSessionDateTime(session.created_at).slice(0, 16)}</strong><p>{session.first_source || "等待第一句字幕"}</p><small>{session.is_current && running ? "进行中 · " : ""}{session.entry_count} 条{session.has_correction ? " · 已纠错" : ""}</small>
+      </button><button className="record-delete" disabled={!isTauri || (session.is_current && running)} aria-label={`删除 ${session.id}`} onClick={() => void remove(session.id)}><Trash2 /></button>
+    </article>)}
+  </aside>;
 }
 
 function GlossaryPage({ onMessage }: { onMessage: (message: string) => void }) {
@@ -859,15 +817,16 @@ function GlossaryPage({ onMessage }: { onMessage: (message: string) => void }) {
     } catch (error) { onMessage(String(error)); }
   };
 
-  if (!glossary) return <div className="page"><PageHeader eyebrow="GLOSSARY" title="术语表" description="正在读取术语表…" /></div>;
-  return <div className="page">
-    <PageHeader eyebrow="GLOSSARY" title="术语表" description="统一人名、作品名等专有名词的译法，可用于实时翻译和字幕纠错；支持导入导出以便多设备同步。"
+  if (!glossary) return <div className="page glossary-page"><PageHeader eyebrow="GLOSSARY" title="术语表" description="正在读取术语表…" /></div>;
+  return <div className="page glossary-page">
+    <PageHeader eyebrow="GLOSSARY" title="让专有名词，始终保持一致" description="统一人名、作品名等专有名词的译法，可用于实时翻译和字幕纠错；支持导入导出以便多设备同步。"
       action={<button className="primary" onClick={() => void persist()} disabled={saving || !isTauri}>{saving ? <Loader2 className="spin" /> : <Check />}保存术语表</button>} />
-    <section className="settings-sheet">
+    <div className="glossary-preferences">
       <SettingRow title="用于实时翻译" description="翻译请求携带术语表，下次启动字幕后生效。"><Toggle label="用于实时翻译" checked={glossary.use_in_translation} onChange={use_in_translation => update({ ...glossary, use_in_translation })} /></SettingRow>
       <SettingRow title="默认用于字幕纠错" description="点击纠错时可临时更改是否导入术语表，这里是默认值。"><Toggle label="默认用于字幕纠错" checked={glossary.use_in_correction} onChange={use_in_correction => update({ ...glossary, use_in_correction })} /></SettingRow>
+    </div><section className="settings-sheet glossary-sheet">
       <div className="settings-group-title glossary-head">
-        <div><h2>词条</h2><p>{glossary.terms.length} 条，按源词去重</p></div>
+        <div><h2>全部词条</h2><p>{glossary.terms.length} 条，按源词去重</p></div>
         <div>
           <button className="ghost" onClick={() => void importFile()} disabled={!isTauri}><Upload />导入</button>
           <button className="ghost" onClick={() => void exportFile()} disabled={!isTauri || !glossary.terms.length}><Download />导出</button>
@@ -879,6 +838,7 @@ function GlossaryPage({ onMessage }: { onMessage: (message: string) => void }) {
         <input placeholder="备注（可选）" value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} onKeyDown={e => { if (e.key === "Enter") addTerm(); }} />
         <button className="primary" onClick={addTerm} disabled={!draft.source.trim() || !draft.target.trim()}><Plus />添加</button>
       </div>
+      <div className="glossary-columns" aria-hidden="true"><span>原文</span><span>统一译法</span><span>备注</span><span /></div>
       <div className="glossary-list">
         {glossary.terms.length ? glossary.terms.map(term => (
           <div className="glossary-row" key={term.id}>
@@ -895,46 +855,23 @@ function GlossaryPage({ onMessage }: { onMessage: (message: string) => void }) {
 
 function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab: SettingsTab; setTab: (v: SettingsTab) => void; view: SettingsView; onProfilesChanged: (view: SettingsView) => void; update: (v: AppSettings) => void; onSave: () => void; saving: boolean; testing: boolean; onTest: () => void; logs: RuntimeLogEntry[]; logQuery: string; setLogQuery: (v: string) => void; onClearLogs: () => void; models: ModelInfo[]; status: RuntimeStatus; onSelectSource: (source: CaptionSourceConfig) => Promise<void>; refreshModels: () => void; onMessage: (message: string) => void }) {
   const { tab, setTab, view, update } = props; const s = view.settings;
-  const [tocOpen, setTocOpen] = useState(false);
-  const [activeChapter, setActiveChapter] = useState("");
   const pendingChapter = useRef<string | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const chapters: Record<SettingsTab, { id: string; title: string }[]> = {
-    features: [{ id: "toolbar", title: "工具栏" }, { id: "selection", title: "划词翻译" }, { id: "captions", title: "实时字幕" }, { id: "ocr", title: "截图翻译" }],
-    resources: [{ id: "asr-models", title: "语音识别 · ASR" }, { id: "ocr-models", title: "文字识别 · OCR" }, { id: "network", title: "网络与下载" }],
-    application: [{ id: "translation", title: "翻译服务" }, { id: "diagnostics", title: "日志与诊断" }],
-    appearance: [{ id: "theme", title: "主题与动效" }, { id: "overlay", title: "字幕浮窗" }],
-  };
-  const jumpTo = (id: string) => {
-    document.getElementById(`settings-${id}`)?.scrollIntoView({ behavior: s.visual.reduce_motion ? "instant" : "smooth", block: "start" });
-    setActiveChapter(id);
-  };
+  const jumpTo = (id: string) => document.getElementById(`settings-${id}`)?.scrollIntoView({ behavior: s.visual.reduce_motion ? "instant" : "smooth", block: "start" });
   const navigateTo = (next: SettingsTab, chapter: string) => {
     if (next === tab) jumpTo(chapter);
     else { pendingChapter.current = chapter; setTab(next); }
   };
   useEffect(() => {
     localStorage.setItem("settings-category", tab);
-    const scroller = contentRef.current?.closest(".content");
     const target = pendingChapter.current;
     pendingChapter.current = null;
-    if (target) document.getElementById(`settings-${target}`)?.scrollIntoView({ block: "start" });
-    else scroller?.scrollTo({ top: 0 });
-    const updateChapter = () => {
-      const sections = Array.from(contentRef.current?.querySelectorAll<HTMLElement>(".settings-chapter") ?? []);
-      const top = (scroller?.getBoundingClientRect().top ?? 0) + 48;
-      const atBottom = scroller && scroller.scrollTop > 0 && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 3;
-      const current = atBottom ? sections.at(-1) : sections.filter(section => section.getBoundingClientRect().top <= top).at(-1) ?? sections[0];
-      if (current) setActiveChapter(current.id.replace("settings-", ""));
-    };
-    updateChapter();
-    scroller?.addEventListener("scroll", updateChapter, { passive: true });
-    return () => scroller?.removeEventListener("scroll", updateChapter);
+    if (target) jumpTo(target);
+    else contentRef.current?.closest(".content")?.scrollTo({ top: 0 });
   }, [tab]);
   useEffect(() => {
     if (!props.anchor) return;
-    document.getElementById(`settings-${props.anchor}`)?.scrollIntoView({ block: "start" });
-    setActiveChapter(props.anchor);
+    jumpTo(props.anchor);
     props.onAnchorHandled();
   }, [props.anchor]);
   const [dependencyReport, setDependencyReport] = useState<AsrDependencyReport>();
@@ -979,22 +916,21 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
     catch (error) { props.onMessage(String(error)); }
     finally { setTestingProxy(false); }
   };
-  const tabs: { id: SettingsTab; label: string }[] = [{ id: "appearance", label: "外观" }, { id: "features", label: "功能" }, { id: "resources", label: "资源" }, { id: "application", label: "应用" }];
+  const tabs = [{ id: "appearance", label: "外观与浮窗", icon: Palette }, { id: "features", label: "功能与入口", icon: MousePointer2 }, { id: "resources", label: "模型与资源", icon: Cpu }, { id: "application", label: "翻译与应用", icon: Languages }, { id: "diagnostics", label: "日志与诊断", icon: FileText }] as const;
   const filteredLogs = props.logs.filter(l => `${l.level} ${l.message}`.toLowerCase().includes(props.logQuery.toLowerCase()));
   return <div className="page settings-page" ref={contentRef}>
     <PageHeader eyebrow="PREFERENCES" title="设置" description="让翻译，按照你的习惯运行。" action={<button className="primary" onClick={props.onSave} disabled={props.saving}>{props.saving ? <Loader2 className="spin" /> : <Check />}保存设置</button>} />
-    <div className="settings-tabs" role="tablist" aria-label="设置分类">
+    <div className="settings-layout"><div className="settings-tabs" role="tablist" aria-label="设置分类" aria-orientation="vertical">
       {tabs.map(t => <button id={`tab-${t.id}`} role="tab" aria-selected={tab === t.id} aria-controls="settings-panel" data-active={tab === t.id} key={t.id} onClick={() => setTab(t.id)} onKeyDown={event => {
-        const direction = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+        const direction = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : ["ArrowLeft", "ArrowUp"].includes(event.key) ? -1 : 0;
         if (!direction && event.key !== "Home" && event.key !== "End") return;
         event.preventDefault();
         const next = tabs[event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (tabs.findIndex(item => item.id === t.id) + direction + tabs.length) % tabs.length];
         setTab(next.id); document.getElementById(`tab-${next.id}`)?.focus();
       }} tabIndex={tab === t.id ? 0 : -1}>
-        {tab === t.id && <motion.span className="tab-thumb" layoutId="settings-tab" transition={{ type: "spring", stiffness: 480, damping: 40 }} />}<span>{t.label}</span>
+        {tab === t.id && <motion.span className="tab-thumb" layoutId="settings-tab" transition={{ type: "spring", stiffness: 480, damping: 40 }} />}<t.icon /><span>{t.label}</span>
       </button>)}
     </div>
-    <div className="settings-layout" data-toc-open={tocOpen}>
     <div id="settings-panel" role="tabpanel" aria-labelledby={`tab-${tab}`}>
 {tab === "features" && <><section className="settings-chapter" id="settings-toolbar" aria-labelledby="heading-toolbar">
       <header className="chapter-heading"><div><h2 id="heading-toolbar">工具栏</h2></div></header>
@@ -1009,12 +945,6 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
     </section><section className="settings-chapter" id="settings-captions" aria-labelledby="heading-captions">
       <header className="chapter-heading"><div><h2 id="heading-captions">实时字幕</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("resources", "asr-models")}>管理 ASR 资源<ArrowRight /></button></header>
 
-        <div className="settings-group"><div className="settings-group-title"><div><h3>字幕来源</h3><p>选择后立即生效；运行中会先检查新来源，成功后开启全新会话。</p></div>{props.status.caption_state === "switching" && <span><Loader2 className="spin" />正在切换字幕来源</span>}</div>
-          <div className="source-grid">
-            <SourceCard title="Windows Live Caption" description="读取 Windows 系统字幕；不占用 GPU。" state="系统组件" selected={s.captions.source.type === "windows_live_caption"} onClick={() => void props.onSelectSource({ type: "windows_live_caption" })} />
-            {props.models.filter(model => model.kind === "asr").map(model => <SourceCard key={model.id} title={model.display_name} description={model.recommended ? "日语优化、速度优先，推荐默认使用。" : "复杂音频精度优先，显存占用更高。"} state={modelStatusText(model.status)} badge={model.recommended ? "推荐" : undefined} selected={s.captions.source.type === "local_asr" && s.captions.source.model_id === model.id} onClick={() => void props.onSelectSource({ type: "local_asr", model_id: model.id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "auto", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : true })} />)}
-          </div>
-        </div>
         <SettingRow title="翻译上下文" description="上下文来自已接受的 final 原文，不受上一条 LLM 成败影响。"><Segmented value={String(s.captions.context_segments)} options={[0, 1, 2, 4].map(value => ({ label: `${value} 条`, value: String(value) }))} onChange={value => update({ ...s, captions: { ...s.captions, context_segments: Number(value) } })} /></SettingRow>
         {s.captions.source.type === "local_asr" && <>
           <SettingRow title="音频模式" description="普通模式保持原有单声道流程；ASMR 才会启用双声道人声锁定。"><Segmented value={s.captions.audio_mode} options={[{ label: "普通", value: "normal" }, { label: "ASMR", value: "asmr" }]} onChange={audio_mode => update({ ...s, captions: { ...s.captions, audio_mode, source: { type: "local_asr", model_id: s.captions.source.type === "local_asr" ? s.captions.source.model_id : "kotoba-whisper-v2.0-faster", device: "cuda", compute_type: "int8_float16", vad_profile: audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "auto", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : true } } })} /></SettingRow>
@@ -1042,11 +972,12 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
               <SettingRow title="本地 ASR 运行环境" description="检查 Worker、NVIDIA 驱动、CUDA/cuDNN 实际加载状态和 CTranslate2 GPU 可用性；旧 Worker 会自动改用模型推理验证。">
           <button className="ghost" onClick={() => void runDependencyCheck()} disabled={checkingDependencies}>{checkingDependencies ? <Loader2 className="spin" /> : <Activity />}检查依赖</button>
         </SettingRow>
-        <ModelManager models={props.models.filter(model => model.kind === "asr")} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
+        <div className="system-caption-source"><div><h3>Windows Live Caption</h3><p>Windows 系统字幕 · 无需下载 ASR 模型</p></div><button className="ghost" disabled={s.captions.source.type === "windows_live_caption" || props.status.caption_state === "switching"} onClick={() => void props.onSelectSource({ type: "windows_live_caption" })}>{s.captions.source.type === "windows_live_caption" ? <><Check />当前来源</> : "选中"}</button></div>
+        <ModelManager selectedModel={s.captions.source.type === "local_asr" ? s.captions.source.model_id : undefined} selecting={props.status.caption_state === "switching"} onSelect={model_id => props.onSelectSource({ type: "local_asr", model_id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "auto", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : true })} models={props.models.filter(model => model.kind === "asr")} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
 
     </section><section className="settings-chapter" id="settings-ocr-models" aria-labelledby="heading-ocr-models">
       <header className="chapter-heading"><div><h2 id="heading-ocr-models">文字识别 · OCR</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("features", "ocr")}>截图设置<ArrowRight /></button></header>
-              <ModelManager title="OCR 模型管理" models={props.models.filter(model => model.kind === "ocr")} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
+              <ModelManager selectedModel="ocr-ppocr-v5-mobile" title="OCR 模型管理" models={props.models.filter(model => model.kind === "ocr")} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
 
     </section><section className="settings-chapter" id="settings-network" aria-labelledby="heading-network">
       <header className="chapter-heading"><div><h2 id="heading-network">网络与下载</h2></div></header>
@@ -1061,7 +992,7 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
 
       <LlmProfiles view={view} onChanged={props.onProfilesChanged} onMessage={props.onMessage} onTest={props.onTest} testing={props.testing} />
 
-    </section><section className="settings-chapter" id="settings-diagnostics" aria-labelledby="heading-diagnostics">
+    </section></>}{tab === "diagnostics" && <><section className="settings-chapter" id="settings-diagnostics" aria-labelledby="heading-diagnostics">
       <header className="chapter-heading"><div><h2 id="heading-diagnostics">日志与诊断</h2></div></header>
 
         <div className="log-toolbar"><label><Search /><input value={props.logQuery} onChange={e => props.setLogQuery(e.target.value)} placeholder="搜索日志" /></label><button className="ghost" onClick={() => void openLogsDir()}><ExternalLink />目录</button><button className="ghost" onClick={props.onClearLogs}><Eraser />清空</button></div>
@@ -1069,25 +1000,21 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
 
     </section></>}{tab === "appearance" && <><section className="settings-chapter" id="settings-theme" aria-labelledby="heading-theme">
       <header className="chapter-heading"><div><h2 id="heading-theme">主题与动效</h2></div></header>
-              <SettingRow title="主题" description="跟随系统或固定使用浅色、深色主题。"><Segmented value={s.visual.theme} options={[{ label: "系统", value: "system" }, { label: "浅色", value: "light" }, { label: "深色", value: "dark" }]} onChange={theme => update({ ...s, visual: { ...s.visual, theme } })} /></SettingRow>
+      <AppearanceChoices settings={s} onChange={update} />
         <SettingRow title="高斯模糊" description="为字幕和划词浮窗启用半透明模糊背景。"><Toggle label="高斯模糊" checked={s.visual.blur_enabled} onChange={blur_enabled => update({ ...s, visual: { ...s.visual, blur_enabled } })} /></SettingRow>
         <SettingRow title="减少动画" description="关闭页面切换和浮窗展开动画。"><Toggle label="减少动画" checked={s.visual.reduce_motion} onChange={reduce_motion => update({ ...s, visual: { ...s.visual, reduce_motion } })} /></SettingRow>
     </section><section className="settings-chapter" id="settings-overlay" aria-labelledby="heading-overlay">
       <header className="chapter-heading"><div><h2 id="heading-overlay">字幕浮窗</h2></div></header>
+      <div className="overlay-appearance-grid"><div>
       <SettingRow title="字幕浮窗拖动" description="选择最顺手的移动方式；拖栏模式可避免误拖。"><Segmented value={s.overlay.drag_mode} options={[{ label: "Alt + 拖动", value: "alt" }, { label: "整体拖动", value: "anywhere" }, { label: "顶部拖栏", value: "handle" }]} onChange={drag_mode => update({ ...s, overlay: { ...s.overlay, drag_mode } })} /></SettingRow>
         <Field label={`字幕字号 · ${s.overlay.font_size}px`}><Slider min={14} max={34} value={s.overlay.font_size} onChange={font_size => update({ ...s, overlay: { ...s.overlay, font_size } })} /></Field>
         <SettingRow title="字幕背景" description="透明模式只保留字幕文字和悬浮控制区。"><Toggle label="透明字幕背景" checked={s.overlay.transparent} onChange={transparent => update({ ...s, overlay: { ...s.overlay, transparent } })} /></SettingRow>
         <Field label={`字幕浮窗透明度 · ${Math.round(s.overlay.opacity * 100)}%`} hint="同时调整文字与背景的整体透明度"><Slider min={0.2} max={1} step={0.05} value={s.overlay.opacity} onChange={opacity => update({ ...s, overlay: { ...s.overlay, opacity } })} /></Field>
         <SettingRow title="字幕颜色" description="也可以直接在字幕浮窗右下角随时更换。"><label className="color-control"><input type="color" value={s.overlay.caption_color} onChange={e => update({ ...s, overlay: { ...s.overlay, caption_color: e.target.value } })} /><span>{s.overlay.caption_color.toUpperCase()}</span></label></SettingRow>
+      </div><SubtitlePreview settings={s} /></div>
     </section></>}<footer className="settings-footer"><span>修改完成后，保存以应用设置。</span><button className="primary" onClick={props.onSave} disabled={props.saving}>{props.saving ? <Loader2 className="spin" /> : <Check />}保存设置</button></footer>
     </div>
-    <aside className="settings-toc" aria-label="本页目录" data-open={tocOpen}>
-      <button className="toc-handle" aria-label={tocOpen ? "收起目录" : "展开本页目录"} aria-expanded={tocOpen} aria-controls="settings-toc-panel" onClick={() => setTocOpen(!tocOpen)}>{tocOpen ? <ChevronRight /> : <ChevronLeft />}<span>目录</span></button>
-      <div className="toc-panel" id="settings-toc-panel" inert={!tocOpen} aria-hidden={!tocOpen}>
-        <div className="toc-heading"><span>本页目录</span></div>
-        <nav>{chapters[tab].map((chapter, index) => <button key={chapter.id} aria-current={activeChapter === chapter.id ? "location" : undefined} onClick={() => jumpTo(chapter.id)}><span>{String(index + 1).padStart(2, "0")}</span>{chapter.title}</button>)}</nav><small>点击章节跳转 · 手动收起</small>
-      </div>
-    </aside>
+
     </div>
     {createPortal(
       <AnimatePresence>
@@ -1138,14 +1065,6 @@ function DependencyDialog({ report, gpuRuntime, checking, error, onClose, onChec
   );
 }
 
-function SourceCard({ title, description, state, badge, selected, onClick }: { title: string; description: string; state: string; badge?: string; selected: boolean; onClick: () => void }) {
-  return <button className="source-card" data-selected={selected} onClick={onClick}>
-    {selected && <span className="source-check"><Check /></span>}
-    <span className="source-card-top"><strong>{title}</strong>{badge && <i>{badge}</i>}</span>
-    <p>{description}</p><small>{state}</small>
-  </button>;
-}
-
 function modelStatusText(status: ModelInfo["status"]) {
   const labels: Record<ModelInfo["status"], string> = { not_installed: "未安装", downloading: "下载中", verifying: "校验中", available: "可用", loading: "加载中", active: "活动中", corrupt: "损坏", incompatible: "不兼容", failed: "失败" };
   return labels[status];
@@ -1167,7 +1086,7 @@ function formatBytes(bytes: number) {
   return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
-function ModelManager({ models, activeModel, modelDirectory, refresh, message, title = "字幕模型管理" }: { title?: string; models: ModelInfo[]; activeModel?: string; modelDirectory: string; refresh: () => void; message: (text: string) => void }) {
+function ModelManager({ models, activeModel, selectedModel, selecting, onSelect, modelDirectory, refresh, message, title = "字幕模型管理" }: { title?: string; models: ModelInfo[]; activeModel?: string; selectedModel?: string; selecting?: boolean; onSelect?: (id: string) => Promise<void>; modelDirectory: string; refresh: () => void; message: (text: string) => void }) {
   const [busy, setBusy] = useState<Record<string, string>>({});
   const action = async (modelId: string, label: string, run: () => Promise<unknown>) => {
     setBusy(current => ({ ...current, [modelId]: label }));
@@ -1189,6 +1108,7 @@ function ModelManager({ models, activeModel, modelDirectory, refresh, message, t
       return <article className="model-row" key={model.id} data-status={model.status}>
         <div className="model-copy"><div><strong>{model.display_name}</strong><span className="badge" data-tone={modelStatusTone(model.status)}>{modelStatusText(model.status)}</span></div><p>{model.repository} · {model.license} · {formatBytes(model.expected_size_bytes)}</p>{model.status === "downloading" && <div className="download-progress"><i style={{ width: `${progress}%` }} /><small>{progress.toFixed(1)}% · {formatBytes(model.downloaded_bytes)}</small></div>}{model.error && <small className="model-error">{model.error}</small>}</div>
         <div className="model-actions">
+          {installed && (selectedModel === model.id ? <span className="model-selected"><Check />当前来源</span> : onSelect && <button className="primary" disabled={selecting} onClick={() => void onSelect(model.id)}>选中</button>)}
           {busyLabel ? <button className="ghost" disabled><Loader2 className="spin" />正在{busyLabel}</button> : model.status === "downloading" ? <button className="ghost" onClick={() => void action(model.id, "取消下载", () => cancelModelDownload(model.id))}>暂停/取消</button> : !installed ? <button className="primary" onClick={() => void action(model.id, model.status === "not_installed" ? "下载" : "重试", () => downloadModel(model.id))}><Download />{model.status === "not_installed" ? "下载" : "重试"}</button> : <><button className="ghost" onClick={() => void action(model.id, "校验", () => verifyModel(model.id))}>校验</button><button className="ghost" disabled={activeModel === model.id} onClick={() => void action(model.id, "测试", () => testModel(model.id))}>测试</button><button className="ghost danger-text" disabled={activeModel === model.id} onClick={() => { if (confirm(`删除 ${model.display_name}？`)) void action(model.id, "删除", () => deleteModel(model.id)); }}><Trash2 /></button></>}
         </div>
       </article>;
@@ -1196,7 +1116,7 @@ function ModelManager({ models, activeModel, modelDirectory, refresh, message, t
   </div>;
 }
 
-function Logo() { return <div className="logo" title="LiveCaption"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 9h25a7 7 0 0 1 7 7v12a7 7 0 0 1-7 7H21l-8 7v-7H8a6 6 0 0 1-6-6V15a6 6 0 0 1 6-6Z" /><path d="M16 18h15M16 25h10" /></svg></div>; }
+function Logo() { return <div className="logo" role="img" aria-label="CaptionBridge · 语桥" title="CaptionBridge · 语桥"><span className="logo-mark" /></div>; }
 function RailButton({ active, label, onClick, children }: { active: boolean; label: string; onClick: () => void; children: React.ReactNode }) {
   return (
     <button className="rail-button" data-active={active} aria-current={active ? "page" : undefined} title={label} onClick={onClick}>

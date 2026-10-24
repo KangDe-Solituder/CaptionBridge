@@ -93,3 +93,9 @@
 
   color-scheme: dark;
 }
+
+/* Accent styles deliberately leave all canvas, surface and text tokens unchanged. */
+:root[data-accent="green"] { --accent: #3f7d53; --accent-strong: #306b44; --accent-soft: #e8f1e4; --accent-ring: #3f7d5329; --on-accent: #fff; }
+:root[data-accent="blue"] { --accent: #347bac; --accent-strong: #28658f; --accent-soft: #e8f2fb; --accent-ring: #347bac29; --on-accent: #fff; }
+:root[data-theme="dark"][data-accent="green"] { --accent: #b7df80; --accent-strong: #c9ed98; --accent-soft: #2d382c; --accent-ring: #b7df8033; --on-accent: #1e2a14; }
+:root[data-theme="dark"][data-accent="blue"] { --accent: #8ec5ef; --accent-strong: #afd9f7; --accent-soft: #293344; --accent-ring: #8ec5ef33; --on-accent: #152b40; }

@@ -23,6 +23,70 @@ def lock_left(router: StereoRouter) -> None:
 
 
 class StereoRouterTests(unittest.TestCase):
+    def test_cross_talk_does_not_block_a_sustained_better_ear(self) -> None:
+        for first, second in ((0, 1), (1, 0)):
+            router = StereoRouter("auto", 0.3)
+            initial = np.array([0.08, 0.08, 0.48])
+            initial[first] = 0.95
+            for _ in range(20):
+                router.process(initial)
+            changed = np.array([0.4, 0.4, 0.65])
+            changed[second] = 0.95
+            handoffs = []
+            for _ in range(100):
+                _, _, handoff = router.process(changed)
+                if handoff:
+                    handoffs.append(handoff)
+            self.assertEqual(router.selected, ("left", "right")[second])
+            self.assertEqual(len(handoffs), 1)
+
+    def test_other_speaker_is_not_learned_as_a_permanent_noise_floor(self) -> None:
+        router = StereoRouter("auto", 0.3)
+        lock_left(router)
+        for _ in range(100):
+            router.process(np.array([0.95, 0.72, 0.60]))
+        for _ in range(40):
+            router.process(np.array([0.01, 0.72, 0.50]))
+        self.assertEqual(router.selected, "right")
+
+    def test_strong_speech_can_override_a_stale_high_baseline(self) -> None:
+        router = StereoRouter("auto", 0.3)
+        lock_left(router)
+        router.noise_baseline[1] = 0.8
+        router.noise_baseline_ready[1] = True
+        for _ in range(40):
+            router.process(np.array([0.01, 0.72, 0.50]))
+        self.assertEqual(router.selected, "right")
+
+    def test_mix_can_release_even_while_it_still_contains_speech(self) -> None:
+        router = StereoRouter("auto", 0.3)
+        for _ in range(20):
+            router.process(np.array([0.9, 0.9, 0.95]))
+        self.assertEqual(router.selected, "mix")
+        for _ in range(30):
+            router.process(np.array([0.1, 0.95, 0.94]))
+        self.assertEqual(router.selected, "right")
+
+    def test_mix_can_release_when_equal_ears_cancel_in_the_downmix(self) -> None:
+        router = StereoRouter("auto", 0.3)
+        for _ in range(20):
+            router.process(np.array([0.9, 0.9, 0.95]))
+        for _ in range(30):
+            router.process(np.array([0.9, 0.9, 0.02]))
+        self.assertIn(router.selected, {"left", "right"})
+
+    def test_alternating_one_frame_spikes_do_not_steal_lock(self) -> None:
+        router = StereoRouter("auto", 0.3)
+        lock_left(router)
+        for index in range(100):
+            router.process(np.array([0.4, 0.98 if index % 2 else 0.02, 0.3]))
+        self.assertEqual(router.selected, "left")
+
+    def test_nan_frame_does_not_poison_future_routing(self) -> None:
+        router = StereoRouter("auto", 0.3)
+        router.process(np.array([np.nan, np.nan, np.nan]))
+        lock_left(router)
+
     def test_silence_never_releases_the_locked_channel(self) -> None:
         router = StereoRouter("auto", 0.3)
         lock_left(router)
@@ -117,6 +181,16 @@ class StereoRouterTests(unittest.TestCase):
 
 
 class AcousticEvidenceTests(unittest.TestCase):
+    def test_steady_tonal_evidence_is_not_rejected_only_for_flat_volume(self) -> None:
+        tracker = AcousticEvidenceTracker()
+        t = np.arange(1600, dtype=np.float32) / 16000.0
+        signal = np.sin(2 * np.pi * 180 * t).astype(np.float32) * 0.08
+        for _ in range(40):
+            evidence = tracker.process(np.stack((signal, signal, signal)), np.full(3, 0.95))
+        # This tests the acoustic weighting with a controlled VAD input, not
+        # whether a real VAD would classify the synthetic tone as speech.
+        self.assertGreater(evidence[0], StereoRouter("auto", 0.3).threshold)
+
     def test_stationary_white_noise_scores_below_modulated_voice_like_audio(self) -> None:
         tracker = AcousticEvidenceTracker()
         rng = np.random.default_rng(7)
@@ -166,18 +240,41 @@ class DependencyProbeTests(unittest.TestCase):
 
 
 class WorkerRoutingTests(unittest.TestCase):
-    def test_handoff_crossfades_recent_stereo_chunks(self) -> None:
+    def test_handoff_includes_smoothing_delay_but_preserves_previous_word(self) -> None:
+        router = StereoRouter("auto", 0.3)
+        scores = [np.array([.9, .1, .4])] * 4 + [np.array([.4, .95, .65])] * 12
+        span = router.handoff_span(scores, "left", "right")
+        self.assertEqual(span, 12)
         worker = Worker()
-        stereo = np.column_stack((np.ones(4, dtype=np.float32), np.zeros(4, dtype=np.float32)))
+        old = np.column_stack((np.ones(1600, dtype=np.float32), np.zeros(1600, dtype=np.float32)))
+        new = np.column_stack((np.zeros(1600, dtype=np.float32), np.full(1600, .8, dtype=np.float32)))
+        worker.utterance = [StereoChunk(old.copy(), (1., 0.)) for _ in range(4)]
+        worker.utterance += [StereoChunk(new.copy(), (1., 0.)) for _ in range(11)]
+        worker.apply_channel_handoff("left", "right", span - 1)
+        audio, _, _ = worker.snapshot()
+        np.testing.assert_array_equal(audio[:6400], np.ones(6400, dtype=np.float32))
+        np.testing.assert_allclose(audio[6880:], .8)
+
+    def test_zero_history_handoff_does_not_rewrite_the_entire_utterance(self) -> None:
+        worker = Worker()
+        worker.utterance = [StereoChunk(np.ones((1600, 2), dtype=np.float32), (1., 0.))]
+        worker.apply_channel_handoff("left", "right", 0)
+        self.assertEqual(worker.utterance[0].weights, (1., 0.))
+
+    def test_handoff_restores_new_ear_onset_with_only_a_30ms_crossfade(self) -> None:
+        worker = Worker()
+        stereo = np.column_stack((np.zeros(1600, dtype=np.float32), np.ones(1600, dtype=np.float32)))
         worker.utterance = [
             StereoChunk(stereo.copy(), StereoRouter.weights("left"))
             for _ in range(3)
         ]
 
         worker.apply_channel_handoff("left", "right", 3)
-        left_weights = [chunk.weights[0] for chunk in worker.utterance]
-        self.assertGreater(left_weights[0], left_weights[1])
-        self.assertGreater(left_weights[1], left_weights[2])
+        audio, _, _ = worker.snapshot()
+        self.assertEqual(audio[0], 0.0)
+        self.assertGreater(audio[240], 0.49)
+        np.testing.assert_array_equal(audio[480:], np.ones(4320, dtype=np.float32))
+        np.testing.assert_array_equal(worker.utterance[0].frame, stereo)
 
     def test_snapshot_renders_only_the_selected_mono_route(self) -> None:
         worker = Worker()

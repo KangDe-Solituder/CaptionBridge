@@ -54,14 +54,15 @@ CUDNN_RUNTIME_FILES = (
 class StereoChunk:
     frame: np.ndarray
     weights: tuple[float, float]
+    fade_from: tuple[float, float] | None = None
 
 
 class StereoRouter:
     """Sticky ASMR voice-channel latch.
 
     Silence never releases a selected channel. A handoff needs sustained,
-    positive speech evidence on another route and a rise above the noise
-    baseline learned while the selected speaker was active.
+    positive speech evidence on another route. Noise baselines are advisory:
+    they must never permanently veto sustained, high-confidence speech.
     """
 
     PRESETS = {
@@ -70,6 +71,9 @@ class StereoRouter:
         "responsive": (4, 5, 0.12, 0.08),
     }
     CENTER_MARGIN = 0.10
+    STRONG_SPEECH = 0.65
+    COOLDOWN_FRAMES = 8  # 800 ms after a handoff
+    BASELINE_MAX_AGE = 50  # five seconds without a valid noise observation
 
     def __init__(self, mode: str, threshold: float, sensitivity: str = "standard") -> None:
         self.mode = mode if mode in {"auto", "mix", "left", "right"} else "auto"
@@ -83,6 +87,9 @@ class StereoRouter:
         self.smoothed = np.zeros(3, dtype=np.float32)
         self.noise_baseline = np.zeros(3, dtype=np.float32)
         self.noise_baseline_ready = np.zeros(3, dtype=np.bool_)
+        self.noise_baseline_age = np.zeros(3, dtype=np.int32)
+        self.frames_since_handoff = self.COOLDOWN_FRAMES
+        self.recent_scores = deque(maxlen=4)
         self.selected: str | None = None
         self.candidate: str | None = None
         self.candidate_frames = 0
@@ -101,10 +108,40 @@ class StereoRouter:
             return "mix"
         return "left" if left > right else "right"
 
+    def handoff_span(self, history: list[np.ndarray], previous: str, selected: str) -> int:
+        """Locate the new ear's onset, including smoothing/confirmation delay.
+
+        Keep one short gap inside speech, but stop before earlier old-ear
+        speech. Counts include the current frame, which is not in utterance yet.
+        """
+        span = 0
+        gap = 0
+        for distance, scores in enumerate(reversed(history), start=1):
+            score = self._route_score(selected, scores)
+            reference = 0.0 if previous == "searching" else self._route_score(previous, scores)
+            if previous == "mix" and selected in {"left", "right"}:
+                reference = min(reference, self._route_score(
+                    "right" if selected == "left" else "left", scores,
+                ))
+            valid = score >= self.threshold and (
+                previous == "searching" or score - reference >= self.switch_margin * 0.5
+            )
+            if valid:
+                span = distance
+                gap = 0
+            else:
+                gap += 1
+                if gap > 1:
+                    break
+        return max(1, span)
+
     def reset(self) -> None:
         self.smoothed.fill(0.0)
         self.noise_baseline.fill(0.0)
         self.noise_baseline_ready.fill(False)
+        self.noise_baseline_age.fill(0)
+        self.frames_since_handoff = self.COOLDOWN_FRAMES
+        self.recent_scores.clear()
         self.selected = None
         self.candidate = None
         self.candidate_frames = 0
@@ -132,14 +169,19 @@ class StereoRouter:
         self.candidate_frames = 0
 
     def _learn_noise_baseline(self, scores: np.ndarray) -> None:
-        if self.selected is None:
+        if self.selected is None or self.selected == "mix":
             return
         selected_index = {"left": 0, "right": 1, "mix": 2}[self.selected]
         if float(scores[selected_index]) < self.threshold:
             return
         for index in range(3):
-            if index == selected_index:
+            # A mixed signal contains the selected voice; a strong alternate
+            # signal may be cross-talk or another speaker, never a noise floor.
+            if index == selected_index or index == 2 or scores[index] >= self.STRONG_SPEECH:
                 continue
+            if self.candidate == ("left", "right", "mix")[index]:
+                continue
+            self.noise_baseline_age[index] = 0
             if self.noise_baseline_ready[index]:
                 self.noise_baseline[index] += 0.08 * (
                     scores[index] - self.noise_baseline[index]
@@ -149,22 +191,34 @@ class StereoRouter:
                 self.noise_baseline_ready[index] = True
 
     def process(self, probabilities: np.ndarray) -> tuple[str, float, tuple[str, str, int] | None]:
-        probabilities = np.asarray(probabilities, dtype=np.float32)
+        probabilities = np.clip(
+            np.nan_to_num(np.asarray(probabilities, dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0),
+            0.0, 1.0,
+        )
+        self.frames_since_handoff = min(self.frames_since_handoff + 1, self.COOLDOWN_FRAMES)
+        self.noise_baseline_age = np.minimum(self.noise_baseline_age + 1, self.BASELINE_MAX_AGE)
         rising = probabilities > self.smoothed
         alpha = np.where(rising, 0.48, 0.18)
         self.smoothed = self.smoothed + alpha * (probabilities - self.smoothed)
+        self.recent_scores.append(probabilities.copy())
 
         if self.mode != "auto":
             route = self.mode
             return route, self._route_score(route, probabilities), None
 
         desired = self._desired_route()
+        # Asymmetric smoothing can inflate alternating noise peaks. Require
+        # actual evidence in 3/4 recent frames, allowing a short speech gap.
+        sustained = len(self.recent_scores) == 4 and sum(
+            self._route_score(desired, scores) >= self.threshold for scores in self.recent_scores
+        ) >= 3
         handoff = None
         if self.selected is None:
             desired_score = self._route_score(desired, self.smoothed)
-            if desired_score >= self.threshold:
+            if desired_score >= self.threshold and sustained:
                 if self._advance_candidate(desired, self.initial_confirm_frames):
                     self.selected = desired
+                    self.frames_since_handoff = 0
                     handoff = ("searching", desired, self.candidate_frames)
                     self._cancel_candidate()
             else:
@@ -173,21 +227,38 @@ class StereoRouter:
             current_score = self._route_score(self.selected, self.smoothed)
             desired_score = self._route_score(desired, self.smoothed)
             desired_index = {"left": 0, "right": 1, "mix": 2}[desired]
+            # Leaving mix is a comparison between the two ears. The mixed
+            # route can still have a high VAD score while including noisy audio.
+            reference_score = current_score
+            if self.selected == "mix" and desired in {"left", "right"}:
+                reference_score = min(current_score, self._route_score(
+                    "right" if desired == "left" else "left", self.smoothed,
+                ))
+            advantage = desired_score - reference_score
             noise_rise = (
                 not self.noise_baseline_ready[desired_index]
                 or desired_score - float(self.noise_baseline[desired_index])
                 >= self.noise_rise_margin
             )
+            strong_speech = desired_score >= self.STRONG_SPEECH
+            stale_baseline = self.noise_baseline_age[desired_index] >= self.BASELINE_MAX_AGE
+            # An old/high baseline increases confirmation time, not an
+            # indefinite veto. Moderate stationary noise still cannot take over.
+            required_frames = self.switch_confirm_frames
+            if not noise_rise and strong_speech and not stale_baseline:
+                required_frames *= 2
             should_switch = (
                 desired_score >= self.threshold
-                and current_score < self.threshold * 0.85
-                and desired_score - current_score >= self.switch_margin
-                and noise_rise
+                and advantage >= self.switch_margin
+                and (noise_rise or strong_speech)
+                and sustained
+                and self.frames_since_handoff >= self.COOLDOWN_FRAMES
             )
             if should_switch:
-                if self._advance_candidate(desired, self.switch_confirm_frames):
+                if self._advance_candidate(desired, required_frames):
                     previous = self.selected
                     self.selected = desired
+                    self.frames_since_handoff = 0
                     handoff = (previous, desired, self.candidate_frames)
                     self._cancel_candidate()
             else:
@@ -237,8 +308,8 @@ class AcousticEvidenceTracker:
             average_flatness = float(np.mean(self.flatness[index]))
             flatness_penalty = float(np.clip((average_flatness - 0.18) / 0.55, 0.0, 1.0))
             speech_shape = float(np.clip(
-                0.42 + 0.58 * dynamics - 0.18 * flatness_penalty,
-                0.24,
+                0.58 + 0.42 * dynamics - 0.28 * flatness_penalty,
+                0.30,
                 1.0,
             ))
             evidence[index] = float(vad_probabilities[index]) * speech_shape
@@ -547,7 +618,7 @@ class Worker:
             else None
         )
         evidence_tracker = AcousticEvidenceTracker() if channels == 2 else None
-        route_history = deque(maxlen=24)
+        route_history = deque(maxlen=48)
         last_router_status: str | None = None
         # SoundCard performs shared-mode WASAPI conversion to 16 kHz.
         with loopback.recorder(samplerate=16000, channels=channels, blocksize=1600) as recorder:
@@ -605,11 +676,14 @@ class Worker:
                     last_router_status = router.status
 
                 if handoff is not None:
-                    previous, selected, frame_count = handoff
+                    previous, selected, _ = handoff
+                    history_span = router.handoff_span(
+                        [scores for _, scores, _ in route_history], previous, selected,
+                    )
                     replayed = False
                     if previous == "searching" or not self.utterance:
                         self.clear_utterance()
-                        replay_count = max(frame_count + 3, 10)
+                        replay_count = max(history_span + 3, 10)
                         for historic_stereo, historic_scores, historic_now in list(route_history)[-replay_count:]:
                             selected_probability = StereoRouter._route_score(selected, historic_scores)
                             self.accept_audio_frame(
@@ -619,7 +693,7 @@ class Worker:
                             )
                         replayed = True
                     else:
-                        self.apply_channel_handoff(previous, selected, frame_count)
+                        self.apply_channel_handoff(previous, selected, history_span - 1)
                     print(f"ASMR channel handoff: {previous} -> {selected}", file=sys.stderr, flush=True)
                     if replayed:
                         continue
@@ -658,24 +732,34 @@ class Worker:
             self.commit(final=True)
 
     def apply_channel_handoff(self, previous: str, selected: str, frame_count: int) -> None:
+        if frame_count <= 0:
+            return
         stereo_chunks = [
             chunk for chunk in self.utterance[-frame_count:] if isinstance(chunk, StereoChunk)
         ]
         if not stereo_chunks:
             return
-        previous_weights = np.asarray(StereoRouter.weights(previous), dtype=np.float32)
-        selected_weights = np.asarray(StereoRouter.weights(selected), dtype=np.float32)
-        for index, chunk in enumerate(stereo_chunks, start=1):
-            alpha = index / (len(stereo_chunks) + 1)
-            weights = previous_weights * (1.0 - alpha) + selected_weights * alpha
-            chunk.weights = (float(weights[0]), float(weights[1]))
+        # Restore the new ear throughout the confirmation buffer. A 30 ms
+        # sample-level transition is sufficient; fading over 0.5-1.4 seconds
+        # attenuated the new speaker's first syllables.
+        for chunk in stereo_chunks:
+            chunk.weights = StereoRouter.weights(selected)
+            chunk.fade_from = None
+        stereo_chunks[0].fade_from = StereoRouter.weights(previous)
 
     def snapshot(self) -> tuple[np.ndarray, int, int]:
         chunks = []
         for chunk in self.utterance:
             if isinstance(chunk, StereoChunk):
                 left, right = chunk.weights
-                chunks.append(chunk.frame[:, 0] * left + chunk.frame[:, 1] * right)
+                rendered = chunk.frame[:, 0] * left + chunk.frame[:, 1] * right
+                if chunk.fade_from is not None:
+                    count = min(480, len(rendered))  # 30 ms at 16 kHz
+                    alpha = np.linspace(0.0, 1.0, count, dtype=np.float32)
+                    previous_left, previous_right = chunk.fade_from
+                    previous = chunk.frame[:count, 0] * previous_left + chunk.frame[:count, 1] * previous_right
+                    rendered[:count] = previous * (1.0 - alpha) + rendered[:count] * alpha
+                chunks.append(rendered)
             else:
                 chunks.append(chunk)
         audio = np.concatenate(chunks) if chunks else np.empty(0, dtype=np.float32)

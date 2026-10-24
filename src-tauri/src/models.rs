@@ -405,6 +405,8 @@ pub enum BlurScope {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualSettings {
+    #[serde(default)]
+    pub accent: AccentStyle,
     pub theme: ThemeMode,
     pub blur_enabled: bool,
     pub blur_scope: BlurScope,
@@ -415,11 +417,21 @@ impl Default for VisualSettings {
     fn default() -> Self {
         Self {
             theme: ThemeMode::System,
+            accent: AccentStyle::Purple,
             blur_enabled: true,
             blur_scope: BlurScope::Floating,
             reduce_motion: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccentStyle {
+    #[default]
+    Purple,
+    Green,
+    Blue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -792,4 +804,24 @@ pub struct CorrectionProgressEvent {
     pub completed: usize,
     pub total: usize,
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod visual_compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn existing_visual_settings_keep_the_classic_accent() {
+        let visual: VisualSettings = serde_json::from_str(
+            r#"{"theme":"dark","blur_enabled":true,"blur_scope":"floating","reduce_motion":false}"#,
+        )
+        .unwrap();
+        assert_eq!(visual.accent, AccentStyle::Purple);
+        let mut visual = visual;
+        visual.accent = AccentStyle::Green;
+        let stored = serde_json::to_string(&visual).unwrap();
+        let restored: VisualSettings = serde_json::from_str(&stored).unwrap();
+        assert_eq!(restored.accent, AccentStyle::Green);
+        assert!(matches!(restored.theme, ThemeMode::Dark));
+    }
 }

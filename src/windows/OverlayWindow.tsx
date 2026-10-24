@@ -38,6 +38,7 @@ export function OverlayWindow() {
       listen<CaptionTranslatedEvent>("caption:translated", e => setItems(v => [...v, e.payload].slice(-12))),
       listen<CaptionSourceHealth>("caption:health-changed", e => setHealth(e.payload)),
       listen<SettingsView>("settings:changed", e => setSettings(e.payload.settings)),
+      listen<AppSettings["visual"]["theme"]>("settings:theme-changed", e => setSettings(current => current ? { ...current, visual: { ...current.visual, theme: e.payload } } : current)),
     ];
     const moved = currentWindow.onMoved(e => {
       if (positionTimer.current) clearTimeout(positionTimer.current);

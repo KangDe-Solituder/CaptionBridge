@@ -19,13 +19,10 @@
 }
 .logo {
   display: grid; width: 46px; height: 46px; place-items: center; margin-bottom: 8px;
-  border-radius: 14px; color: #fff; position: relative;
-  background: linear-gradient(150deg, var(--accent) 10%, #8b6ef6 55%, var(--coral) 130%);
-  box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 32%, transparent),
-              inset 0 1px 0 rgba(255, 255, 255, .28);
+  color: #6d5ae0; position: relative;
 }
-.logo svg { width: 30px; height: 30px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
-.logo svg path:first-child { fill: rgba(255, 255, 255, .16); }
+:root[data-theme="dark"] .logo { color: #a78bfa; }
+.logo-mark { display: block; width: 46px; height: 46px; background: currentColor; mask: url("../assets/app-icon.svg") center / contain no-repeat; }
 .rail nav { display: grid; gap: 6px; width: 100%; }
 .rail-button {
   position: relative; display: grid; gap: 4px; place-items: center; justify-items: center;

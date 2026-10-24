@@ -7,6 +7,7 @@ import "./styles/main-window.css";
 import "./styles/overlay.css";
 import "./styles/toolbar.css";
 import "./styles/motion.css";
+import "./styles/workbench.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

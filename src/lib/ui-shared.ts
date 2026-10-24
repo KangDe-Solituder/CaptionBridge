@@ -24,6 +24,7 @@ export function useTheme(settings?: AppSettings) {
       const resolved = settings.visual.theme === "system" ? (media.matches ? "dark" : "light") : settings.visual.theme;
       localStorage.setItem("livecaption-theme", settings.visual.theme);
       document.documentElement.dataset.theme = resolved;
+      document.documentElement.dataset.accent = settings.visual.accent ?? "purple";
       document.documentElement.dataset.blur = String(settings.visual.blur_enabled);
       document.documentElement.dataset.motion = settings.visual.reduce_motion ? "reduced" : "full";
     };

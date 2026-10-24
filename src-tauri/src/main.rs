@@ -197,6 +197,22 @@ async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String
 }
 
 #[tauri::command]
+async fn set_theme(
+    theme: models::ThemeMode,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut current = state.settings.write().map_err(|e| e.to_string())?;
+    let mut next = current.clone();
+    next.visual.theme = theme.clone();
+    settings::save(&state.paths, &next)?;
+    *current = next;
+    // A theme-only event preserves unsaved form edits and active translations.
+    let _ = app.emit("settings:theme-changed", &theme);
+    Ok(())
+}
+
+#[tauri::command]
 async fn save_settings(
     mut request: SettingsSaveRequest,
     app: AppHandle,
@@ -224,6 +240,7 @@ async fn save_settings(
 
         settings::save(&state.paths, &request.settings)?;
         *current = request.settings.clone();
+        state.toolbar.apply_bindings(&current.ocr);
         state.log("info", "设置已保存");
         let view = SettingsView {
             settings: request.settings,
@@ -1399,6 +1416,7 @@ fn run_app() {
             ocr::retry_ocr_translation,
             ocr::open_ocr_resources,
             get_settings,
+            set_theme,
             save_settings,
             hide_selection_toolbar,
             llm_profiles::save_llm_profile,

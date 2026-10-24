@@ -9,7 +9,7 @@ use std::{
     mem::size_of,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering},
-        mpsc::{sync_channel, SyncSender},
+        mpsc::{channel, Sender},
         Arc, Condvar, Mutex, OnceLock, RwLock,
     },
     thread,
@@ -70,6 +70,17 @@ pub struct Service {
     ready: Condvar,
 }
 impl Service {
+    pub fn apply_bindings(&self, config: &crate::models::OcrSettings) {
+        let report = self.capabilities.read().unwrap_or_else(|e| e.into_inner());
+        let actions = if self.stopped.load(Ordering::SeqCst) {
+            [0, 0]
+        } else {
+            configured_actions(config, &report)
+        };
+        for (slot, action) in self.actions.iter().zip(actions) {
+            slot.store(action, Ordering::SeqCst);
+        }
+    }
     pub fn shutdown(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         for action in &self.actions {
@@ -414,8 +425,30 @@ fn own_foreground(app: &AppHandle) -> bool {
 
 struct HookContext {
     service: Arc<Service>,
-    sender: SyncSender<u8>,
+    sender: Sender<u8>,
     pressed: [AtomicU8; 2],
+}
+impl HookContext {
+    fn button(&self, index: usize, down: bool) -> bool {
+        if self.service.stopped.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut pressed = self.pressed[index].load(Ordering::Relaxed);
+        let (consume, action) = button_event(
+            &mut pressed,
+            self.service.actions[index].load(Ordering::Relaxed),
+            down,
+        );
+        self.pressed[index].store(pressed, Ordering::Relaxed);
+        if let Some(action) = action {
+            // This channel never waits for capacity. Real, non-injected clicks
+            // are queued even while the UI is busy; no four-click overflow.
+            if self.sender.send(action).is_err() {
+                self.service.shutdown();
+            }
+        }
+        consume
+    }
 }
 static HOOK: OnceLock<HookContext> = OnceLock::new();
 fn action_code(action: MouseAction) -> u8 {
@@ -446,12 +479,23 @@ fn install_mouse_hook() -> windows::core::Result<HHOOK> {
         SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), HINSTANCE(module.0), 0)
     }
 }
+fn renew_mouse_hook(hook: &mut Option<HHOOK>) -> windows::core::Result<()> {
+    // Install first, then remove the previous handle on this same message
+    // thread. Shared pressed state survives renewal, including mid-click.
+    let replacement = install_mouse_hook()?;
+    if let Some(previous) = hook.replace(replacement) {
+        unsafe {
+            let _ = UnhookWindowsHookEx(previous);
+        }
+    }
+    Ok(())
+}
 // Paired decisions ensure rebinding or disconnecting mid-click never leaks an unmatched up event.
 fn button_event(pressed: &mut u8, configured: u8, down: bool) -> (bool, Option<u8>) {
     if down {
-        if *pressed == 0 {
-            *pressed = configured;
-        }
+        // A new physical down starts a fresh pair even if an up was missed
+        // while Windows had silently removed the old hook.
+        *pressed = configured;
         (*pressed != 0, None)
     } else {
         let previous = std::mem::take(pressed);
@@ -466,28 +510,16 @@ unsafe extern "system" fn mouse_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT
             if (1..=2).contains(&button)
                 && event.flags & 1 == 0
                 && !context.service.stopped.load(Ordering::Relaxed)
+                && context.button(button - 1, w.0 as u32 == WM_XBUTTONDOWN)
             {
-                let idx = button - 1;
-                let mut pressed = context.pressed[idx].load(Ordering::Relaxed);
-                let (consume, action) = button_event(
-                    &mut pressed,
-                    context.service.actions[idx].load(Ordering::Relaxed),
-                    w.0 as u32 == WM_XBUTTONDOWN,
-                );
-                context.pressed[idx].store(pressed, Ordering::Relaxed);
-                if let Some(action) = action {
-                    let _ = context.sender.try_send(action);
-                }
-                if consume {
-                    return LRESULT(1);
-                }
+                return LRESULT(1);
             }
         }
     }
     CallNextHookEx(None, code, w, l)
 }
 pub fn start(app: AppHandle, state: AppState) {
-    let (sender, receiver) = sync_channel(4);
+    let (sender, receiver) = channel();
     let service = state.toolbar.clone();
     if HOOK
         .set(HookContext {
@@ -506,35 +538,67 @@ pub fn start(app: AppHandle, state: AppState) {
         service
             .hook_thread
             .store(GetCurrentThreadId(), Ordering::SeqCst);
-        match install_mouse_hook() {
-            Ok(hook) => {
-                service
+        *service
+            .capabilities
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = detect_mouse();
+        let mut hook = None;
+        let mut refresh = || {
+            let result = renew_mouse_hook(&mut hook);
+            {
+                let mut report = service
                     .capabilities
                     .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .hook_ready = true;
-                while !service.stopped.load(Ordering::SeqCst)
-                    && GetMessageW(&mut msg, None, 0, 0).0 > 0
-                {
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
-                }
-                let _ = UnhookWindowsHookEx(hook);
-                service
-                    .capabilities
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .hook_ready = false;
+                    .unwrap_or_else(|e| e.into_inner());
+                report.hook_ready = result.is_ok();
+                report.error = result
+                    .err()
+                    .map(|e| format!("侧键监听失败，将自动重试：{e}"));
             }
-            Err(e) => {
-                hook_state.log("error", format!("鼠标侧键监听不可用：{e}"));
+            // Never wait for a settings write on the input hook thread.
+            if let Ok(settings) = hook_state.settings.try_read() {
+                service.apply_bindings(&settings.ocr);
             }
+        };
+        refresh();
+        // Windows does not report timeout-removal of low-level hooks. Renew
+        // periodically without injecting mouse input or dropping a click pair.
+        let timer = SetTimer(None, 0, 5_000, None);
+        if timer == 0 {
+            hook_state.log("error", "无法创建侧键监听恢复计时器，请重启应用");
+        }
+        while !service.stopped.load(Ordering::SeqCst) && GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+            if timer != 0 && msg.message == WM_TIMER && msg.wParam.0 == timer {
+                refresh();
+            } else {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        if timer != 0 {
+            let _ = KillTimer(None, timer);
+        }
+        if let Some(hook) = hook {
+            let _ = UnhookWindowsHookEx(hook);
+        }
+        service
+            .capabilities
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .hook_ready = false;
+        for action in &service.actions {
+            action.store(0, Ordering::SeqCst);
         }
     });
     let action_app = app.clone();
     let action_state = state.clone();
     thread::spawn(move || {
-        while let Ok(action) = receiver.recv() {
+        while !action_state.toolbar.stopped.load(Ordering::SeqCst) {
+            let action = match receiver.recv_timeout(Duration::from_millis(250)) {
+                Ok(action) => action,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            };
             if action_state.toolbar.stopped.load(Ordering::SeqCst) {
                 break;
             }
@@ -615,6 +679,9 @@ pub fn start(app: AppHandle, state: AppState) {
                     .write()
                     .unwrap_or_else(|e| e.into_inner());
                 report.hook_ready = current.hook_ready;
+                if !current.hook_ready && current.error.is_some() {
+                    report.error = current.error.clone();
+                }
                 if *current != report {
                     *current = report.clone();
                     let _ = app.emit("mouse:capabilities", report);
@@ -622,16 +689,8 @@ pub fn start(app: AppHandle, state: AppState) {
             }
             if let Ok(settings) = state.settings.try_read() {
                 let config = &settings.ocr;
-                let report = state
-                    .toolbar
-                    .capabilities
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner());
-                for (index, action) in configured_actions(config, &report).into_iter().enumerate() {
-                    state.toolbar.actions[index].store(action, Ordering::SeqCst);
-                }
+                state.toolbar.apply_bindings(config);
                 let resident = config.resident_toolbar;
-                drop(report);
                 drop(settings);
                 if state.ocr.capturing.load(Ordering::SeqCst) {
                     if state.toolbar.mode() != Mode::Hidden {
@@ -662,6 +721,76 @@ pub fn start(app: AppHandle, state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn bound_context() -> (HookContext, std::sync::mpsc::Receiver<u8>) {
+        let (sender, receiver) = channel();
+        let service = Arc::new(Service::default());
+        *service.capabilities.write().unwrap() = MouseCapabilities {
+            detected: true,
+            buttons: 5,
+            hook_ready: true,
+            error: None,
+        };
+        service.apply_bindings(&crate::models::OcrSettings {
+            mouse_shortcuts: true,
+            mouse_button_1: MouseAction::Toolbar,
+            mouse_button_2: MouseAction::Capture,
+            ..Default::default()
+        });
+        (
+            HookContext {
+                service,
+                sender,
+                pressed: Default::default(),
+            },
+            receiver,
+        )
+    }
+    #[test]
+    fn rapid_bound_clicks_are_consumed_and_dispatched_without_queue_loss() {
+        let (context, receiver) = bound_context();
+        for index in 0..128 {
+            assert!(context.button(index % 2, true));
+            assert!(context.button(index % 2, false));
+        }
+        assert_eq!(
+            receiver.try_iter().collect::<Vec<_>>(),
+            (0..128)
+                .map(|index| 1 + (index % 2) as u8)
+                .collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn saved_binding_applies_immediately_without_changing_an_inflight_pair() {
+        let (context, receiver) = bound_context();
+        assert!(context.button(0, true));
+        context
+            .service
+            .apply_bindings(&crate::models::OcrSettings::default());
+        assert!(context.button(0, false));
+        assert_eq!(receiver.try_recv().unwrap(), 1);
+        assert!(!context.button(0, true));
+        assert!(!context.button(0, false));
+        assert!(receiver.try_recv().is_err());
+    }
+    #[test]
+    fn shutdown_immediately_restores_pass_through_and_cannot_be_reenabled() {
+        let (context, receiver) = bound_context();
+        context.service.shutdown();
+        context.service.apply_bindings(&crate::models::OcrSettings {
+            mouse_shortcuts: true,
+            mouse_button_1: MouseAction::Toolbar,
+            ..Default::default()
+        });
+        assert!(!context.button(0, true));
+        assert!(!context.button(0, false));
+        assert!(receiver.try_recv().is_err());
+    }
+    #[test]
+    fn a_new_down_recovers_from_an_up_missed_during_hook_removal() {
+        let mut pressed = 1;
+        assert_eq!(button_event(&mut pressed, 2, true), (true, None));
+        assert_eq!(button_event(&mut pressed, 0, false), (true, Some(2)));
+    }
     #[test]
     fn compact_size_tracks_enabled_buttons_including_captions() {
         let mut settings = AppSettings::default();
@@ -779,9 +908,22 @@ mod tests {
             report.detected, report.buttons
         );
         // No HookContext is installed in this test, so all input passes through.
-        let hook = install_mouse_hook().expect("install mouse hook");
+        let mut hook = None;
+        renew_mouse_hook(&mut hook).expect("install mouse hook");
         unsafe {
-            UnhookWindowsHookEx(hook).expect("release mouse hook");
+            let timer = SetTimer(None, 0, 10, None);
+            assert_ne!(timer, 0, "create renewal timer");
+            let mut message = MSG::default();
+            while GetMessageW(&mut message, None, 0, 0).0 > 0 {
+                if message.message == WM_TIMER && message.wParam.0 == timer {
+                    renew_mouse_hook(&mut hook).expect("renew mouse hook without a gap");
+                    break;
+                }
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            KillTimer(None, timer).expect("release renewal timer");
+            UnhookWindowsHookEx(hook.unwrap()).expect("release mouse hook");
         }
     }
 }

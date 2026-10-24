@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, AsrDependencyReport, CaptionSourceConfig, Glossary, GlossaryImportResult, ModelInfo, RuntimeLogEntry, RuntimeStatus, SessionPageView, SessionSummary, SettingsView, TranslationRequest, TranslationResult } from "./contracts";
 
 export const getSettings = () => invoke<SettingsView>("get_settings");
+export const setTheme = (theme: AppSettings["visual"]["theme"]) => invoke<void>("set_theme", { theme });
 export const saveSettings = (settings: AppSettings) =>
   invoke<SettingsView>("save_settings", { request: { settings } });
 export const hideSelectionToolbar = () => invoke<void>("hide_selection_toolbar");

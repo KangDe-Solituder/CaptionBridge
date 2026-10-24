@@ -37,7 +37,7 @@ export function ToolbarSettings({ settings, onChange }: { settings: AppSettings;
     [order[index], order[index + direction]] = [order[index + direction], order[index]];
     onChange({ ...settings, toolbar_order: order });
   };
-  const status = mouse.error ?? (!mouse.detected ? "未检测到鼠标 · 接入带侧键的鼠标后可配置" : mouse.buttons < 4 ? "当前鼠标没有可用侧键" : !mouse.hook_ready ? "侧键监听不可用，请重新启动应用" : `已检测到 ${mouse.buttons} 键鼠标`);
+  const status = mouse.error ?? (!mouse.detected ? "未检测到鼠标 · 接入带侧键的鼠标后可配置" : mouse.buttons < 4 ? "当前鼠标没有可用侧键" : !mouse.hook_ready ? "侧键监听暂不可用，正在自动恢复" : `已检测到 ${mouse.buttons} 键鼠标`);
   return <div className="ocr-toolbar-settings">
     <div className="setting-row"><div><strong>常驻工具栏</strong><p>保持在桌面右下角、任务栏上方。完成操作后回到停靠位置。</p></div><label className="ocr-entry-switch"><input type="checkbox" aria-label="常驻工具栏" checked={value.resident_toolbar} onChange={e => patch({ resident_toolbar: e.target.checked })} /><span /></label></div>
     <div className="setting-row"><div><strong>鼠标侧键唤出</strong><p>{status}</p></div><label className="ocr-entry-switch"><input type="checkbox" aria-label="鼠标侧键唤出" disabled={!supported} checked={value.mouse_shortcuts} onChange={e => patch({ mouse_shortcuts: e.target.checked })} /><span /></label></div>

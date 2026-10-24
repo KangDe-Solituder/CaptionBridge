@@ -34,6 +34,7 @@ export interface OverlaySettings {
   transparent: boolean; caption_color: string; drag_mode: "alt" | "anywhere" | "handle";
 }
 export interface VisualSettings {
+  accent?: "purple" | "green" | "blue";
   theme: "system" | "light" | "dark"; blur_enabled: boolean;
   blur_scope: "floating" | "all" | "off"; reduce_motion: boolean;
 }

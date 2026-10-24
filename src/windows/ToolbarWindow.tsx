@@ -61,6 +61,7 @@ export function ToolbarWindow() {
         if (e.payload.stream_id === activeRequest.current) setResult(v => ({ ...(v ?? emptyResult), translated_text: `${v?.translated_text ?? ""}${e.payload.text}` }));
       }),
       listen<SettingsView>("settings:changed", e => { setSettings(e.payload.settings); setResult(undefined); }),
+      listen<AppSettings["visual"]["theme"]>("settings:theme-changed", e => setSettings(current => current ? { ...current, visual: { ...current.visual, theme: e.payload } } : current)),
       listen<SettingsView>("llm:profiles-changed", e => { setSettings(e.payload.settings); }),
     ];
     return () => { alive = false; activeRequest.current = undefined; if (copiedTimer.current) clearTimeout(copiedTimer.current); ps.forEach(p => void p.then(u => u())); };

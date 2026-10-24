@@ -273,6 +273,7 @@ mod tests {
         expected.llm.model = "deepseek-v4-flash".to_string();
         expected.overlay.drag_mode = OverlayDragMode::Anywhere;
         expected.overlay.caption_color = "#c8a6ff".to_string();
+        expected.visual.theme = crate::models::ThemeMode::Light;
         expected.ocr.enabled = false;
         expected.ocr.source_language = "日本語".into();
         expected.ocr.target_language = "English".into();
@@ -284,6 +285,10 @@ mod tests {
         assert_eq!(actual.llm.model, expected.llm.model);
         assert_eq!(actual.overlay.drag_mode, OverlayDragMode::Anywhere);
         assert_eq!(actual.overlay.caption_color, "#c8a6ff");
+        assert!(matches!(
+            actual.visual.theme,
+            crate::models::ThemeMode::Light
+        ));
         assert!(!actual.ocr.enabled);
         assert_eq!(actual.ocr.source_language, "日本語");
         assert_eq!(actual.ocr.target_language, "English");
