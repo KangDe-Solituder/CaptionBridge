@@ -9,12 +9,14 @@
     "build": "tsc && vite build",
     "test:ui": "node --experimental-strip-types --experimental-test-isolation=none --test tests/*.test.mjs",
     "test:asr-worker": "python -m unittest discover -s src-tauri/worker -p \"test_*.py\"",
-    "quality": "pnpm test:ui && pnpm test:asr-worker && pnpm test:ocr-worker && pnpm build && cargo test --manifest-path src-tauri/Cargo.toml && cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "quality": "pnpm test:worker-build && pnpm test:ui && pnpm test:asr-worker && pnpm test:ocr-worker && pnpm build && cargo test --manifest-path src-tauri/Cargo.toml && cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "test:ocr-worker": "python -m unittest discover -s src-tauri/ocr-worker -p \"test_*.py\""
+    "test:ocr-worker": "python -m unittest discover -s src-tauri/ocr-worker -p \"test_*.py\"",
+    "workers:prepare": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File src-tauri/worker/before-tauri-build.ps1 -WorkersOnly",
+    "test:worker-build": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/worker-build.test.ps1"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",

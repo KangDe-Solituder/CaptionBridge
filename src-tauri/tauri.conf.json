@@ -4,7 +4,7 @@
   "version": "0.5.0",
   "identifier": "com.dimfi.livecaption",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File src-tauri\\worker\\before-tauri-build.ps1 -Dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File src-tauri\\worker\\before-tauri-build.ps1",
     "frontendDist": "../dist"

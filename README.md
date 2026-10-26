@@ -149,20 +149,27 @@ pnpm tauri build
 
 ### 构建本地 ASR worker
 
-两个本地模型 `Kotoba Whisper v2.0 Faster` 和 `Whisper large-v3-turbo` 都通过同一个 faster-whisper worker 运行，因此依赖相同。Windows Live Captions 来源本身不需要 Python、CUDA 或模型，但当前 Tauri 配置会把 worker 作为应用资源打包，所以执行 `pnpm tauri dev` 或 `pnpm tauri build` 前仍需生成一次 worker；仅运行 `pnpm build` 构建前端则不需要。
+两个本地模型 `Kotoba Whisper v2.0 Faster` 和 `Whisper large-v3-turbo` 都通过同一个 faster-whisper worker 运行，因此依赖相同。Windows Live Captions 来源本身不需要 Python、CUDA 或模型，但当前 Tauri 配置会把 worker 作为应用资源打包，所以执行 `pnpm tauri dev` 或 `pnpm tauri build` 时会自动检查并按需生成 ASR/OCR worker；仅运行 `pnpm build` 构建前端则不需要。
 
-worker 的 Python 依赖版本记录在 [`src-tauri/worker/requirements.lock.txt`](src-tauri/worker/requirements.lock.txt) 中，其中也固定了与 CTranslate2 4.6.0 兼容的 `setuptools` 版本。默认构建不会下载或复制大型 CUDA/cuDNN 运行库；应用首次检查 GPU 依赖时，会从 PyPI 获取固定版本的 Windows x64 wheel，校验 SHA-256 后只提取需要的 DLL 到 `%LOCALAPPDATA%\com.dimfi.livecaption\runtimes\cuda12-cudnn9`。自包含 GPU 构建仍可额外使用 [`src-tauri/worker/gpu-runtime-requirements.lock.txt`](src-tauri/worker/gpu-runtime-requirements.lock.txt)，但不再是常规发布路径。worker、虚拟环境、Rust `target` 和模型文件都不会提交到 Git，每台开发机需要单独生成。换句话说，`git pull` 会更新 worker 源码，但不会替换已经存在的本地 exe；worker 源码更新后应重新执行下面的构建命令。
+worker 的 Python 依赖版本记录在 [`src-tauri/worker/requirements.lock.txt`](src-tauri/worker/requirements.lock.txt) 中，其中也固定了与 CTranslate2 4.6.0 兼容的 `setuptools` 版本。默认构建不会下载或复制大型 CUDA/cuDNN 运行库；应用首次检查 GPU 依赖时，会从 PyPI 获取固定版本的 Windows x64 wheel，校验 SHA-256 后只提取需要的 DLL 到 `%LOCALAPPDATA%\com.dimfi.livecaption\runtimes\cuda12-cudnn9`。自包含 GPU 构建仍可额外使用 [`src-tauri/worker/gpu-runtime-requirements.lock.txt`](src-tauri/worker/gpu-runtime-requirements.lock.txt)，但不再是常规发布路径。worker、虚拟环境、Rust `target` 和模型文件都不会提交到 Git，每台开发机需要单独生成。`git pull` 只更新源码，本地 exe 由构建入口自动维护：有效产物直接复用，缺失、源码或构建脚本变化、协议/运行环境自检失败时重建一次；重建后仍不通过就停止，不会忽略校验或打包旧程序。
 
-先安装 Python 3.12 x64，然后执行：
+每台构建机先安装 Python 3.12 x64，然后在项目根目录执行（也可直接运行 `pnpm tauri build`）：
 
 ```powershell
-cd src-tauri\worker
+pnpm workers:prepare
+```
 
-$Python = "C:\Users\<你的用户名>\AppData\Local\Programs\Python\Python312\python.exe"
-& $Python -m venv .\.venv-build
-.\.venv-build\Scripts\python.exe -m pip install --upgrade pip
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build-worker.ps1 `
-  -Python $Python
+脚本优先复用本机可运行的 `.venv-build`（ASR 支持 Python 3.11/3.12 x64，OCR 要求 3.12 x64），无效或缺失时自动查找 Windows Python Launcher、当前用户默认 uv 安装目录、Python 标准用户安装目录和 PATH。不同电脑的解释器位置无需写进仓库。找不到时会提示安装 Python 3.12 x64，也可仅在当前终端指定：
+
+```powershell
+$env:LIVECAPTION_BUILD_PYTHON = "C:\path\to\Python312\python.exe"
+pnpm workers:prepare
+```
+
+该变量用于创建构建环境，已有有效虚拟环境会继续复用。手动重建单个 ASR worker 的入口仍然可用：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File src-tauri\worker\build-worker.ps1
 ```
 
 安装后的应用会优先从用户缓存目录、Worker 自身目录、系统 `PATH`、`CUDA_PATH`、标准 NVIDIA 安装目录，以及项目/用户 Python 虚拟环境的 `nvidia-cublas`、`nvidia-cudnn` 目录中查找 CUDA 12/cuDNN 9。可以在“设置 → 资源 → 本地 ASR 运行环境”点击“检查依赖”：新版 Worker 会逐个加载 CUDA 12 cuBLAS 和完整的 8 个 cuDNN 9 DLL，并把已发现的目录加入本次 Worker 的运行路径；如果已有模型，还会关闭 VAD 捷径并强制执行一次真实 Whisper GPU encoder dry-run。若运行库缺失或实际加载失败，检查窗口才会提供“下载 GPU Runtime”按钮，下载完成并校验后自动重新检查。旧版 Worker 不支持诊断命令时，应用仍会改用已安装模型执行兼容验证。仅发现入口 DLL、仅加载模型或对静音执行被 VAD 跳过的检查，都不再判定为推理可用。
@@ -170,8 +177,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build-worker.ps1 `
 如确实需要生成包含 GPU 运行库的自包含 worker，可以显式使用以下参数：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build-worker.ps1 `
-  -Python $Python `
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File src-tauri\worker\build-worker.ps1 `
   -BundleGpuRuntime `
   -CudaBin "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin" `
   -CudnnBin "C:\Program Files\NVIDIA\CUDNN\v9.0\bin\12.8"
@@ -192,8 +198,8 @@ src-tauri\worker\dist\livecaption-asr-worker\livecaption-asr-worker.exe
 - **无法识别 `pnpm`**：确认 Node.js 和 pnpm 已安装，重新打开终端后执行 `where.exe node`、`where.exe pnpm` 和 `pnpm --version`。
 - **`pnpm.ps1` 被执行策略阻止**：可以直接使用 `pnpm.cmd`；不需要为了运行 pnpm 永久关闭 PowerShell 安全策略。
 - **`ERR_PNPM_IGNORED_BUILDS: esbuild`**：确认已检出 `pnpm-workspace.yaml`，然后重新执行 `pnpm install --frozen-lockfile`。
-- **`resource path worker\\dist\\livecaption-asr-worker doesn't exist`**：本地 ASR worker 尚未构建；按上面的步骤生成 `livecaption-asr-worker.exe`。
-- **旧 Worker 不支持轻量探测**：这是 `git pull` 后仍在使用被 Git 忽略的旧 exe，并不表示推理版本不兼容。检查器会自动用当前已安装模型执行真实 CUDA dry-run；验证成功即可继续使用。只有希望使用更快的轻量诊断时才需要重新执行 `build-worker.ps1`。
+- **Worker missing / stale / build fingerprint needs upgrading**：新构建入口会自动重建；首次切换到新指纹格式会重建一次。可运行 `pnpm workers:prepare` 单独诊断。若仍失败，处理日志中的 Python、依赖下载或进程占用错误，不要删除校验或把 exe 提交到 Git。
+- **旧 Worker 不支持轻量探测**：这是 `git pull` 后仍在使用被 Git 忽略的旧 exe，并不表示推理版本不兼容。检查器会自动用当前已安装模型执行真实 CUDA dry-run；验证成功即可继续使用。开发构建会自动更新过期 Worker，无需手动重建。
 - **本地 ASR 提示缺少 CUDA/cuDNN**：在“设置 → 资源”运行依赖检查并点击“下载 GPU Runtime”。当前 CTranslate2 版本需要 CUDA 12 的 cuBLAS 和完整 cuDNN 9 文件组；不能直接使用只包含 `cublas64_13.dll` 的 CUDA 13 目录，也不能只复制 `cudnn64_9.dll`。有可用模型时，检查器和模型测试都会实际进入 GPU encoder，而不是让 VAD 跳过静音。
 - **NSIS 报 `Internal compiler error #12345: error mmapping datablock`**：通常是把约 2 GB 的 CUDA/cuDNN DLL 一并装入 worker 导致。重新使用不带 `-BundleGpuRuntime` 的默认命令构建 worker，再执行 `pnpm tauri build`。
 - **PowerShell 阻止 `build-worker.ps1`**：使用上面进程级的 `powershell.exe -ExecutionPolicy Bypass -File ...` 命令。
@@ -203,12 +209,15 @@ src-tauri\worker\dist\livecaption-asr-worker\livecaption-asr-worker.exe
 
 Git 只同步源代码、锁文件和配置。`node_modules`、`.tools`、Python 虚拟环境、worker 构建产物、Rust `target`、本地模型、日志和会话数据均已忽略，不应提交。
 
-在另一台电脑首次检出后，需要分别安装 Node.js/pnpm、Rust/MSVC；需要构建本地 ASR worker 时还要安装 Python。GPU 推理所需的 CUDA/cuDNN 可以安装在目标系统，也可以用 `-BundleGpuRuntime` 打包进 worker。日常开始工作前建议执行：
+每台电脑首次检出后，分别安装 Node.js/pnpm、Rust/MSVC 和 Python 3.12 x64。日常同步、打包统一使用：
 
 ```powershell
 git pull --rebase
 pnpm install --frozen-lockfile
+pnpm tauri build
 ```
+
+开发调试可将最后一行换为 `pnpm tauri dev`；两条入口都会先准备 ASR/OCR Worker。首次构建或源码更新时可能需要下载 Python 依赖，后续未变更则直接通过校验。`.gitattributes` 固定构建输入的换行符，指纹也忽略 CRLF/LF、UTF-8 BOM 和文件时间差异；不会因为 Git 检出方式不同而无意义重建。源代码、依赖清单、打包模板和构建脚本的实质变化仍会触发重建。
 
 完成修改后再执行测试、提交并推送：
 
@@ -222,7 +231,7 @@ git push
 
 ## 质量检查
 
-完整检查会执行前端类型检查与生产构建、Rust 单元测试和 Clippy：
+完整检查会执行 Worker 构建脚本回归测试、前端与 Python 测试、前端类型检查与生产构建、Rust 单元测试和 Clippy：
 
 ```powershell
 pnpm quality
@@ -252,7 +261,7 @@ OCR 在 CPU 本地运行，按需启动，闲置 60 秒后退出。截图只在�
 
 OCR Worker 使用显式 UTF-8 字节协议，不依赖 Windows 默认代码页；包含中文、日文或 emoji 的模型路径也可正常加载。若旧版出现“校验可用，但测试提示模型未安装”，应更新 OCR 运行组件，无需重复下载模型。
 
-`pnpm tauri build` 会校验 OCR worker；缺失、源码变更或协议检查失败时会自动重建，再次校验通过后才打包。ASR worker 仍按前述步骤准备。OCR 构建机需要 Python 3.12（锁定的 NumPy 依赖要求），最终用户不需要 Python。脚本自动查找 Windows Python Launcher 或默认 uv 目录中的 3.12；也可显式指定解释器：
+`pnpm tauri build` 和 `pnpm tauri dev` 都会校验 ASR/OCR worker；缺失、源码变更或协议检查失败时自动重建，再次校验通过后才继续。OCR 构建机需要 Python 3.12（锁定的 NumPy 依赖要求），最终用户不需要 Python。脚本自动查找 Windows Python Launcher 或默认 uv 目录中的 3.12；也可显式指定解释器：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File src-tauri\ocr-worker\build-worker.ps1 -Python "C:\path\to\Python312\python.exe"

@@ -1,0 +1,9 @@
+# Build fingerprints must not depend on either machine's core.autocrlf setting.
+src-tauri/worker/*.py text eol=lf
+src-tauri/worker/*.ps1 text eol=lf
+src-tauri/worker/*.txt text eol=lf
+src-tauri/ocr-worker/*.py text eol=lf
+src-tauri/ocr-worker/*.ps1 text eol=lf
+src-tauri/ocr-worker/*.txt text eol=lf
+src-tauri/ocr-worker/*.template text eol=lf
+src-tauri/build-support/*.ps1 text eol=lf

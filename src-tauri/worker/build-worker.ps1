@@ -1,36 +1,20 @@
 param(
-    [Parameter(Mandatory=$true)][string]$Python,
+    [string]$Python = '',
     [string]$CudaBin = '',
     [string]$CudnnBin = '',
     [switch]$BundleGpuRuntime
 )
 $ErrorActionPreference = 'Stop'
 
-function Get-Sha256Hex([string]$FilePath) {
-  $FileStream = [System.IO.File]::OpenRead($FilePath)
-  try {
-    $Sha256 = [System.Security.Cryptography.SHA256]::Create()
-    try {
-      return ([System.BitConverter]::ToString($Sha256.ComputeHash($FileStream))).Replace('-', '').ToLowerInvariant()
-    } finally {
-      $Sha256.Dispose()
-    }
-  } finally {
-    $FileStream.Dispose()
-  }
-}
+. (Join-Path $PSScriptRoot '../build-support/worker-common.ps1')
 
 $WorkerDir = $PSScriptRoot
 $VenvDir = Join-Path $WorkerDir '.venv-build'
 $BuildDir = Join-Path $WorkerDir 'build'
 $DistDir = Join-Path $WorkerDir 'dist'
-$VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
-if (-not (Test-Path -LiteralPath $VenvPython)) {
-  & $Python -m venv $VenvDir
-  if ($LASTEXITCODE -ne 0) { throw "Failed to create worker virtual environment (exit $LASTEXITCODE)." }
-} else {
-  Write-Host "Reusing worker virtual environment at $VenvDir"
-}
+$VenvPython = Initialize-WorkerVenv $WorkerDir $Python @(12, 11)
+& $VenvPython -m ensurepip --upgrade
+if ($LASTEXITCODE -ne 0) { throw 'Cannot bootstrap ASR build pip.' }
 & $VenvPython -m pip install --requirement (Join-Path $WorkerDir 'requirements.lock.txt')
 if ($LASTEXITCODE -ne 0) { throw "Failed to install worker requirements (exit $LASTEXITCODE)." }
 if ($BundleGpuRuntime -and -not $CudnnBin) {
@@ -42,7 +26,7 @@ $WorkerBuildCache = Join-Path $BuildDir 'livecaption-asr-worker'
 foreach ($GeneratedDir in @($WorkerBuildCache, $WorkerOutputDir)) {
   if (Test-Path -LiteralPath $GeneratedDir) {
     try {
-      Remove-Item -LiteralPath $GeneratedDir -Recurse -Force
+      Remove-WorkerGeneratedDirectory $WorkerDir $GeneratedDir
     } catch {
       throw "Cannot clean $GeneratedDir. Close any running LiveCaption/ASR Worker process, then retry. $($_.Exception.Message)"
     }
@@ -153,16 +137,7 @@ if ($BundleGpuRuntime) {
 }
 $WorkerExe = Join-Path $WorkerDir 'dist\livecaption-asr-worker\livecaption-asr-worker.exe'
 $WorkerBuildManifest = Join-Path (Split-Path $WorkerExe -Parent) 'worker-build.json'
-$SourceHashes = [ordered]@{}
-foreach ($SourceName in @('asr_worker.py', 'requirements.lock.txt', 'build-worker.ps1')) {
-  $SourcePath = Join-Path $WorkerDir $SourceName
-  $SourceHashes[$SourceName] = Get-Sha256Hex $SourcePath
-}
-@{
-  schema = 1
-  generated_utc = [DateTime]::UtcNow.ToString('o')
-  files = $SourceHashes
-} | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $WorkerBuildManifest -Encoding UTF8
+Write-WorkerFingerprint $WorkerDir $WorkerBuildManifest (Get-WorkerInputs 'asr')
 & (Join-Path $WorkerDir 'verify-worker.ps1') -WorkerExe $WorkerExe
 if ($LASTEXITCODE -ne 0) {
   throw 'Worker build completed, but its ASMR protocol check failed.'
