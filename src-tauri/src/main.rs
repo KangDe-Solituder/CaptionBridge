@@ -5,6 +5,8 @@ mod asr_worker;
 mod captions;
 mod glossary;
 mod gpu_runtime;
+#[cfg(windows)]
+mod instance_wake;
 mod llm;
 mod llm_profiles;
 mod model_manager;
@@ -1355,28 +1357,15 @@ fn acquire_single_instance() -> Result<Option<SingleInstanceGuard>, String> {
 }
 
 #[cfg(windows)]
-fn focus_existing_instance() {
-    use windows::{
-        core::w,
-        Win32::UI::WindowsAndMessaging::{
-            FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE,
-        },
-    };
-
-    unsafe {
-        if let Ok(window) = FindWindowW(None, w!("LiveCaption")) {
-            let _ = ShowWindow(window, SW_RESTORE);
-            let _ = SetForegroundWindow(window);
-        }
-    }
-}
-
-#[cfg(windows)]
 fn main() {
+    // Hold the event before acquiring the mutex, including during slow startup.
+    let wake = instance_wake::WakeSignal::new().expect("failed to create instance wake signal");
     let _single_instance = match acquire_single_instance() {
         Ok(Some(guard)) => guard,
         Ok(None) => {
-            focus_existing_instance();
+            if let Err(error) = wake.notify() {
+                eprintln!("{error}");
+            }
             return;
         }
         Err(error) => {
@@ -1542,6 +1531,8 @@ fn run_app() {
             toolbar::start(app.handle().clone(), state.clone());
             state.log("info", "LiveCaption 已启动");
             build_tray(app)?;
+            #[cfg(windows)]
+            instance_wake::start(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
