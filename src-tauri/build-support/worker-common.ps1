@@ -29,7 +29,7 @@ function Assert-WorkerFingerprint([string]$WorkerDir, [string]$ManifestPath, [st
 
 function Get-WorkerInputs([ValidateSet('asr', 'ocr')][string]$Kind) {
   $Common = @('requirements.lock.txt', 'build-worker.ps1', '../build-support/worker-common.ps1')
-  if ($Kind -eq 'asr') { return @('asr_worker.py', 'gpu-runtime-requirements.lock.txt') + $Common }
+  if ($Kind -eq 'asr') { return @('asr_worker.py', 'streaming_asr.py', 'gpu-runtime-requirements.lock.txt') + $Common }
   return @('ocr_worker.py', 'worker.spec.template') + $Common
 }
 

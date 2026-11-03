@@ -155,7 +155,7 @@ impl Default for CaptionSettings {
             max_duration_milliseconds: 1800,
             max_chars: 96,
             context_segments: 2,
-            audio_mode: VadProfile::Normal,
+            audio_mode: VadProfile::Default,
             model_mirror_url: default_model_mirror(),
         }
     }
@@ -200,10 +200,10 @@ impl Default for CaptionSourceConfig {
             model_id: "kotoba-whisper-v2.0-faster".to_string(),
             device: default_asr_device(),
             compute_type: default_compute_type(),
-            vad_profile: VadProfile::Normal,
-            channel_mode: AudioChannelMode::Auto,
+            vad_profile: VadProfile::Default,
+            channel_mode: AudioChannelMode::Mix,
             channel_switch_sensitivity: ChannelSwitchSensitivity::Standard,
-            suppress_non_speech_segments: true,
+            suppress_non_speech_segments: false,
         }
     }
 }
@@ -263,8 +263,9 @@ fn default_compute_type() -> String {
 #[serde(rename_all = "snake_case")]
 pub enum VadProfile {
     #[default]
-    Normal,
-    Asmr,
+    #[serde(alias = "normal", alias = "asmr")]
+    Default,
+    Quick,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -290,38 +291,26 @@ pub enum ChannelSwitchSensitivity {
 impl VadProfile {
     pub fn parameters(
         self,
-        requested_channel_mode: AudioChannelMode,
-        channel_switch_sensitivity: ChannelSwitchSensitivity,
-        suppress_non_speech_segments: bool,
+        _requested_channel_mode: AudioChannelMode,
+        _channel_switch_sensitivity: ChannelSwitchSensitivity,
+        _suppress_non_speech_segments: bool,
     ) -> VadParameters {
-        match self {
-            Self::Normal => VadParameters {
-                threshold: 0.5,
-                silence_commit_ms: 500,
-                max_segment_ms: 6_000,
-                partial_interval_ms: 800,
-                channel_mode: AudioChannelMode::Mono,
-                channel_switch_sensitivity: ChannelSwitchSensitivity::Standard,
-                suppress_non_speech_segments: false,
-            },
-            Self::Asmr => VadParameters {
-                threshold: 0.3,
-                silence_commit_ms: 1_000,
-                max_segment_ms: 12_000,
-                partial_interval_ms: 1_200,
-                channel_mode: match requested_channel_mode {
-                    AudioChannelMode::Mono => AudioChannelMode::Auto,
-                    mode => mode,
-                },
-                channel_switch_sensitivity,
-                suppress_non_speech_segments,
-            },
+        VadParameters {
+            mode: self,
+            threshold: 0.001,
+            silence_commit_ms: 0,
+            max_segment_ms: if self == Self::Quick { 4_000 } else { 12_000 },
+            partial_interval_ms: if self == Self::Quick { 4_000 } else { 2_000 },
+            channel_mode: AudioChannelMode::Mix,
+            channel_switch_sensitivity: ChannelSwitchSensitivity::Standard,
+            suppress_non_speech_segments: false,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct VadParameters {
+    pub mode: VadProfile,
     pub threshold: f32,
     pub silence_commit_ms: u64,
     pub max_segment_ms: u64,

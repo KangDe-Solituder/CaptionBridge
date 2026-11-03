@@ -11,7 +11,7 @@ LiveCaption 的目标是在不打断当前应用的情况下，提供两条快�
 - **划词翻译**：在任意 Windows 应用中选中文字，通过自动选区感知或全局快捷键唤起翻译工具。
 - **实时字幕翻译**：读取 Windows Live Captions，或从系统默认输出设备进行本地语音识别，将字幕翻译后显示在始终置顶的悬浮窗口中。
 
-翻译请求使用 OpenAI-compatible Chat Completions 接口，支持流式输出、目标语言、上下文、温度、最大 token 数和 provider-specific 的请求参数。实时字幕会维护有限的翻译队列，优先处理最新片段，并记录源状态、ASR 延迟、队列深度和首 token 延迟。
+翻译请求使用 OpenAI-compatible Chat Completions 接口，支持流式输出、目标语言、上下文、温度、最大 token 数和 provider-specific 的请求参数。实时字幕串行翻译，并合并等待中的短增量片段，并记录源状态、ASR 延迟、队列深度和首 token 延迟。
 
 当前版本：`0.5.0`
 
@@ -45,19 +45,21 @@ LiveCaption 的目标是在不打断当前应用的情况下，提供两条快�
 ### 实时字幕翻译
 
 - **Windows Live Captions 来源**：通过 Windows UI Automation 读取系统字幕，原生 COM/UIA 读取优先，PowerShell 作为兼容性回退。
-- **本地 ASR 来源**：捕获 Windows 默认扬声器的 WASAPI loopback 音频，使用 faster-whisper 与 VAD 进行本地识别。
+- **本地 ASR 来源**：捕获 Windows 默认扬声器的 WASAPI loopback 音频，使用 faster-whisper 进行本地识别；左右声道平均混音，保留轻量 RMS 静音门限，取消硬 VAD 门控。
 - 可启动、停止和刷新字幕来源；检测到字幕进程退出、UI Automation 失效或连续读取错误时，会尝试恢复连接。
 - 过滤 Windows 的性能提示和重复的陈旧字幕，按稳定时间、标点、长度和最长时长切分句段。
 - 始终置顶的透明悬浮字幕窗口，支持透明度、字体、颜色、宽度、主题、模糊和动效设置。
-- ASMR 模式保留双声道音频，可自动跟随左右移动的人声，也可手动选择混合、左声道或右声道；普通模式继续使用原有单声道路径。
+- **默认模式**：12 秒主窗口 + 前 4 秒重叠，每 2 秒更新识别；两轮假设中稳定的新增文字才提交翻译，窗口边界补交尾段。
+- **快捷模式**：每 4 秒独立识别一次，延迟更直接，但跨片段上下文较少。两种模式均使用双声道混音，旧“普通 / ASMR”配置迁移为默认模式。
+- 模型加载阶段先完成 GPU 预热，采集和推理分线程；待处理的旧临时假设会被较新的窗口替代，完整窗口边界保留。持续算力不足时明确报错，不无限积压音频。停止时等待尾段识别及翻译收尾。
 - 悬浮窗口支持按住 `Alt` 拖动，也可以切换为任意位置拖动或顶部拖拽手柄模式。
 - 关闭主窗口时默认隐藏到系统托盘；双击托盘图标可恢复主窗口。
 
 ### 模型、翻译与导出
 
-- 内置两个经过 revision 和 SHA-256 固定的本地 ASR 模型清单，可在设置页下载、校验、测试和删除。
+- 内置 Kotoba v2、Whisper large-v3 和保留的 large-v3-turbo 模型清单，均固定 revision 和 SHA-256，可在设置页下载、校验、测试和删除。
 - 支持 OpenAI、DeepSeek 以及其他 OpenAI-compatible 服务；API Key 保存到 Windows Credential Manager，不写入普通设置文件。
-- 对 DeepSeek V4 的 thinking 参数进行 provider-aware 处理，可在设置中控制是否启用思考模式。
+- 对 DeepSeek V4 的 thinking 参数进行 provider-aware 处理，划词翻译可在设置中控制是否启用思考模式；实时字幕始终关闭思考，Extra Body 也不能重新开启。
 - 当前会话持续写入 JSONL，并可导出为 `SRT`、`WebVTT`、`TXT` 或 `JSON`。
 - 日志页提供运行日志、源健康状态、重连次数、翻译队列和延迟指标。
 
@@ -84,7 +86,7 @@ Windows Live Captions ┤
 
 - `src/`：React + TypeScript 前端、主工作区、设置页、选区工具条和字幕 Overlay。
 - `src-tauri/src/`：Rust 后端，负责 Windows API、UI Automation、进程生命周期、HTTP 请求、密钥、设置、日志和会话持久化。
-- `src-tauri/worker/`：本地 ASR worker，负责音频 loopback、VAD 和 faster-whisper 推理。
+- `src-tauri/worker/`：本地 ASR worker，负责音频 loopback、增量窗口调度和 faster-whisper 推理。
 - `src-tauri/icons/`：Tauri 打包所需的应用图标。
 
 ## 开发环境
@@ -99,9 +101,13 @@ Windows Live Captions ┤
 
 本项目已在 Node.js 24.18.0、pnpm 11.15.1、Python 3.12.10、CUDA 12.8 和 cuDNN 9.24 上完成验证。其他 CUDA 12.x/cuDNN 9 组合也可以使用，但必须提供完整的 cuDNN 9 运行库，而不只是入口文件 `cudnn64_9.dll`；CTranslate2 的 Whisper encoder 还会实际加载 `cudnn_ops64_9.dll`、`cudnn_graph64_9.dll` 等拆分 DLL。CTranslate2 是 faster-whisper 的推理后端，不是可删除的“探测专用依赖”。
 
-LLM 翻译需要一个 OpenAI-compatible endpoint 和 API Key。实时使用 Windows Live Captions 时，需要系统已启用对应功能；使用本地 ASR 时则需要下载约 1.5–1.6 GB 的模型文件。
+LLM 翻译需要一个 OpenAI-compatible endpoint 和 API Key。实时使用 Windows Live Captions 时，需要系统已启用对应功能；使用本地 ASR 时则需要下载Kotoba / Turbo 约 1.5–1.6 GB 或完整 large-v3 约 3.1 GB 的模型文件。
 
-ASMR 双声道跟随只在“设置 → 功能 → 实时字幕 → 音频模式”选择“ASMR”后生效。“智能锁定”会结合语音概率、响度起伏和频谱特征锁定人声侧；句间静音不会释放锁定，只有另一侧出现持续且高于既有噪声基线的人声证据时才会平滑换边。界面可选择稳健、标准或灵敏切换，并显示当前锁定状态。ASR 仍只处理一路选中的单声道音频。普通模式不会启用双声道分析，行为和资源开销保持不变。若输出设备不能提供双声道，Worker 会自动回退到原有单声道采集。
+在“设置 → 功能 → 实时字幕 → 音频模式”选择“默认”或“快捷”，保存后下次启动字幕生效。轻声日语的当前基准为 Kotoba v2 与完整 Whisper large-v3，CUDA `int8_float16`、beam 3、日语识别、不回灌模型历史。单侧有人声时混音可避免锁错声道，但 RMS 门限不是语音分类器，纯音效仍可能产生误识别；不会直接屏蔽“ごめん”等合法词。设备无法提供双声道时回退单声道。
+
+默认模式中，稳定新增文字达到 8 字即提交；等待 2 秒后至少 3 字也可提交，最长等待 4 秒或到窗口边界补交。翻译使用已接受的原文作为上下文，保留用户选择的上下文条数，不使用未来音频或译文修正后的内容回灌 ASR。导出时间来自音频窗口与增量提交位置的估计，不是逐字强制对齐。
+
+可用 ASR 构建环境运行 `tests/replay_asr.py --audio <16kHz PCM WAV> --model <模型目录> --mode default --seconds 45 --output <结果.json>`，按真实时间回放指定音频并记录待处理窗口、ASR 耗时、原文和停止状态。该工具不播放声音、不采集麦克风、不调用 LLM；完整翻译效果仍需在应用中测试。
 
 ## 安装与运行
 

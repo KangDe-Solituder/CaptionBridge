@@ -21,7 +21,7 @@ import { OcrCaptureWindow, OcrResultWindow, startOcrCapture } from "./windows/Oc
 import {
   clearRuntimeLogs, correctCaptionSession, deleteCaptionSession, exportCaptionSession,
   exportGlossary, getGlossary, getRuntimeLogs, getRuntimeStatus, getSettings, importGlossary,
-  listCaptionSessions, newCaptionSession, openLogsDir, openSessionsDir, readCaptionSession, resetAsrChannelRouting,
+  listCaptionSessions, newCaptionSession, openLogsDir, openSessionsDir, readCaptionSession,
   saveGlossary, saveSettings, setTheme, setCaptionRunning, testLlm, listModels, downloadModel, cancelModelDownload,
   verifyModel, testModel, deleteModel, openModelsDir, switchCaptionSource,
   checkAsrDependencies, openAsrDependencyUrl, downloadAsrGpuRuntime, cancelAsrGpuRuntime, testDownloadProxy,
@@ -41,6 +41,12 @@ document.documentElement.dataset.theme = bootTheme === "system"
   : bootTheme;
 
 const builtInModels: ModelInfo[] = [
+  {
+    kind: "asr", id: "whisper-large-v3", display_name: "Whisper large-v3",
+    repository: "Systran/faster-whisper-large-v3", revision: "edaa852ec7e145841d8ffdb056a99866b5f0a478",
+    license: "MIT", expected_size_bytes: 3_090_835_702, installed_size_bytes: 0,
+    status: "not_installed", downloaded_bytes: 0, recommended: false,
+  },
   {
     kind: "asr", id: "kotoba-whisper-v2.0-faster", display_name: "Kotoba Whisper v2.0 Faster",
     repository: "kotoba-tech/kotoba-whisper-v2.0-faster", revision: "f44edd35eaeb2274e85ac7b31fb2c6f59ff1c4bc",
@@ -423,18 +429,8 @@ function CaptionHealth({ status }: { status: RuntimeStatus }) {
 }
 function sourceName(source?: CaptionSourceConfig) {
   if (!source || source.type === "windows_live_caption") return "Windows Live Caption";
-  return source.model_id === "kotoba-whisper-v2.0-faster" ? "Kotoba Whisper v2.0" : "Whisper large-v3-turbo";
+  return source.model_id === "kotoba-whisper-v2.0-faster" ? "Kotoba Whisper v2.0" : source.model_id === "whisper-large-v3" ? "Whisper large-v3" : "Whisper large-v3-turbo";
 }
-const asmrChannelStateText: Record<AsmrChannelState, string> = {
-  inactive: "启动实时字幕后显示锁定状态。",
-  searching: "正在分析左右声道并搜索可信人声。",
-  locked_left: "左侧已锁定；句间静音不会解除。",
-  locked_right: "右侧已锁定；句间静音不会解除。",
-  locked_mix: "检测到两侧高度相关的中央人声。",
-  pending_left: "正在确认人声是否已切换到左侧。",
-  pending_right: "正在确认人声是否已切换到右侧。",
-  fallback_mono: "设备不支持双声道采集，当前已退回单声道。",
-};
 const SESSION_PAGE_SIZE = 20;
 
 const demoCaptionPage: SessionPageView = {
@@ -947,16 +943,7 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
 
         <SettingRow title="翻译上下文" description="上下文来自已接受的 final 原文，不受上一条 LLM 成败影响。"><Segmented value={String(s.captions.context_segments)} options={[0, 1, 2, 4].map(value => ({ label: `${value} 条`, value: String(value) }))} onChange={value => update({ ...s, captions: { ...s.captions, context_segments: Number(value) } })} /></SettingRow>
         {s.captions.source.type === "local_asr" && <>
-          <SettingRow title="音频模式" description="普通模式保持原有单声道流程；ASMR 才会启用双声道人声锁定。"><Segmented value={s.captions.audio_mode} options={[{ label: "普通", value: "normal" }, { label: "ASMR", value: "asmr" }]} onChange={audio_mode => update({ ...s, captions: { ...s.captions, audio_mode, source: { type: "local_asr", model_id: s.captions.source.type === "local_asr" ? s.captions.source.model_id : "kotoba-whisper-v2.0-faster", device: "cuda", compute_type: "int8_float16", vad_profile: audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "auto", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : true } } })} /></SettingRow>
-          {s.captions.audio_mode === "asmr" && <div className="nested-settings">
-            <SettingRow title="ASMR 人声声道" description="智能锁定不会在句间停顿时换边；只有另一侧持续出现可信人声才会切换。"><Segmented value={s.captions.source.channel_mode === "mono" ? "auto" : s.captions.source.channel_mode} options={[{ label: "智能锁定", value: "auto" }, { label: "保持混合", value: "mix" }, { label: "仅左", value: "left" }, { label: "仅右", value: "right" }]} onChange={channel_mode => { const source = s.captions.source; if (source.type === "local_asr") update({ ...s, captions: { ...s.captions, source: { ...source, channel_mode } } }); }} /></SettingRow>
-            {s.captions.source.channel_mode === "auto" && <>
-              <SettingRow title="声道切换灵敏度" description="稳健模式需要更长的人声证据；灵敏模式更快，但更容易被复杂噪音影响。"><Segmented value={s.captions.source.channel_switch_sensitivity} options={[{ label: "稳健", value: "stable" }, { label: "标准", value: "standard" }, { label: "灵敏", value: "responsive" }]} onChange={channel_switch_sensitivity => { const source = s.captions.source; if (source.type === "local_asr") update({ ...s, captions: { ...s.captions, source: { ...source, channel_switch_sensitivity } } }); }} /></SettingRow>
-              <SettingRow title="疑似非语音字幕抑制" description="在人声证据不足时不把摩擦、敲击等短片段送入 ASR。"><Toggle label="疑似非语音字幕抑制" checked={s.captions.source.suppress_non_speech_segments} onChange={suppress_non_speech_segments => { const source = s.captions.source; if (source.type === "local_asr") update({ ...s, captions: { ...s.captions, source: { ...source, suppress_non_speech_segments } } }); }} /></SettingRow>
-              <SettingRow title="当前人声声道" description={asmrChannelStateText[props.status.asmr_channel_state]}><button className="ghost" disabled={!props.status.caption_running} onClick={() => void resetAsrChannelRouting().catch(error => props.onMessage(String(error)))}><RotateCcw />重新检测</button></SettingRow>
-
-            </>}
-          </div>}
+          <SettingRow title="音频模式" description="默认：12 秒主窗口 + 4 秒重叠，每 2 秒识别并提交稳定增量。快捷：每 4 秒独立识别。两者均使用双声道混音，保存后下次启动字幕生效。"><Segmented value={s.captions.audio_mode} options={[{ label: "默认", value: "default" }, { label: "快捷", value: "quick" }]} onChange={audio_mode => { const source = s.captions.source; if (source.type === "local_asr") update({ ...s, captions: { ...s.captions, audio_mode, source: { ...source, vad_profile: audio_mode, channel_mode: "mix", suppress_non_speech_segments: false } } }); }} /></SettingRow>
         </>}
         {s.captions.source.type === "windows_live_caption" && <>
           <SettingRow title="自动启动 Live Captions" description="开始翻译时自动打开 Windows 系统字幕。"><Toggle label="自动启动" checked={s.captions.auto_launch} onChange={auto_launch => update({ ...s, captions: { ...s.captions, auto_launch } })} /></SettingRow>
@@ -973,7 +960,7 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
           <button className="ghost" onClick={() => void runDependencyCheck()} disabled={checkingDependencies}>{checkingDependencies ? <Loader2 className="spin" /> : <Activity />}检查依赖</button>
         </SettingRow>
         <div className="system-caption-source"><div><h3>Windows Live Caption</h3><p>Windows 系统字幕 · 无需下载 ASR 模型</p></div><button className="ghost" disabled={s.captions.source.type === "windows_live_caption" || props.status.caption_state === "switching"} onClick={() => void props.onSelectSource({ type: "windows_live_caption" })}>{s.captions.source.type === "windows_live_caption" ? <><Check />当前来源</> : "选中"}</button></div>
-        <ModelManager selectedModel={s.captions.source.type === "local_asr" ? s.captions.source.model_id : undefined} selecting={props.status.caption_state === "switching"} onSelect={model_id => props.onSelectSource({ type: "local_asr", model_id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "auto", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : true })} models={props.models.filter(model => model.kind === "asr")} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
+        <ModelManager selectedModel={s.captions.source.type === "local_asr" ? s.captions.source.model_id : undefined} selecting={props.status.caption_state === "switching"} onSelect={model_id => props.onSelectSource({ type: "local_asr", model_id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "mix", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : false })} models={props.models.filter(model => model.kind === "asr")} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
 
     </section><section className="settings-chapter" id="settings-ocr-models" aria-labelledby="heading-ocr-models">
       <header className="chapter-heading"><div><h2 id="heading-ocr-models">文字识别 · OCR</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("features", "ocr")}>截图设置<ArrowRight /></button></header>

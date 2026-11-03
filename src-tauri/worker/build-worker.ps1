@@ -140,7 +140,7 @@ $WorkerBuildManifest = Join-Path (Split-Path $WorkerExe -Parent) 'worker-build.j
 Write-WorkerFingerprint $WorkerDir $WorkerBuildManifest (Get-WorkerInputs 'asr')
 & (Join-Path $WorkerDir 'verify-worker.ps1') -WorkerExe $WorkerExe
 if ($LASTEXITCODE -ne 0) {
-  throw 'Worker build completed, but its ASMR protocol check failed.'
+  throw 'Worker build completed, but its streaming ASR protocol check failed.'
 }
 if ($BundleGpuRuntime) {
   $ProbeOutput = @(

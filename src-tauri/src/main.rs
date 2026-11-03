@@ -36,11 +36,11 @@ use std::{
 
 use captions::CaptionController;
 use models::{
-    AppSettings, AsmrChannelState, AsrDependencyReport, AudioChannelMode, CaptionExportEntry,
+    AppSettings, AsmrChannelState, AsrDependencyReport, CaptionExportEntry,
     CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth, CorrectionProgressEvent,
     Glossary, GlossaryImportResult, ModelInfo, RuntimeLogEntry, RuntimeStatus, SessionPageView,
     SessionSummary, SettingsSaveRequest, SettingsView, TranslationMode, TranslationRequest,
-    TranslationResult, VadProfile,
+    TranslationResult,
 };
 use settings::AppPaths;
 use tauri::{
@@ -385,7 +385,7 @@ async fn set_caption_running_inner(
         if let Some(controller) = state.caption.lock().await.take() {
             controller.stop.store(true, Ordering::Relaxed);
             let mut join = controller.join;
-            if tokio::time::timeout(std::time::Duration::from_secs(3), &mut join)
+            if tokio::time::timeout(std::time::Duration::from_secs(32), &mut join)
                 .await
                 .is_err()
             {
@@ -439,7 +439,7 @@ async fn refresh_caption(app: AppHandle, state: State<'_, AppState>) -> Result<(
     if let Some(current) = controller.take() {
         current.stop.store(true, Ordering::Relaxed);
         let mut join = current.join;
-        if tokio::time::timeout(std::time::Duration::from_secs(3), &mut join)
+        if tokio::time::timeout(std::time::Duration::from_secs(32), &mut join)
             .await
             .is_err()
         {
@@ -513,26 +513,8 @@ async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus,
 }
 
 #[tauri::command]
-fn reset_asr_channel_routing(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let active = state
-        .active_source
-        .read()
-        .map_err(|error| error.to_string())?
-        .clone();
-    if !matches!(
-        active,
-        Some(CaptionSourceConfig::LocalAsr {
-            vad_profile: VadProfile::Asmr,
-            channel_mode: AudioChannelMode::Auto,
-            ..
-        })
-    ) {
-        return Err("仅能在运行中的 ASMR 智能锁定模式下重新检测声道".to_string());
-    }
-    state.asmr_reset_generation.fetch_add(1, Ordering::Relaxed);
-    state.set_asmr_channel_state(&app, AsmrChannelState::Searching);
-    state.log("info", "已请求重新检测 ASMR 人声声道");
-    Ok(())
+fn reset_asr_channel_routing() -> Result<(), String> {
+    Err("当前模式使用双声道混音，无需锁定或重新检测声道".to_string())
 }
 
 #[tauri::command]
@@ -850,7 +832,7 @@ async fn switch_caption_source(
     if let Some(controller) = state.caption.lock().await.take() {
         controller.stop.store(true, Ordering::Relaxed);
         let mut join = controller.join;
-        if tokio::time::timeout(std::time::Duration::from_secs(3), &mut join)
+        if tokio::time::timeout(std::time::Duration::from_secs(32), &mut join)
             .await
             .is_err()
         {
@@ -859,7 +841,11 @@ async fn switch_caption_source(
     }
     {
         let mut settings = state.settings.write().map_err(|e| e.to_string())?;
+        if let CaptionSourceConfig::LocalAsr { vad_profile, .. } = &source {
+            settings.captions.audio_mode = *vad_profile;
+        }
         settings.captions.source = source;
+        settings::normalize(&mut settings);
         settings::save(&state.paths, &settings)?;
     }
     if was_running {

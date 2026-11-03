@@ -15,8 +15,7 @@ Assert-WorkerFingerprint $PSScriptRoot $BuildManifestPath (Get-WorkerInputs 'asr
 
 $ProtocolOutput = @(
   '{"command":"check_python_runtime"}',
-  '{"command":"configure","vad":{"channel_mode":"auto"}}',
-  '{"command":"reset_routing"}',
+  '{"command":"configure","vad":{"mode":"default","channel_mode":"mix"}}',
   '{"command":"probe_dependencies"}',
   '{"command":"shutdown"}'
 ) | & $WorkerExe

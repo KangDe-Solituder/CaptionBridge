@@ -119,6 +119,23 @@ pub fn create_payload(
         deep_merge(&mut payload, extra_value);
     }
 
+    // Live subtitles always favor latency, including when Extra Body is shared
+    // with selection translation. Do not add provider-specific keys blindly.
+    if matches!(request.mode, TranslationMode::LiveCaption) {
+        if deepseek_v4 || payload.get("thinking").is_some() {
+            payload["thinking"] = json!({"type": "disabled"});
+        }
+        if payload.get("enable_thinking").is_some() {
+            payload["enable_thinking"] = json!(false);
+        }
+        if payload.pointer("/chat_template_kwargs/enable_thinking").is_some() {
+            payload["chat_template_kwargs"]["enable_thinking"] = json!(false);
+        }
+        if let Some(object) = payload.as_object_mut() {
+            object.remove("reasoning_effort");
+        }
+    }
+
     Ok(payload)
 }
 
@@ -622,6 +639,25 @@ mod tests {
         let payload = create_payload(&settings, &request).unwrap();
         assert_eq!(payload["thinking"], json!({"type": "disabled"}));
         assert_eq!(payload["stream"], json!(true));
+    }
+
+    #[test]
+    fn live_caption_extra_body_cannot_enable_reasoning() {
+        let mut settings = AppSettings::default();
+        settings.llm.endpoint = "https://api.deepseek.com/v1".into();
+        settings.llm.thinking_enabled = true;
+        settings.llm.extra_body_json = r#"{"thinking":{"type":"enabled","budget_tokens":1024},"enable_thinking":true,"reasoning_effort":"low","chat_template_kwargs":{"enable_thinking":true},"temperature":0.2}"#.into();
+        let request = TranslationRequest {
+            mode: TranslationMode::LiveCaption, source_text: "こんにちは".into(),
+            source_language: "ja".into(), target_language: "中文".into(),
+            context: vec![], glossary: vec![],
+        };
+        let payload = create_payload(&settings, &request).unwrap();
+        assert_eq!(payload["thinking"], json!({"type":"disabled"}));
+        assert_eq!(payload["enable_thinking"], false);
+        assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
+        assert!(payload.get("reasoning_effort").is_none());
+        assert_eq!(payload["temperature"], json!(0.2));
     }
 
     #[test]

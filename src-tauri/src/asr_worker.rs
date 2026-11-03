@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
 };
 
@@ -36,7 +36,6 @@ enum WorkerCommand<'a> {
     ProbeDependencies,
     Start,
     Stop,
-    ResetRouting,
     Shutdown,
 }
 
@@ -108,6 +107,7 @@ pub struct AsrWorker {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    read_buffer: Vec<u8>,
 }
 
 impl AsrWorker {
@@ -157,6 +157,7 @@ impl AsrWorker {
             child,
             stdin,
             stdout: BufReader::new(stdout),
+            read_buffer: Vec::new(),
         })
     }
 
@@ -305,34 +306,38 @@ impl AsrWorker {
         })
         .await
     }
-    pub async fn reset_routing(&mut self) -> Result<(), String> {
-        self.send(WorkerCommand::ResetRouting).await
-    }
-
     pub async fn next(&mut self) -> Result<WorkerEvent, String> {
-        loop {
-            let mut raw = Vec::new();
-            let read = self
-                .stdout
-                .read_until(b'\n', &mut raw)
-                .await
-                .map_err(|error| format!("读取 ASR Worker 输出失败：{error}"))?;
-            if read == 0 {
-                return Err("ASR Worker 已退出；请查看 asr-worker.stderr.log".to_string());
-            }
-            // Native libraries can write diagnostics directly to stdout using
-            // the Windows active code page. Ignore those lines and decode only
-            // NDJSON protocol messages, which always contain a `type` field.
-            if let Some(event) = decode_protocol_line(&raw)? {
-                return Ok(event);
-            }
-        }
+        read_worker_event(&mut self.stdout, &mut self.read_buffer).await
     }
 
     pub async fn shutdown(mut self) {
         let _ = self.send(WorkerCommand::Shutdown).await;
         let _ = tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await;
         let _ = self.child.kill().await;
+    }
+}
+
+// The caller owns the partial line so polling timeouts cannot discard bytes.
+async fn read_worker_event<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+) -> Result<WorkerEvent, String> {
+    loop {
+        let read = reader
+            .read_until(b'\n', buffer)
+            .await
+            .map_err(|error| format!("读取 ASR Worker 输出失败：{error}"))?;
+        if read == 0 {
+            return Err("ASR Worker 已退出；请查看 asr-worker.stderr.log".to_string());
+        }
+        // Native libraries can write diagnostics directly to stdout using
+        // the Windows active code page. Ignore those lines and decode only
+        // NDJSON protocol messages, which always contain a `type` field.
+        let decoded = decode_protocol_line(buffer);
+        buffer.clear();
+        if let Some(event) = decoded? {
+            return Ok(event);
+        }
     }
 }
 
@@ -384,6 +389,28 @@ pub(crate) fn worker_executable(paths: &AppPaths) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn polling_timeout_preserves_an_incomplete_protocol_line() {
+        let (mut writer, stream) = tokio::io::duplex(512);
+        let mut reader = BufReader::new(stream);
+        let mut buffer = Vec::new();
+        writer
+            .write_all(br#"{"type":"health","healthy":true,"detail":"capture_"#)
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(
+            Duration::from_millis(10),
+            read_worker_event(&mut reader, &mut buffer)
+        )
+        .await
+        .is_err());
+        assert!(!buffer.is_empty());
+        writer.write_all(b"stopped\"}\n").await.unwrap();
+        let event = read_worker_event(&mut reader, &mut buffer).await.unwrap();
+        assert!(matches!(event, WorkerEvent::Health { detail, .. } if detail == "capture_stopped"));
+        assert!(buffer.is_empty());
+    }
 
     #[test]
     fn ignores_non_utf8_native_diagnostics() {

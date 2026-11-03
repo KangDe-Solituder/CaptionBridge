@@ -7,6 +7,8 @@ default speaker through WASAPI loopback and normalized to 16 kHz mono float32.
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
+from streaming_asr import Windows, PendingWindows, Recognizer
 import ctypes
 import os
 import queue
@@ -27,8 +29,11 @@ if hasattr(sys.stdin, "reconfigure"):
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="strict", newline="\n", line_buffering=True)
 
+_emit_lock = threading.Lock()
+
 def emit(kind: str, **payload) -> None:
-    print(json.dumps({"type": kind, **payload}, ensure_ascii=True), flush=True)
+    with _emit_lock:
+        print(json.dumps({"type": kind, **payload}, ensure_ascii=True), flush=True)
 
 
 CHANNEL_WEIGHTS = {
@@ -331,6 +336,9 @@ class Worker:
         }
         self.stop_capture = threading.Event()
         self.capture_thread: threading.Thread | None = None
+        self.inference_thread: threading.Thread | None = None
+        self.windows = None
+        self.pending_windows = None
         self.inference_lock = threading.Lock()
         self.utterance: list[np.ndarray | StereoChunk] = []
         self.utterance_started = 0.0
@@ -418,7 +426,6 @@ class Worker:
         if command.get("device", "cuda") == "cuda":
             self.preload_gpu_runtime()
         from faster_whisper import WhisperModel
-        from faster_whisper.vad import get_vad_model
 
         path = Path(command["model_path"])
         if not path.joinpath("model.bin").is_file():
@@ -430,10 +437,10 @@ class Worker:
             compute_type=command.get("compute_type", "int8_float16"),
             local_files_only=True,
         )
-        emit("loading_progress", progress=0.85, message="initializing_silero_vad")
-        get_vad_model()
         self.model_id = command.get("model_id")
         self.profile.update(command.get("vad", {}))
+        emit("loading_progress", progress=0.9, message="warming_up_gpu")
+        self.dry_run()
         emit("ready", model_id=self.model_id, device=command.get("device", "cuda"))
 
     def dry_run(self) -> None:
@@ -445,7 +452,7 @@ class Worker:
         silent = np.zeros(16000, dtype=np.float32)
         started = time.perf_counter()
         list(self.model.transcribe(
-            silent, language="ja", task="transcribe", beam_size=1,
+            silent, language="ja", task="transcribe", beam_size=3,
             best_of=1, condition_on_previous_text=False, vad_filter=False,
         )[0])
         emit(
@@ -545,17 +552,45 @@ class Worker:
             raise RuntimeError("model_not_loaded")
         if self.capture_thread and self.capture_thread.is_alive():
             return
+        if self.inference_thread and self.inference_thread.is_alive():
+            raise RuntimeError("previous_inference_not_stopped")
+        mode = self.profile.get("mode", "default")
+        self.windows = Windows(mode)
+        self.pending_windows = PendingWindows()
+        self.recognizer = Recognizer(self.model, self.model_id, mode, emit)
         self.stop_capture.clear()
-        self.routing_reset.clear()
+        self.inference_thread = threading.Thread(target=self.inference_loop, name="asr-inference", daemon=True)
+        self.inference_thread.start()
         self.capture_thread = threading.Thread(target=self.capture_loop_safe, name="wasapi-loopback", daemon=True)
         self.capture_thread.start()
+
+    def inference_loop(self) -> None:
+        try:
+            while (window := self.pending_windows.get()) is not None:
+                self.recognizer.process(window)
+            self.recognizer.flush()
+        except Exception as error:
+            self.stop_capture.set()
+            self.pending_windows.close(discard=True)
+            traceback.print_exc(file=sys.stderr)
+            emit("error", code="inference_failed", message=str(error), recoverable=False)
 
     def stop(self, flush: bool = True) -> None:
         self.stop_capture.set()
         if self.capture_thread and self.capture_thread.is_alive():
-            self.capture_thread.join(timeout=2)
-        if flush:
-            self.commit(final=True)
+            self.capture_thread.join(timeout=3)
+            if self.capture_thread.is_alive():
+                raise RuntimeError("audio_capture_stop_timeout")
+        if self.pending_windows is not None and not self.pending_windows.closed:
+            if flush and self.windows is not None:
+                tail = self.windows.tail()
+                if tail is not None:
+                    self.pending_windows.put(tail)
+            self.pending_windows.close(discard=not flush)
+        if self.inference_thread and self.inference_thread.is_alive():
+            self.inference_thread.join(timeout=15)
+            if self.inference_thread.is_alive():
+                raise RuntimeError("asr_inference_stop_timeout")
         emit("health", healthy=True, detail="capture_stopped")
 
     def unload(self) -> None:
@@ -601,26 +636,33 @@ class Worker:
 
     def capture_loop(self) -> None:
         import soundcard as sc
-        from faster_whisper.vad import get_vad_model
 
-        vad = get_vad_model()
         speaker = sc.default_speaker()
         if speaker is None:
             raise RuntimeError("default_output_device_not_found")
         loopback = sc.get_microphone(id=str(speaker.id), include_loopback=True)
         if loopback is None:
             raise RuntimeError("default_output_loopback_not_found")
-        self.stream_started = time.perf_counter()
-        channel_mode = str(self.profile.get("channel_mode", "mono"))
-        if channel_mode == "mono":
-            self.capture_stream(sc, speaker, loopback, vad, channels=1, channel_mode="mono")
-            return
-        try:
-            self.capture_stream(sc, speaker, loopback, vad, channels=2, channel_mode=channel_mode)
-        except Exception as error:
-            print(f"ASMR stereo capture unavailable, falling back to mono: {error}", file=sys.stderr, flush=True)
-            emit("health", healthy=True, detail="asmr_stereo_unavailable_fallback_mono")
-            self.capture_stream(sc, speaker, loopback, vad, channels=1, channel_mode="mono")
+        with ExitStack() as stack:
+            try:
+                recorder = stack.enter_context(loopback.recorder(samplerate=16000, channels=2, blocksize=1600))
+                detail = "capture_started_stereo_mix"
+            except Exception as error:
+                print(f"Stereo capture unavailable, falling back to mono: {error}", file=sys.stderr, flush=True)
+                recorder = stack.enter_context(loopback.recorder(samplerate=16000, channels=1, blocksize=1600))
+                detail = "capture_started_mono_fallback"
+            emit("health", healthy=True, detail=detail)
+            frames = 0
+            while not self.stop_capture.is_set():
+                frame = recorder.record(numframes=1600)
+                for window in self.windows.feed(frame):
+                    self.pending_windows.put(window)
+                frames += 1
+                if frames % 10 == 0:
+                    current = sc.default_speaker()
+                    if current is None or str(current.id) != str(speaker.id):
+                        emit("health", healthy=False, detail="default_output_changed_reopening")
+                        return
 
     def capture_stream(self, sc, speaker, loopback, vad, channels: int, channel_mode: str) -> None:
         router = (
@@ -860,7 +902,7 @@ def main() -> None:
             elif name == "probe_dependencies": worker.probe_dependencies()
             elif name == "start": worker.start()
             elif name == "stop": worker.stop()
-            elif name == "flush": worker.commit()
+            elif name == "flush": worker.stop()
             elif name == "reset_routing": worker.reset_routing()
             elif name == "unload": worker.unload()
             elif name == "shutdown":

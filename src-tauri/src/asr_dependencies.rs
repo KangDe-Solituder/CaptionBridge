@@ -406,7 +406,7 @@ fn legacy_probe_source(
                 model_id: (*model_id).to_string(),
                 device: "cuda".to_string(),
                 compute_type: "int8_float16".to_string(),
-                vad_profile: VadProfile::Normal,
+                vad_profile: VadProfile::Default,
                 channel_mode: AudioChannelMode::Auto,
                 channel_switch_sensitivity: ChannelSwitchSensitivity::Standard,
                 suppress_non_speech_segments: true,

@@ -19,13 +19,13 @@ export interface CaptionSettings {
   source: CaptionSourceConfig;
   enabled: boolean; auto_launch: boolean; poll_milliseconds: number;
   stable_milliseconds: number; max_duration_milliseconds: number; max_chars: number; context_segments: number;
-  audio_mode: "normal" | "asmr"; model_mirror_url: string;
+  audio_mode: "default" | "quick"; model_mirror_url: string;
 }
 export type CaptionSourceConfig =
   | { type: "windows_live_caption" }
   | {
     type: "local_asr"; model_id: string; device: string; compute_type: string;
-    vad_profile: "normal" | "asmr"; channel_mode: "mono" | "auto" | "mix" | "left" | "right";
+    vad_profile: "default" | "quick"; channel_mode: "mono" | "auto" | "mix" | "left" | "right";
     channel_switch_sensitivity: "stable" | "standard" | "responsive";
     suppress_non_speech_segments: boolean;
   };

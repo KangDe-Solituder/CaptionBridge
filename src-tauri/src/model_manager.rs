@@ -96,7 +96,45 @@ const TURBO_FILES: &[ManifestFile] = &[
     },
 ];
 
+const V3_FILES: &[ManifestFile] = &[
+    ManifestFile {
+        name: "config.json",
+        size: 2394,
+        sha256: "a9306624f5ec14270a014b647e5c316b6e03a662c369758d1b90697a7b0655b9",
+    },
+    ManifestFile {
+        name: "model.bin",
+        size: 3087284237,
+        sha256: "69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1",
+    },
+    ManifestFile {
+        name: "preprocessor_config.json",
+        size: 340,
+        sha256: "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
+    },
+    ManifestFile {
+        name: "tokenizer.json",
+        size: 2480617,
+        sha256: "6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca",
+    },
+    ManifestFile {
+        name: "vocabulary.json",
+        size: 1068114,
+        sha256: "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1",
+    },
+];
+
 pub const MANIFESTS: &[ModelManifest] = &[
+    ModelManifest {
+        kind: ModelKind::Asr,
+        id: "whisper-large-v3",
+        display_name: "Whisper large-v3",
+        repository: "Systran/faster-whisper-large-v3",
+        revision: "edaa852ec7e145841d8ffdb056a99866b5f0a478",
+        license: "MIT",
+        recommended: false,
+        files: V3_FILES,
+    },
     ModelManifest {
         kind: ModelKind::Asr,
         id: "kotoba-whisper-v2.0-faster",

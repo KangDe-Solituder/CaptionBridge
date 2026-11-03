@@ -19,10 +19,10 @@ use crate::{
     asr_worker::{AsrWorker, WorkerEvent},
     llm, model_manager,
     models::{
-        AsmrChannelState, AudioChannelMode, CaptionRuntimeState, CaptionSegment,
+        AsmrChannelState, CaptionRuntimeState, CaptionSegment,
         CaptionSourceConfig, CaptionSourceHealth, CaptionSourceKind, CaptionTimeSource,
         CaptionTranslatedEvent, GlossaryPair, TranslationMode, TranslationRequest,
-        TranslationResult, VadProfile,
+        TranslationResult,
     },
     segmenter::BasicSegmenter,
     sessions::JsonlSession,
@@ -94,30 +94,24 @@ struct FinalQueue {
 }
 
 impl FinalQueue {
-    async fn push(&self, mut job: TranslationJob) {
+    async fn push(&self, job: TranslationJob) -> Result<(), String> {
         let mut jobs = self.jobs.lock().await;
+        if let Some(last) = jobs.back_mut() {
+            let combined = last.segment.source_text.chars().count()
+                + job.segment.source_text.chars().count();
+            if combined <= 96 {
+                last.segment.source_text.push_str(&job.segment.source_text);
+                last.segment.end_ms = job.segment.end_ms;
+                return Ok(());
+            }
+        }
         if jobs.len() >= 4 {
-            if let Some(last) = jobs.back_mut() {
-                let combined = last.segment.source_text.chars().count()
-                    + job.segment.source_text.chars().count();
-                if combined <= 96 {
-                    last.segment.source_text.push_str(&job.segment.source_text);
-                    last.segment.end_ms = job.segment.end_ms;
-                    return;
-                }
-            }
-            if let Some(previous) = jobs.pop_back() {
-                job.segment.source_text = format!(
-                    "{} {}",
-                    previous.segment.source_text, job.segment.source_text
-                );
-                job.segment.start_ms = previous.segment.start_ms;
-                job.context = previous.context;
-            }
+            return Err("翻译服务持续落后，已停止字幕以避免继续积压；请检查翻译服务后重新启动".into());
         }
         jobs.push_back(job);
         drop(jobs);
         self.ready.notify_one();
+        Ok(())
     }
 
     async fn pop(&self) -> Option<TranslationJob> {
@@ -137,7 +131,7 @@ impl FinalQueue {
     }
     fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
-        self.ready.notify_waiters();
+        self.ready.notify_one();
     }
 }
 
@@ -252,17 +246,7 @@ async fn run_session(app: AppHandle, state: AppState, stop: Arc<AtomicBool>) -> 
     if let Ok(mut active) = state.active_source.write() {
         *active = Some(source.clone());
     }
-    state.set_asmr_channel_state(
-        &app,
-        match &source {
-            CaptionSourceConfig::LocalAsr {
-                vad_profile: VadProfile::Asmr,
-                channel_mode: AudioChannelMode::Auto,
-                ..
-            } => AsmrChannelState::Searching,
-            _ => AsmrChannelState::Inactive,
-        },
-    );
+    state.set_asmr_channel_state(&app, AsmrChannelState::Inactive);
     let glossary = crate::glossary::load(&state.paths);
     let glossary_pairs = if glossary.use_in_translation {
         crate::glossary::pairs(&glossary)
@@ -410,7 +394,7 @@ async fn accept_final(
     context: &Mutex<VecDeque<String>>,
     context_limit: usize,
     segment: CaptionSegment,
-) {
+) -> Result<(), String> {
     let _ = app.emit("caption:segment", &segment);
     let previous = {
         let mut accepted = context.lock().await;
@@ -426,10 +410,11 @@ async fn accept_final(
             segment,
             context: previous,
         })
-        .await;
+        .await?;
     state
         .translation_queue_depth
         .store(queue.depth().await, Ordering::Relaxed);
+    Ok(())
 }
 
 async fn run_windows_source(
@@ -502,7 +487,7 @@ async fn run_windows_source(
                             settings.context_segments,
                             segment,
                         )
-                        .await;
+                        .await?;
                     }
                 }
             }
@@ -562,14 +547,17 @@ async fn run_local_source(
         worker.configure(source).await?;
     }
     worker.start().await?;
-    let mut reset_generation = state.asmr_reset_generation.load(Ordering::Relaxed);
+    let mut stopping_at: Option<Instant> = None;
     state.set_caption_state(app, CaptionRuntimeState::Running);
     state.set_source_health(app, CaptionSourceHealth::Ready);
-    while !stop.load(Ordering::Relaxed) {
-        let requested_reset = state.asmr_reset_generation.load(Ordering::Relaxed);
-        if requested_reset != reset_generation {
-            worker.reset_routing().await?;
-            reset_generation = requested_reset;
+    loop {
+        if stop.load(Ordering::Relaxed) && stopping_at.is_none() {
+            worker.stop().await?;
+            stopping_at = Some(Instant::now());
+        }
+        if stopping_at.is_some_and(|started| started.elapsed() >= Duration::from_secs(20)) {
+            worker.shutdown().await;
+            return Err("ASR 停止超时，已释放 Worker；尾段可能未完成".into());
         }
         match tokio::time::timeout(Duration::from_millis(250), worker.next()).await {
             Ok(Ok(WorkerEvent::Partial {
@@ -593,7 +581,7 @@ async fn run_local_source(
                         start_ms,
                         end_ms,
                         final_result: false,
-                        time_source: CaptionTimeSource::Model,
+                        time_source: CaptionTimeSource::Estimated,
                     },
                 );
             }
@@ -625,14 +613,17 @@ async fn run_local_source(
                         start_ms,
                         end_ms,
                         final_result: true,
-                        time_source: CaptionTimeSource::Model,
+                        time_source: CaptionTimeSource::Estimated,
                     },
                 )
-                .await;
+                .await?;
             }
             Ok(Ok(WorkerEvent::Health {
                 healthy, detail, ..
             })) => {
+                if detail == "capture_stopped" && stopping_at.is_some() {
+                    break;
+                }
                 if let Some(channel_state) = asmr_channel_state_from_detail(&detail) {
                     state.set_asmr_channel_state(app, channel_state);
                 }
@@ -673,7 +664,6 @@ async fn run_local_source(
             }
         }
     }
-    let _ = worker.stop().await;
     let generation = state.idle_worker_generation.fetch_add(1, Ordering::Relaxed) + 1;
     *state.idle_asr_worker.lock().await = Some((model_id.to_string(), worker));
     let idle_state = state.clone();
@@ -740,7 +730,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn full_final_queue_merges_without_reordering() {
+    async fn waiting_increments_merge_without_reordering() {
         let queue = FinalQueue::default();
         for text in ["一", "二", "三", "四", "五"] {
             queue
@@ -759,74 +749,52 @@ mod tests {
                     },
                     context: vec![],
                 })
-                .await;
+                .await.unwrap();
         }
-        assert_eq!(queue.depth().await, 4);
+        assert_eq!(queue.depth().await, 1);
         let mut output = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..1 {
             output.push(queue.pop().await.unwrap().segment.source_text);
         }
-        assert_eq!(output, vec!["一", "二", "三", "四五"]);
+        assert_eq!(output, vec!["一二三四五"]);
+    }
+
+    #[tokio::test]
+    async fn slow_translation_service_has_a_bounded_queue() {
+        let queue = FinalQueue::default();
+        let job = TranslationJob {
+            segment: CaptionSegment {
+                id: "test".into(), source_text: "あ".repeat(80), revision: 1,
+                committed: true, source: CaptionSourceKind::LocalAsr, model_id: None,
+                start_ms: 0, end_ms: 4000, final_result: true, time_source: CaptionTimeSource::Estimated,
+            },
+            context: vec!["previous".into()],
+        };
+        for _ in 0..4 {
+            queue.push(job.clone()).await.unwrap();
+        }
+        assert!(queue.push(job).await.unwrap_err().contains("翻译服务持续落后"));
+        assert_eq!(queue.depth().await, 4);
+        assert_eq!(queue.pop().await.unwrap().context, vec!["previous"]);
+        queue.close();
+        for _ in 0..3 { assert!(queue.pop().await.is_some()); }
+        assert!(queue.pop().await.is_none());
     }
 
     #[test]
-    fn vad_presets_match_product_defaults() {
-        let normal = crate::models::VadProfile::Normal.parameters(
-            crate::models::AudioChannelMode::Auto,
-            crate::models::ChannelSwitchSensitivity::Stable,
-            true,
-        );
-        let asmr = crate::models::VadProfile::Asmr.parameters(
-            crate::models::AudioChannelMode::Auto,
-            crate::models::ChannelSwitchSensitivity::Standard,
-            true,
-        );
-        assert_eq!(
-            (
-                normal.threshold,
-                normal.silence_commit_ms,
-                normal.max_segment_ms,
-                normal.partial_interval_ms
-            ),
-            (0.5, 500, 6000, 800)
-        );
-        assert_eq!(
-            (
-                asmr.threshold,
-                asmr.silence_commit_ms,
-                asmr.max_segment_ms,
-                asmr.partial_interval_ms
-            ),
-            (0.3, 1000, 12000, 1200)
-        );
-        assert_eq!(normal.channel_mode, crate::models::AudioChannelMode::Mono);
-        assert_eq!(asmr.channel_mode, crate::models::AudioChannelMode::Auto);
-        assert_eq!(
-            crate::models::VadProfile::Normal
-                .parameters(
-                    crate::models::AudioChannelMode::Right,
-                    crate::models::ChannelSwitchSensitivity::Responsive,
-                    true,
-                )
-                .channel_mode,
-            crate::models::AudioChannelMode::Mono
-        );
-        assert_eq!(
-            crate::models::VadProfile::Asmr
-                .parameters(
-                    crate::models::AudioChannelMode::Left,
-                    crate::models::ChannelSwitchSensitivity::Stable,
-                    false,
-                )
-                .channel_mode,
-            crate::models::AudioChannelMode::Left
-        );
-        assert_eq!(
-            normal.channel_switch_sensitivity,
-            crate::models::ChannelSwitchSensitivity::Standard
-        );
-        assert!(!normal.suppress_non_speech_segments);
-        assert!(asmr.suppress_non_speech_segments);
+    fn streaming_presets_ignore_legacy_channel_gates() {
+        use crate::models::{VadProfile, AudioChannelMode, ChannelSwitchSensitivity};
+        for (mode, core, hop) in [(VadProfile::Default, 12000, 2000), (VadProfile::Quick, 4000, 4000)] {
+            let parameters = mode.parameters(AudioChannelMode::Left, ChannelSwitchSensitivity::Stable, true);
+            assert_eq!(parameters.mode, mode);
+            assert_eq!(parameters.max_segment_ms, core);
+            assert_eq!(parameters.partial_interval_ms, hop);
+            assert_eq!(parameters.channel_mode, AudioChannelMode::Mix);
+            assert!(!parameters.suppress_non_speech_segments);
+        }
+        for legacy in ["normal", "asmr"] {
+            assert_eq!(serde_json::from_value::<VadProfile>(serde_json::json!(legacy)).unwrap(), VadProfile::Default);
+        }
     }
 
     #[test]

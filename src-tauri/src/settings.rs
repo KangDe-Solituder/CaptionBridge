@@ -146,6 +146,13 @@ pub fn save(paths: &AppPaths, settings: &AppSettings) -> Result<(), String> {
 }
 
 pub fn normalize(settings: &mut AppSettings) {
+    if let crate::models::CaptionSourceConfig::LocalAsr {
+        vad_profile, channel_mode, suppress_non_speech_segments, ..
+    } = &mut settings.captions.source {
+        *vad_profile = settings.captions.audio_mode;
+        *channel_mode = crate::models::AudioChannelMode::Mix;
+        *suppress_non_speech_segments = false;
+    }
     let defaults = AppSettings::default();
     settings.schema_version = defaults.schema_version;
     let mut order = Vec::new();
@@ -347,7 +354,7 @@ mod tests {
         );
         assert_eq!(
             settings.captions.source.channel_mode(),
-            Some(AudioChannelMode::Auto)
+            Some(AudioChannelMode::Mix)
         );
         assert_eq!(
             settings.captions.source.channel_switch_sensitivity(),
@@ -355,7 +362,7 @@ mod tests {
         );
         assert_eq!(
             settings.captions.source.suppress_non_speech_segments(),
-            Some(true)
+            Some(false)
         );
     }
 
@@ -407,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn v6_defaults_to_automatic_asmr_channel_routing() {
+    fn v6_migrates_to_stereo_mix() {
         let test_dir =
             std::env::temp_dir().join(format!("livecaption-v6-{}", uuid::Uuid::new_v4()));
         let paths = AppPaths::new(test_dir.clone());
@@ -423,14 +430,14 @@ mod tests {
         let migrated = load(&paths).unwrap();
         assert_eq!(
             migrated.captions.source.channel_mode(),
-            Some(AudioChannelMode::Auto)
+            Some(AudioChannelMode::Mix)
         );
         assert_eq!(migrated.schema_version, 11);
         let _ = fs::remove_dir_all(test_dir);
     }
 
     #[test]
-    fn v7_defaults_to_standard_sticky_routing() {
+    fn v7_disables_legacy_speech_gate() {
         let test_dir =
             std::env::temp_dir().join(format!("livecaption-v7-{}", uuid::Uuid::new_v4()));
         let paths = AppPaths::new(test_dir.clone());
@@ -449,7 +456,7 @@ mod tests {
         );
         assert_eq!(
             migrated.captions.source.suppress_non_speech_segments(),
-            Some(true)
+            Some(false)
         );
         assert_eq!(migrated.schema_version, 11);
         let _ = fs::remove_dir_all(test_dir);
