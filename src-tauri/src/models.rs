@@ -427,6 +427,10 @@ pub enum AccentStyle {
 #[serde(default)]
 pub struct OcrSettings {
     pub enabled: bool,
+    pub provider: String,
+    pub cloud_profile_id: Option<String>,
+    pub cloud_endpoint: String,
+    pub empty_retries: u8,
     pub source_language: String,
     pub target_language: String,
     pub source_placement: String,
@@ -449,6 +453,10 @@ impl Default for OcrSettings {
     fn default() -> Self {
         Self {
             enabled: true,
+            provider: "local".into(),
+            cloud_profile_id: None,
+            cloud_endpoint: "https://api.deepseek.com/v1/tools/ocr".into(),
+            empty_retries: 1,
             source_language: "auto".into(),
             target_language: String::new(),
             source_placement: "inline".into(),

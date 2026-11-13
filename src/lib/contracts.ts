@@ -14,7 +14,7 @@ export interface DownloadSettings { proxy_enabled: boolean; proxy_url: string; }
 export type MouseAction = "default" | "toolbar" | "capture";
 export interface MouseCapabilities { detected: boolean; buttons: number; hook_ready: boolean; error?: string | null; }
 export interface ToolbarSnapshot { text: string; x: number; y: number; mode: "hidden" | "docked" | "transient" | "expanded"; revision: number; }
-export interface OcrSettings { enabled: boolean; source_language: string; target_language: string; source_placement: "inline" | "bottom"; resident_toolbar: boolean; mouse_shortcuts: boolean; mouse_button_1: MouseAction; mouse_button_2: MouseAction; }
+export interface OcrSettings { enabled: boolean; provider: "local" | "deepseek"; cloud_profile_id?: string | null; cloud_endpoint: string; empty_retries: number; source_language: string; target_language: string; source_placement: "inline" | "bottom"; resident_toolbar: boolean; mouse_shortcuts: boolean; mouse_button_1: MouseAction; mouse_button_2: MouseAction; }
 export interface CaptionSettings {
   source: CaptionSourceConfig;
   enabled: boolean; auto_launch: boolean; poll_milliseconds: number;

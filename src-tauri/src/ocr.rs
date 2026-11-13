@@ -55,7 +55,7 @@ pub struct Block {
     pub id: u32,
     pub text: String,
     pub bounds: [u32; 4],
-    pub confidence: f64,
+    pub confidence: Option<f64>,
     #[serde(default)]
     pub translation: String,
     #[serde(default)]
@@ -71,6 +71,9 @@ pub struct ResultView {
     pub recognize_ms: u64,
     pub source_language: String,
     pub target_language: String,
+    pub provider: String,
+    pub progress: String,
+    pub can_retry: bool,
 }
 #[derive(Clone, Serialize)]
 pub struct Frame {
@@ -87,6 +90,7 @@ pub struct Service {
     generation: AtomicU64,
     cancel: watch::Sender<u64>,
     frame: Mutex<Option<Frame>>,
+    retained: Mutex<Option<(Frame, [u32; 4])>>,
     hidden: Mutex<Vec<String>>,
     result: RwLock<ResultView>,
 }
@@ -100,6 +104,7 @@ impl Default for Service {
             generation: AtomicU64::new(0),
             cancel: watch::channel(0).0,
             frame: Mutex::new(None),
+            retained: Mutex::new(None),
             hidden: Mutex::new(Vec::new()),
             result: RwLock::new(ResultView::default()),
         }
@@ -195,7 +200,7 @@ impl Service {
         }
         let worker = guard.as_mut().unwrap();
         let result = async {
-            if request["command"] != "capture" && !worker.verified {
+            if matches!(request["command"].as_str(), Some("recognize" | "test")) && !worker.verified {
                 let paths = state.paths.clone();
                 tokio::task::spawn_blocking(move || model_manager::verify_model(&paths, MODEL_ID)).await.map_err(|e| e.to_string())??;
                 worker.verified = true;
@@ -280,18 +285,24 @@ pub async fn start(app: AppHandle, state: AppState) -> Result<(), String> {
         return Err("正在框选，请先完成或按 Esc 取消".into());
     }
     let id = state.ocr.advance();
+    *state.ocr.retained.lock().await = None;
     // Snapshot this before hiding any window: hiding the foreground window can
     // activate another app-owned window and give a misleading focus result.
     let foreground =
         unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as isize;
     crate::toolbar::suspend(&app, &state);
     let result = async {
-        let manifest = model_manager::manifest(MODEL_ID)?;
-        if !manifest.files.iter().all(|f| {
-            std::fs::metadata(state.paths.models_dir.join(MODEL_ID).join(f.name))
-                .is_ok_and(|m| m.len() == f.size)
-        }) {
-            return Err("请先在设置 → 资源 → 文字识别 · OCR 下载或修复模型".to_string());
+        let settings = state.settings.read().map_err(|e| e.to_string())?.clone();
+        if settings.ocr.provider == "deepseek" {
+            crate::ocr_cloud::validate_config(&settings.ocr, &settings)?;
+        } else {
+            let manifest = model_manager::manifest(MODEL_ID)?;
+            if !manifest.files.iter().all(|f| {
+                std::fs::metadata(state.paths.models_dir.join(MODEL_ID).join(f.name))
+                    .is_ok_and(|m| m.len() == f.size)
+            }) {
+                return Err("请先在设置 → 资源 → 文字识别 · OCR 下载或修复模型".to_string());
+            }
         }
         let main = app.get_webview_window("main").ok_or("主窗口不可用")?;
         let monitors = main.available_monitors().map_err(|e| e.to_string())?;
@@ -392,6 +403,11 @@ pub async fn cancel_ocr(app: AppHandle, state: State<'_, AppState>) -> Result<()
     state.ocr.advance();
     let _transition = state.ocr.transition.lock().await;
     *state.ocr.frame.lock().await = None;
+    *state.ocr.retained.lock().await = None;
+    if let Ok(mut view) = state.ocr.result.write() {
+        *view = ResultView::default();
+    }
+    state.ocr.publish(&app);
     let _ = app.emit_to("ocr-capture", "ocr:clear-capture", ());
     for label in ["ocr-capture", "ocr-result"] {
         if let Some(window) = app.get_webview_window(label) {
@@ -448,6 +464,7 @@ pub async fn recognize_ocr(
     if !state.ocr.current(id) {
         return Err("截图已取消".into());
     }
+    *state.ocr.retained.lock().await = Some((frame, rect));
     if let Some(w) = app.get_webview_window("ocr-capture") {
         let _ = w.hide();
     }
@@ -458,6 +475,8 @@ pub async fn recognize_ocr(
         status: "recognizing".into(),
         source_language: source,
         target_language: target,
+        provider: defaults.ocr.provider,
+        can_retry: true,
         ..Default::default()
     };
     state.ocr.publish(&app);
@@ -467,47 +486,184 @@ pub async fn recognize_ocr(
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
     let state = state.inner().clone();
-    tauri::async_runtime::spawn(async move {
-        if !state.ocr.current(id) {
+    tauri::async_runtime::spawn(run_recognition(app, state, id));
+    Ok(())
+}
+
+fn progress(app: &AppHandle, state: &AppState, id: u64, message: String) {
+    if let Ok(mut view) = state.ocr.result.write() {
+        if view.session != id {
             return;
         }
-        let result=state.ocr.request(&state,json!({"command":"recognize","image":frame.image,"rect":rect,"model_path":state.paths.models_dir.join(MODEL_ID)})).await;
-        if !state.ocr.current(id) {
-            return;
+        view.progress = message;
+    }
+    state.ocr.publish(app);
+}
+
+async fn run_recognition(app: AppHandle, state: AppState, id: u64) {
+    if !state.ocr.current(id) {
+        return;
+    }
+    let outcome = async {
+        let settings = state.settings.read().map_err(|e| e.to_string())?.clone();
+        let (frame, rect) = state
+            .ocr
+            .retained
+            .lock()
+            .await
+            .clone()
+            .ok_or("截图已释放，请重新截图")?;
+        let cloud = settings.ocr.provider == "deepseek";
+        if cloud {
+            crate::ocr_cloud::validate_config(&settings.ocr, &settings)?;
         }
-        let outcome = result.and_then(|v| {
-            let blocks: Vec<Block> =
-                serde_json::from_value(v["blocks"].clone()).map_err(|e| e.to_string())?;
-            if blocks.len() > 100 {
-                return Err("文字块超过 100 个，请缩小截图范围".into());
+        progress(&app, &state, id, "正在准备选区图片…".into());
+        let cropped = state
+            .ocr
+            .request(
+                &state,
+                json!({"command":"prepare", "image":frame.image, "rect":rect}),
+            )
+            .await?;
+        let image = cropped["image"].as_str().ok_or("截图裁切失败")?.to_string();
+        let width = cropped["width"].as_u64().ok_or("截图裁切失败")? as u32;
+        let height = cropped["height"].as_u64().ok_or("截图裁切失败")? as u32;
+        {
+            let mut retained = state.ocr.retained.lock().await;
+            if !state.ocr.current(id) {
+                return Err("截图已取消".into());
             }
-            let mut view = state.ocr.result.write().map_err(|e| e.to_string())?;
-            if view.session != id {
-                return Ok(());
-            }
-            view.blocks = blocks;
-            view.load_ms = v["load_ms"].as_u64().unwrap_or(0);
-            view.recognize_ms = v["recognize_ms"].as_u64().unwrap_or(0);
-            view.status = if view.blocks.is_empty() {
-                "empty"
-            } else {
-                "translating"
-            }
-            .into();
-            Ok(())
-        });
-        if let Err(error) = outcome {
-            if let Ok(mut v) = state.ocr.result.write() {
-                if v.session == id {
-                    v.status = "error".into();
-                    v.error = Some(error);
+            // Retain only the selected pixels, until close or a new screenshot.
+            *retained = Some((
+                Frame {
+                    id,
+                    image: image.clone(),
+                    width,
+                    height,
+                },
+                [0, 0, width, height],
+            ));
+        }
+        let started = std::time::Instant::now();
+        let mut total_load = 0;
+        let blocks = retry_empty(settings.ocr.empty_retries, |attempt| {
+            let settings = &settings;
+            let image = &image;
+            let state = &state;
+            let app = &app;
+            async move {
+                let mut cancel = state.ocr.cancel.subscribe();
+                if !state.ocr.current(id) { return Err("截图已取消".into()); }
+                progress(app, state, id, if attempt > 0 {
+                    format!("未识别到文字，正在重试 {attempt}/{}", settings.ocr.empty_retries)
+                } else if cloud { "正在上传选区并进行云端识别…".into() }
+                else { "正在本地识别；首次使用需要加载模型…".into() });
+                if cloud {
+                    tokio::select! {
+                        _ = cancel.changed() => Err("截图已取消".into()),
+                        result = crate::ocr_cloud::recognize(&settings.ocr, settings, image) => result.map(|blocks| (blocks, 0)),
+                    }
+                } else {
+                    let value = state.ocr.request(state, json!({"command":"recognize", "image":image,
+                        "rect":[0,0,width,height], "model_path":state.paths.models_dir.join(MODEL_ID)})).await?;
+                    let mut blocks: Vec<Block> = serde_json::from_value(value["blocks"].clone()).map_err(|_| "OCR 返回格式无效")?;
+                    blocks.retain(|b| !b.text.trim().is_empty());
+                    Ok((blocks, value["load_ms"].as_u64().unwrap_or(0)))
                 }
             }
+        }, &mut total_load).await?;
+        if blocks.len() > 100 {
+            return Err("文字块超过 100 个，请缩小截图范围".into());
         }
-        state.ocr.publish(&app);
-        translate_blocks(app, state, id).await;
-    });
-    Ok(())
+        Ok((
+            blocks,
+            total_load,
+            started.elapsed().as_millis() as u64,
+            settings.ocr.provider,
+        ))
+    };
+    let result: Result<(Vec<Block>, u64, u64, String), String> = outcome.await;
+    if !state.ocr.current(id) {
+        return;
+    }
+    if let Ok(mut view) = state.ocr.result.write() {
+        if view.session != id {
+            return;
+        }
+        view.progress.clear();
+        match result {
+            Ok((blocks, load, elapsed, provider)) => {
+                view.provider = provider;
+                view.load_ms = load;
+                view.recognize_ms = elapsed.saturating_sub(load);
+                if blocks.is_empty() {
+                    view.status = "empty".into();
+                    view.error = Some("没有识别到文字，请重新识别或选择更清晰的区域。".into());
+                } else {
+                    view.blocks = blocks;
+                    view.status = "translating".into();
+                    view.error = None;
+                }
+            }
+            Err(error) => {
+                view.status = "error".into();
+                view.error = Some(error);
+            }
+        }
+    }
+    state.ocr.publish(&app);
+    translate_blocks(app, state, id).await;
+}
+
+async fn retry_empty<F, Fut>(
+    retries: u8,
+    mut attempt: F,
+    total_load: &mut u64,
+) -> Result<Vec<Block>, String>
+where
+    F: FnMut(u8) -> Fut,
+    Fut: std::future::Future<Output = Result<(Vec<Block>, u64), String>>,
+{
+    for index in 0..=retries.min(3) {
+        let (blocks, load) = attempt(index).await?;
+        *total_load += load;
+        if !blocks.is_empty() {
+            return Ok(blocks);
+        }
+    }
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+pub async fn test_cloud_ocr(
+    config: crate::models::OcrSettings,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let settings = state.settings.read().map_err(|e| e.to_string())?.clone();
+    crate::ocr_cloud::validate_config(&config, &settings)?;
+    let sample = state
+        .ocr
+        .request(&state, json!({"command":"cloud_test_image"}))
+        .await?;
+    let start = std::time::Instant::now();
+    let blocks = crate::ocr_cloud::recognize(
+        &config,
+        &settings,
+        sample["image"].as_str().ok_or("测试图片生成失败")?,
+    )
+    .await?;
+    if blocks.is_empty() {
+        return Err("接口已接通，但测试图片未返回文字，请重试".into());
+    }
+    Ok(format!(
+        "DeepSeek OCR 测试成功 · {}ms · {}",
+        start.elapsed().as_millis(),
+        blocks
+            .iter()
+            .map(|b| b.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    ))
 }
 async fn translate_blocks(app: AppHandle, state: AppState, id: u64) {
     let mut cancel = state.ocr.cancel.subscribe();
@@ -527,6 +683,9 @@ async fn translate_blocks(app: AppHandle, state: AppState, id: u64) {
     };
     let glossary = crate::translation_glossary(&state);
     for block in view.blocks {
+        if !block.translation.is_empty() && block.error.is_none() {
+            continue;
+        }
         if !state.ocr.current(id) {
             return;
         }
@@ -591,31 +750,58 @@ pub async fn retry_ocr_translation(
     if state.ocr.capturing.load(Ordering::SeqCst) {
         return Err("请先完成截图框选".into());
     }
-    if state
-        .ocr
-        .result
+    if state.ocr.retained.lock().await.is_none() {
+        return Err("截图已释放，请重新截图".into());
+    }
+    let translation_only = {
+        let view = state.ocr.result.read().map_err(|e| e.to_string())?;
+        if matches!(view.status.as_str(), "recognizing" | "translating") {
+            return Err("正在处理，请稍候".into());
+        }
+        !view.blocks.is_empty()
+            && view.blocks.iter().any(|b| b.error.is_some())
+            && view.source_language == source_language
+            && view.target_language == target_language
+            && view.status == "ready"
+    };
+    let provider = state
+        .settings
         .read()
         .map_err(|e| e.to_string())?
-        .blocks
-        .is_empty()
-    {
-        return Err("没有可翻译的文字，请重新截图".into());
-    }
+        .ocr
+        .provider
+        .clone();
     let id = state.ocr.advance();
     {
         let mut view = state.ocr.result.write().map_err(|e| e.to_string())?;
         view.session = id;
-        view.status = "translating".into();
+        view.status = if translation_only {
+            "translating"
+        } else {
+            "recognizing"
+        }
+        .into();
+        view.provider = provider;
+        view.progress.clear();
+        view.error = None;
         view.source_language = source_language;
         view.target_language = target_language;
-        for b in &mut view.blocks {
-            b.translation.clear();
-            b.error = None;
+        if translation_only {
+            for b in &mut view.blocks {
+                if b.error.is_some() {
+                    b.translation.clear();
+                    b.error = None;
+                }
+            }
         }
     }
     state.ocr.publish(&app);
     let state = state.inner().clone();
-    tauri::async_runtime::spawn(translate_blocks(app, state, id));
+    if translation_only {
+        tauri::async_runtime::spawn(translate_blocks(app, state, id));
+    } else {
+        tauri::async_runtime::spawn(run_recognition(app, state, id));
+    }
     Ok(())
 }
 #[tauri::command]
@@ -627,6 +813,71 @@ pub fn open_ocr_resources(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn empty_results_retry_but_errors_and_nonempty_results_do_not() {
+        let mut calls = 0;
+        let mut load = 0;
+        let blocks = retry_empty(
+            1,
+            |_| {
+                calls += 1;
+                let blocks = if calls == 2 {
+                    vec![Block {
+                        text: "日本語".into(),
+                        ..Default::default()
+                    }]
+                } else {
+                    vec![]
+                };
+                std::future::ready(Ok((blocks, 7)))
+            },
+            &mut load,
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(load, 14);
+        assert_eq!(blocks[0].text, "日本語");
+        calls = 0;
+        assert!(retry_empty(
+            3,
+            |_| {
+                calls += 1;
+                std::future::ready(Err("认证失败".into()))
+            },
+            &mut load
+        )
+        .await
+        .is_err());
+        assert_eq!(calls, 1);
+        calls = 0;
+        assert!(retry_empty(
+            0,
+            |_| {
+                calls += 1;
+                std::future::ready(Ok((vec![], 0)))
+            },
+            &mut load
+        )
+        .await
+        .unwrap()
+        .is_empty());
+        assert_eq!(calls, 1);
+        calls = 0;
+        assert!(retry_empty(
+            3,
+            |_| {
+                calls += 1;
+                std::future::ready(Ok((vec![], 0)))
+            },
+            &mut load
+        )
+        .await
+        .unwrap()
+        .is_empty());
+        assert_eq!(calls, 4);
+    }
 
     #[test]
     fn external_capture_never_restores_background_or_minimized_main() {
@@ -664,6 +915,46 @@ mod tests {
                 CaptureWindowAction::Hide
             );
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "uses the saved official DeepSeek credential and bills up to two synthetic OCR pages"]
+    async fn cloud_ocr_live_smoke() {
+        let paths = crate::settings::AppPaths::shared().unwrap();
+        let settings = crate::settings::load(&paths).unwrap();
+        let profile = settings
+            .llm_profiles
+            .iter()
+            .find(|p| {
+                p.api_key_configured && crate::ocr_cloud::official_url(&p.config.endpoint).is_ok()
+            })
+            .expect("official DeepSeek profile required");
+        let config = crate::models::OcrSettings {
+            cloud_profile_id: Some(profile.id.clone()),
+            ..Default::default()
+        };
+        let mut worker = Worker::start().unwrap();
+        let image = worker
+            .request(json!({"command":"cloud_test_image"}))
+            .await
+            .unwrap();
+        let _ = worker.child.kill().await;
+        let mut load = 0;
+        let blocks = retry_empty(
+            1,
+            |_| async {
+                crate::ocr_cloud::recognize(&config, &settings, image["image"].as_str().unwrap())
+                    .await
+                    .map(|b| (b, 0))
+            },
+            &mut load,
+        )
+        .await
+        .unwrap();
+        assert!(
+            blocks.iter().any(|b| b.text.contains("123")),
+            "sample text was not recognized"
+        );
     }
 
     #[tokio::test]

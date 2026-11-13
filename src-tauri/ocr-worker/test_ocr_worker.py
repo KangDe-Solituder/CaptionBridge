@@ -1,7 +1,8 @@
 import io
 import json
 import unittest
-from ocr_worker import MAX_BLOCK_CHARS, group_lines, serve, validate_crop
+import importlib.util
+from ocr_worker import MAX_BLOCK_CHARS, Worker, group_lines, serve, validate_crop
 
 
 def line(text, x, y, w=100, h=20):
@@ -98,6 +99,27 @@ class LayoutTests(unittest.TestCase):
         for rect in ([-1, 0, 20, 20], [0, 0, 101, 20], [0, 0, 2, 2], [0, 0, 20.5, 20]):
             with self.assertRaises(ValueError):
                 validate_crop(rect, 100, 100)
+
+
+@unittest.skipUnless(importlib.util.find_spec('PIL'), 'requires Pillow')
+class CloudPreparationTests(unittest.TestCase):
+    def test_only_selected_pixels_are_encoded_without_loading_a_model(self):
+        import base64
+        from PIL import Image
+        image = Image.new('RGB', (80, 60), 'red')
+        image.paste('blue', (20, 10, 50, 40))
+        buffer = io.BytesIO()
+        image.save(buffer, format='PNG')
+        worker = Worker()
+        result = worker.handle({'command': 'prepare', 'image': base64.b64encode(buffer.getvalue()).decode(), 'rect': [20, 10, 30, 30]})
+        cropped = Image.open(io.BytesIO(base64.b64decode(result['image'])))
+        self.assertEqual(cropped.size, (30, 30))
+        self.assertEqual(cropped.getpixel((0, 0)), (0, 0, 255))
+        self.assertEqual(cropped.getpixel((29, 29)), (0, 0, 255))
+        self.assertIsNone(worker.engine)
+        sample = worker.handle({'command': 'cloud_test_image'})
+        self.assertEqual(sample['width'], 420)
+        self.assertIsNone(worker.engine)
 
 
 class ProtocolTests(unittest.TestCase):

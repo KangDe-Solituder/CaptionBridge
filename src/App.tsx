@@ -1,3 +1,4 @@
+import { OcrCloudSettings } from "./components/OcrCloudSettings";
 import { HistoryFollow } from "./lib/history-follow";
 import { AppearanceChoices, SidebarThemeControl, SubtitlePreview, useSidebarDock } from "./components/WorkbenchAppearance";
 import { LlmProfiles } from "./components/LlmProfiles";
@@ -403,7 +404,7 @@ function SelectionPage({ settings, status, result, testing, onTest, onSettings }
     <PageHeader eyebrow="QUICK TRANSLATE" title="此刻，想翻译什么？" description="选中一段文字，或框住屏幕上的一个区域。" />
     <div className="quick-layout"><section className="quick-actions">
       <article><div className="workflow-icon"><MousePointer2 /></div><h2>划词翻译</h2><p>{automatic ? "选中有效文字后，在光标旁显示工具栏。" : "选中文字，用快捷键唤出翻译工具栏。"}</p><footer><span>{automatic ? "自动感知选区" : displayHotkey(settings.selection.hotkey)} · {settings.selection.enabled ? "已启用" : "已关闭"}</span><button className="ghost" aria-label="划词翻译设置" onClick={() => onSettings("features", "selection")}><Settings /></button></footer></article>
-      <article><div className="workflow-icon"><ScanText /></div><h2>截图翻译</h2><p>框选图片或屏幕文字，本地识别后按文字块翻译。</p>{ocrError && <p role="alert">{ocrError}</p>}<footer><button className="primary" disabled={!settings.ocr.enabled} onClick={() => { setOcrError(""); void startOcrCapture().catch(e => setOcrError(String(e))); }}><ScanText />开始截图</button><button className="ghost" aria-label="截图翻译设置" onClick={() => onSettings("features", "ocr")}><Settings /></button></footer></article>
+      <article><div className="workflow-icon"><ScanText /></div><h2>截图翻译</h2><p>框选图片或屏幕文字，识别后按文字块翻译。</p>{ocrError && <p role="alert">{ocrError}</p>}<footer><button className="primary" disabled={!settings.ocr.enabled} onClick={() => { setOcrError(""); void startOcrCapture().catch(e => setOcrError(String(e))); }}><ScanText />开始截图</button><button className="ghost" aria-label="截图翻译设置" onClick={() => onSettings("features", "ocr")}><Settings /></button></footer></article>
     </section><section className="translation-chain"><header><h2>当前翻译配置</h2><button className="ghost" aria-label="配置翻译服务" onClick={() => onSettings("application", "translation")}><Settings /></button></header><div className="chain-symbol"><Languages /></div><strong>{settings.llm.model || "尚未配置服务"}</strong><p>目标语言 · {settings.llm.target_language}</p><div className="chain-list"><span>划词快捷键<b>{status.selection_hotkey_registered ? "已注册" : "未注册"}</b></span><span>字幕来源<b>{sourceName(settings.captions.source)}</b></span></div><button className="ghost" disabled={testing || !settings.llm.profile_id} onClick={onTest}>{testing ? <Loader2 className="spin" /> : <Activity />}测试翻译连接</button><small>向当前模型发送一句示例文本，检查翻译连接。</small></section></div>
     <section className="recent-section"><div className="section-label"><span>最近翻译</span>{result.translated_text && <small>{result.latency_ms}ms</small>}</div>{result.translated_text ? <ResultBlock result={result} /> : <div className="quiet-empty"><Languages /><div><h3>还没有翻译记录</h3><p>去任意应用选中一段文字试试。</p></div></div>}</section>
   </div>;
@@ -951,8 +952,9 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
         </>}
     </section><section className="settings-chapter" id="settings-ocr" aria-labelledby="heading-ocr">
       <header className="chapter-heading"><div><h2 id="heading-ocr">截图翻译</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("resources", "ocr-models")}>管理 OCR 资源<ArrowRight /></button></header>
-      <div className="two-cols"><Field label="默认原文语言" hint="用于翻译；OCR 模型支持中、英、日文识别。"><select value={s.ocr.source_language} onChange={e => update({ ...s, ocr: { ...s.ocr, source_language: e.target.value } })}><option value="auto">自动检测</option>{["中文", "English", "日本語"].map(language => <option key={language}>{language}</option>)}</select></Field>
+      <div className="two-cols"><Field label="默认原文语言" hint="仅用于翻译，不限制 OCR 自动识别的语言。"><select value={s.ocr.source_language} onChange={e => update({ ...s, ocr: { ...s.ocr, source_language: e.target.value } })}><option value="auto">自动检测</option>{["中文", "English", "日本語"].map(language => <option key={language}>{language}</option>)}</select></Field>
       <Field label="默认译文语言" hint="留空时跟随应用中的翻译服务设置。"><input maxLength={40} placeholder={`跟随翻译服务 · ${s.llm.target_language}`} value={s.ocr.target_language} onChange={e => update({ ...s, ocr: { ...s.ocr, target_language: e.target.value } })} /></Field></div>
+      <SettingRow title="识别结果为空时，额外重试次数" description="默认额外重试一次；云端每次重试都会重新上传同一张选区图片。认证、余额或翻译错误不触发此重试。"><select aria-label="空结果额外重试次数" value={s.ocr.empty_retries} onChange={e => update({ ...s, ocr: { ...s.ocr, empty_retries: Number(e.target.value) } })}>{[0, 1, 2, 3].map(n => <option key={n} value={n}>{n} 次{n === 1 ? "（默认）" : ""}</option>)}</select></SettingRow>
       <SettingRow title="原文位置" description="设置结果窗口的默认布局；也可以在结果窗口临时调整。"><Segmented value={s.ocr.source_placement} options={[{ label: "每块译文下方", value: "inline" }, { label: "底部显示选中块", value: "bottom" }]} onChange={source_placement => update({ ...s, ocr: { ...s.ocr, source_placement } })} /></SettingRow>
     </section></>}{tab === "resources" && <><section className="settings-chapter" id="settings-asr-models" aria-labelledby="heading-asr-models">
       <header className="chapter-heading"><div><h2 id="heading-asr-models">语音识别 · ASR</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("features", "captions")}>字幕设置<ArrowRight /></button></header>
@@ -964,7 +966,8 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
 
     </section><section className="settings-chapter" id="settings-ocr-models" aria-labelledby="heading-ocr-models">
       <header className="chapter-heading"><div><h2 id="heading-ocr-models">文字识别 · OCR</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("features", "ocr")}>截图设置<ArrowRight /></button></header>
-              <ModelManager selectedModel="ocr-ppocr-v5-mobile" title="OCR 模型管理" models={props.models.filter(model => model.kind === "ocr")} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
+              <OcrCloudSettings settings={s} onChange={ocr => update({ ...s, ocr })} onMessage={props.onMessage} onManageProfiles={() => navigateTo("application", "translation")} />
+              <ModelManager selectedModel={s.ocr.provider === "local" ? "ocr-ppocr-v5-mobile" : undefined} onSelect={async () => { update({ ...s, ocr: { ...s.ocr, provider: "local" } }); props.onMessage("已选择本地 OCR，保存设置后生效"); }} title="本地 OCR 模型" models={props.models.filter(model => model.kind === "ocr")} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
 
     </section><section className="settings-chapter" id="settings-network" aria-labelledby="heading-network">
       <header className="chapter-heading"><div><h2 id="heading-network">网络与下载</h2></div></header>

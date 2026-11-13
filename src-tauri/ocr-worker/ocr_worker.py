@@ -219,6 +219,21 @@ class Worker:
         command = request['command']
         if command == 'ping':
             return {'protocol': 1}
+        if command in ('prepare', 'cloud_test_image'):
+            # Crop locally before any cloud upload. This path never loads OCR models.
+            if command == 'cloud_test_image':
+                from PIL import ImageDraw
+                image = Image.new('RGB', (420, 90), 'white')
+                ImageDraw.Draw(image).text((16, 20), 'OCR test 123', fill='black', font_size=36)
+            else:
+                image = Image.open(io.BytesIO(base64.b64decode(request['image'], validate=True)))
+                if image.width * image.height > MAX_PIXELS:
+                    raise ValueError('截图过大')
+                image = image.crop(validate_crop(request['rect'], image.width, image.height)).convert('RGB')
+            buf = io.BytesIO()
+            image.save(buf, format='PNG')
+            return {'image': base64.b64encode(buf.getvalue()).decode('ascii'),
+                    'width': image.width, 'height': image.height}
         if command == 'capture':
             left, top, width, height = request['monitor']
             if width < 1 or height < 1 or width * height > MAX_PIXELS:

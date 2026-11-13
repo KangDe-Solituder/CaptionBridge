@@ -9,9 +9,9 @@ import "./ocr.css";
 
 type Frame = { id: number; image: string; width: number; height: number };
 type Rect = [number, number, number, number];
-type Block = { id: number; text: string; translation: string; confidence: number; bounds: Rect; error?: string };
-type ResultView = { session: number; status: string; blocks: Block[]; error?: string; load_ms: number; recognize_ms: number; source_language: string; target_language: string };
-const empty: ResultView = { session: 0, status: "idle", blocks: [], load_ms: 0, recognize_ms: 0, source_language: "auto", target_language: "中文" };
+type Block = { id: number; text: string; translation: string; confidence: number | null; bounds: Rect; error?: string };
+type ResultView = { session: number; status: string; blocks: Block[]; error?: string; load_ms: number; recognize_ms: number; source_language: string; target_language: string; provider: string; progress: string; can_retry: boolean };
+const empty: ResultView = { provider: "local", progress: "", can_retry: false, session: 0, status: "idle", blocks: [], load_ms: 0, recognize_ms: 0, source_language: "auto", target_language: "中文" };
 const number = (id: number) => String(id).padStart(2, "0");
 export const startOcrCapture = () => invoke<void>("start_ocr_capture");
 const cancelOcr = () => invoke<void>("cancel_ocr");
@@ -76,7 +76,7 @@ export function OcrCaptureWindow() {
 }
 
 // Browser preview data never reaches the OCR worker or translation provider.
-const preview: ResultView = { ...empty, session: 1, status: "ready", recognize_ms: 428, blocks: [
+const preview: ResultView = { ...empty, can_retry: true, session: 1, status: "ready", recognize_ms: 428, blocks: [
   { id: 1, text: "Enjoy a quiet morning in Kyoto.", translation: "在京都，享受宁静的早晨。", confidence: .99, bounds: [0, 0, 400, 30] },
   { id: 2, text: "Open daily\n9:00 – 18:00", translation: "每日开放\n9:00 – 18:00", confidence: .98, bounds: [0, 80, 300, 70] },
   { id: 3, text: "Please keep your ticket.", translation: "请保管好您的门票。", confidence: .97, bounds: [0, 180, 320, 30] },
@@ -145,27 +145,31 @@ export function OcrResultWindow() {
     try { await invoke("retry_ocr_translation", { sourceLanguage: source, targetLanguage: target }); } catch (e) { notify(String(e)); }
   };
   const current = view.blocks.find(b => b.id === selected) ?? view.blocks[0];
+  const translationFailed = view.status === "ready" && view.blocks.some(b => b.error);
+  const retryLabel = translationFailed ? "重试失败的翻译" : "重新识别并翻译";
   const working = view.status === "recognizing" || view.status === "translating";
   return <main className="ocr-result" onPointerDown={e => { if (!(e.target as HTMLElement).closest(".ocr-context")) setMenu(undefined); }}>
     <header className="ocr-header" onPointerDown={e => { if (e.button === 0 && !(e.target as HTMLElement).closest("button")) void currentWindow.startDragging(); }}>
       <span className="ocr-title"><ScanText size={17} />截图翻译</span><span className="ocr-drag"><Grip size={14} />拖动</span>
       <button title="重新截图" aria-label="重新截图" onClick={() => void startOcrCapture().catch(e => notify(String(e)))}><ScanText size={17} /></button>
-      <button title="重新翻译" aria-label="重新翻译" disabled={!view.blocks.length || working} onClick={() => void retry()}><RefreshCw size={17} /></button>
+      <button title={retryLabel} aria-label={retryLabel} disabled={!view.can_retry || working} onClick={() => void retry()}><RefreshCw size={17} /></button>
       <button title="关闭" aria-label="关闭截图翻译" onClick={() => void cancelOcr()}><X size={18} /></button>
     </header>
     <section className="ocr-content" onScroll={() => setMenu(undefined)}>
+      {view.blocks.length > 0 && view.status === "recognizing" && <p className="ocr-count" role="status"><Loader2 size={14} className="spin" />{view.progress || "正在重新识别截图…"}</p>}
+      {view.blocks.length > 0 && view.error && <p className="ocr-error" role="alert">{view.error} 上一次结果已保留。</p>}
       {view.blocks.length > 0 && <p className="ocr-count">{view.blocks.length} 个文字块 · 按阅读顺序{view.status === "translating" && <span><Loader2 size={12} className="spin" />翻译中</span>}</p>}
       {view.blocks.map(block => <article key={block.id} className="ocr-block" data-selected={selected === block.id} onClick={() => setSelected(block.id)}>
         <span className="ocr-index">{number(block.id)}</span><div className="ocr-block-content">
           <div className="ocr-translation" tabIndex={0} onContextMenu={e => showMenu(e, block)}>{block.translation || <span className="ocr-placeholder">{block.error ? "翻译失败" : "等待翻译…"}</span>}</div>
           {block.error && <p className="ocr-error">{block.error}</p>}
           {placement === "inline" && <div className="ocr-original" tabIndex={0} onContextMenu={e => showMenu(e, block, true)}>{block.text}</div>}
-          {block.confidence < .8 && <small className="ocr-confidence">识别把握较低，建议核对原文</small>}
+          {block.confidence != null && block.confidence < .8 && <small className="ocr-confidence">识别把握较低，建议核对原文</small>}
         </div><button className="ocr-block-more" aria-label={`文字块 ${number(block.id)} 复制菜单`} onClick={e => showMenu(e, block, false, true)}><MoreHorizontal size={18} /></button>
       </article>)}
       {!view.blocks.length && <div className="ocr-empty">
-        {view.status === "recognizing" ? <><Loader2 size={25} className="spin" /><strong>正在识别截图</strong><span>首次使用需要加载本地模型</span></> : <><ScanText size={27} /><strong>{view.status === "empty" ? "没有识别到文字" : view.status === "error" ? "识别未完成" : "框选屏幕上的文字"}</strong><span>{view.error || "请尝试较清晰的文字区域，避免选区过小。"}</span>
-          <div><button onClick={() => void startOcrCapture().catch(e => notify(String(e)))}>重新截图</button><button onClick={() => void openResources()}>管理 OCR 资源</button></div></>}
+        {view.status === "recognizing" ? <><Loader2 size={25} className="spin" /><strong>正在识别截图</strong><span role="status">{view.progress || (view.provider === "deepseek" ? "正在上传选区并进行云端识别" : "首次使用需要加载本地模型")}</span></> : <><ScanText size={27} /><strong>{view.status === "empty" ? "没有识别到文字" : view.status === "error" ? "识别未完成" : "框选屏幕上的文字"}</strong><span>{view.error || "请尝试较清晰的文字区域，避免选区过小。"}</span>
+          <div>{view.can_retry && <button onClick={() => void retry()}>重新识别</button>}<button onClick={() => void startOcrCapture().catch(e => notify(String(e)))}>重新截图</button><button onClick={() => void openResources()}>管理 OCR 资源</button></div></>}
       </div>}
     </section>
     <footer className="ocr-footer">
@@ -176,8 +180,8 @@ export function OcrResultWindow() {
       <strong>截图翻译设置</strong>
       <label>原文位置<select value={placement} onChange={e => setPlacement(e.target.value)}><option value="inline">每块译文下方</option><option value="bottom">底部显示选中块</option></select></label>
       <div className="ocr-language-row"><label>原文语言<select value={source} onChange={e => setSource(e.target.value)}><option value="auto">自动检测</option>{languages.map(l => <option key={l}>{l}</option>)}</select></label><span>→</span><label>译文语言<select value={target} onChange={e => setTarget(e.target.value)}>{!languages.includes(target) && <option>{target}</option>}{languages.map(l => <option key={l}>{l}</option>)}</select></label></div>
-      <p>语言设置用于翻译。OCR 当前使用中、英、日文通用模型。</p>
-      <button className="ocr-apply" disabled={!view.blocks.length || view.status === "recognizing"} onClick={() => void retry()}>应用并重新翻译</button><button onClick={() => void openResources()}>管理 OCR 资源</button>
+      <p>语言设置用于翻译。重新识别使用本次保留的选区图片。</p>
+      <button className="ocr-apply" disabled={!view.can_retry || working} onClick={() => void retry()}>应用并重新识别翻译</button><button onClick={() => void openResources()}>管理 OCR 资源</button>
     </section></>}
     {menu && <div className="ocr-context" role="menu" style={{ left: menu.x, top: menu.y }} onContextMenu={e => e.preventDefault()}>
       <small>文字块 {number(menu.block.id)} · 复制</small>

@@ -7,7 +7,7 @@ export const previewSettings: AppSettings = {
   schema_version: 11,
   toolbar_order: ["selection", "ocr", "captions"],
   llm_profiles: [],
-  ocr: { enabled: true, source_language: "auto", target_language: "", source_placement: "inline", resident_toolbar: false, mouse_shortcuts: false, mouse_button_1: "default", mouse_button_2: "default" },
+  ocr: { enabled: true, provider: "local", cloud_profile_id: null, cloud_endpoint: "https://api.deepseek.com/v1/tools/ocr", empty_retries: 1, source_language: "auto", target_language: "", source_placement: "inline", resident_toolbar: false, mouse_shortcuts: false, mouse_button_1: "default", mouse_button_2: "default" },
   llm: { endpoint: "https://api.openai.com/v1", model: "gpt-4o-mini", target_language: "中文", extra_body_json: "", timeout_milliseconds: 5000, max_tokens: 768, temperature: 0.2, thinking_enabled: false },
   selection: { enabled: true, clipboard_fallback_enabled: true, hotkey: "Alt+KeyQ", trigger_mode: "automatic" },
   captions: { source: { type: "local_asr", model_id: "kotoba-whisper-v2.0-faster", device: "cuda", compute_type: "int8_float16", vad_profile: "default", channel_mode: "mix", channel_switch_sensitivity: "standard", suppress_non_speech_segments: false }, enabled: true, auto_launch: true, poll_milliseconds: 160, stable_milliseconds: 420, max_duration_milliseconds: 1800, max_chars: 96, context_segments: 2, audio_mode: "default", model_mirror_url: "https://hf-mirror.com" },

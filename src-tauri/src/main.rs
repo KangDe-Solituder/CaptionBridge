@@ -15,6 +15,7 @@ mod native_caption_reader;
 mod native_selection_reader;
 mod network;
 mod ocr;
+mod ocr_cloud;
 mod secrets;
 mod segmenter;
 mod sessions;
@@ -226,6 +227,9 @@ async fn save_settings(
         request.settings.llm_profiles = current.llm_profiles.clone();
         settings::normalize(&mut request.settings);
         network::validate_download_settings(&request.settings.downloads)?;
+        if request.settings.ocr.provider == "deepseek" {
+            ocr_cloud::validate_config(&request.settings.ocr, &request.settings)?;
+        }
         if !request.settings.llm.extra_body_json.trim().is_empty() {
             let value: serde_json::Value =
                 serde_json::from_str(&request.settings.llm.extra_body_json)
@@ -1395,6 +1399,7 @@ fn run_app() {
             ocr::cancel_ocr,
             ocr::recognize_ocr,
             ocr::retry_ocr_translation,
+            ocr::test_cloud_ocr,
             ocr::open_ocr_resources,
             get_settings,
             set_theme,

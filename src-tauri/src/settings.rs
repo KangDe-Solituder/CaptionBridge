@@ -170,6 +170,11 @@ pub fn normalize(settings: &mut AppSettings) {
         settings.selection.enabled = true;
     }
     settings.ocr.source_language = settings.ocr.source_language.trim().to_string();
+    if !matches!(settings.ocr.provider.as_str(), "local" | "deepseek") {
+        settings.ocr.provider = "local".into();
+    }
+    settings.ocr.empty_retries = settings.ocr.empty_retries.min(3);
+    settings.ocr.cloud_endpoint = settings.ocr.cloud_endpoint.trim().to_string();
     if settings.ocr.source_language.is_empty() || settings.ocr.source_language.len() > 80 {
         settings.ocr.source_language = "auto".into();
     }
@@ -285,6 +290,10 @@ mod tests {
         expected.ocr.source_language = "日本語".into();
         expected.ocr.target_language = "English".into();
         expected.ocr.source_placement = "bottom".into();
+        expected.ocr.provider = "deepseek".into();
+        expected.ocr.cloud_profile_id = Some("ocr-test-profile".into());
+        expected.ocr.cloud_endpoint = "https://api.deepseek.com/tools/ocr".into();
+        expected.ocr.empty_retries = 2;
 
         save(&paths, &expected).unwrap();
         let actual = load(&paths).unwrap();
@@ -300,6 +309,10 @@ mod tests {
         assert_eq!(actual.ocr.source_language, "日本語");
         assert_eq!(actual.ocr.target_language, "English");
         assert_eq!(actual.ocr.source_placement, "bottom");
+        assert_eq!(actual.ocr.provider, "deepseek");
+        assert_eq!(actual.ocr.cloud_profile_id, expected.ocr.cloud_profile_id);
+        assert_eq!(actual.ocr.cloud_endpoint, expected.ocr.cloud_endpoint);
+        assert_eq!(actual.ocr.empty_retries, 2);
 
         let _ = fs::remove_dir_all(test_dir);
     }
@@ -330,6 +343,9 @@ mod tests {
         assert_eq!(settings.ocr.source_language, "auto");
         assert!(settings.ocr.target_language.is_empty());
         assert_eq!(settings.ocr.source_placement, "inline");
+        assert_eq!(settings.ocr.provider, "local");
+        assert_eq!(settings.ocr.empty_retries, 1);
+        assert!(settings.ocr.cloud_profile_id.is_none());
     }
 
     #[test]
@@ -338,10 +354,14 @@ mod tests {
         settings.ocr.source_language = "   ".into();
         settings.ocr.target_language = "語".repeat(40);
         settings.ocr.source_placement = "unknown".into();
+        settings.ocr.provider = "unknown".into();
+        settings.ocr.empty_retries = 255;
         normalize(&mut settings);
         assert_eq!(settings.ocr.source_language, "auto");
         assert!(settings.ocr.target_language.is_empty());
         assert_eq!(settings.ocr.source_placement, "inline");
+        assert_eq!(settings.ocr.provider, "local");
+        assert_eq!(settings.ocr.empty_retries, 3);
     }
 
     #[test]
