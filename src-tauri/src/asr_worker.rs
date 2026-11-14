@@ -35,6 +35,7 @@ enum WorkerCommand<'a> {
     DryRun,
     ProbeDependencies,
     Start,
+    StartCloud,
     Stop,
     Shutdown,
 }
@@ -42,6 +43,11 @@ enum WorkerCommand<'a> {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerEvent {
+    Audio {
+        wav_base64: String,
+        start_ms: u64,
+        end_ms: u64,
+    },
     LoadingProgress {
         progress: f32,
         message: String,
@@ -281,6 +287,9 @@ impl AsrWorker {
 
     pub async fn start(&mut self) -> Result<(), String> {
         self.send(WorkerCommand::Start).await
+    }
+    pub async fn start_cloud(&mut self) -> Result<(), String> {
+        self.send(WorkerCommand::StartCloud).await
     }
     pub async fn stop(&mut self) -> Result<(), String> {
         self.send(WorkerCommand::Stop).await

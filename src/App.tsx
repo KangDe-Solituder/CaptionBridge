@@ -1,3 +1,5 @@
+import { HelpTip } from "./components/HelpTip";
+import { AsrCloudSettings } from "./components/AsrCloudSettings";
 import { OcrCloudSettings } from "./components/OcrCloudSettings";
 import { HistoryFollow } from "./lib/history-follow";
 import { AppearanceChoices, SidebarThemeControl, SubtitlePreview, useSidebarDock } from "./components/WorkbenchAppearance";
@@ -430,6 +432,7 @@ function CaptionHealth({ status }: { status: RuntimeStatus }) {
 }
 function sourceName(source?: CaptionSourceConfig) {
   if (!source || source.type === "windows_live_caption") return "Windows Live Caption";
+  if (source.type === "cloud_asr") return source.provider === "openai" ? "OpenAI ASR" : "DeepSeek ASR";
   return source.model_id === "kotoba-whisper-v2.0-faster" ? "Kotoba Whisper v2.0" : source.model_id === "whisper-large-v3" ? "Whisper large-v3" : "Whisper large-v3-turbo";
 }
 const SESSION_PAGE_SIZE = 20;
@@ -958,16 +961,17 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
       <SettingRow title="原文位置" description="设置结果窗口的默认布局；也可以在结果窗口临时调整。"><Segmented value={s.ocr.source_placement} options={[{ label: "每块译文下方", value: "inline" }, { label: "底部显示选中块", value: "bottom" }]} onChange={source_placement => update({ ...s, ocr: { ...s.ocr, source_placement } })} /></SettingRow>
     </section></>}{tab === "resources" && <><section className="settings-chapter" id="settings-asr-models" aria-labelledby="heading-asr-models">
       <header className="chapter-heading"><div><h2 id="heading-asr-models">语音识别 · ASR</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("features", "captions")}>字幕设置<ArrowRight /></button></header>
-              <SettingRow title="本地 ASR 运行环境" description="检查 Worker、NVIDIA 驱动、CUDA/cuDNN 实际加载状态和 CTranslate2 GPU 可用性；旧 Worker 会自动改用模型推理验证。">
-          <button className="ghost" onClick={() => void runDependencyCheck()} disabled={checkingDependencies}>{checkingDependencies ? <Loader2 className="spin" /> : <Activity />}检查依赖</button>
-        </SettingRow>
+<details className="resource-group" open><summary><span>本地 ASR<HelpTip text="检查 Worker、NVIDIA 驱动、CUDA/cuDNN 实际加载状态和 CTranslate2 GPU 可用性；旧 Worker 会自动改用模型推理验证。" /></span>
+          <span className="resource-actions" onClick={event => event.stopPropagation()}><button type="button" className="ghost" onClick={() => void openModelsDir()}><ExternalLink />模型目录</button><button type="button" className="ghost" onClick={props.refreshModels}><RefreshCw />重新检查</button><button type="button" className="ghost" onClick={() => void runDependencyCheck()} disabled={checkingDependencies}>{checkingDependencies ? <Loader2 className="spin" /> : <Activity />}检查依赖</button></span>
+        </summary>
         <div className="system-caption-source"><div><h3>Windows Live Caption</h3><p>Windows 系统字幕 · 无需下载 ASR 模型</p></div><button className="ghost" disabled={s.captions.source.type === "windows_live_caption" || props.status.caption_state === "switching"} onClick={() => void props.onSelectSource({ type: "windows_live_caption" })}>{s.captions.source.type === "windows_live_caption" ? <><Check />当前来源</> : "选中"}</button></div>
-        <ModelManager selectedModel={s.captions.source.type === "local_asr" ? s.captions.source.model_id : undefined} selecting={props.status.caption_state === "switching"} onSelect={model_id => props.onSelectSource({ type: "local_asr", model_id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "mix", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : false })} models={props.models.filter(model => model.kind === "asr")} activeModel={props.status.active_model} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
+        <ModelManager selectedModel={s.captions.source.type === "local_asr" ? s.captions.source.model_id : undefined} selecting={props.status.caption_state === "switching"} onSelect={model_id => props.onSelectSource({ type: "local_asr", model_id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "mix", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : false })} models={props.models.filter(model => model.kind === "asr")} activeModel={props.status.active_model} refresh={props.refreshModels} message={props.onMessage} />
+</details><details className="resource-group" open><summary>云端 ASR</summary><AsrCloudSettings settings={s} onChange={captions => update({ ...s, captions })} onMessage={props.onMessage} onManageProfiles={() => navigateTo("application", "translation")} /></details>
 
     </section><section className="settings-chapter" id="settings-ocr-models" aria-labelledby="heading-ocr-models">
       <header className="chapter-heading"><div><h2 id="heading-ocr-models">文字识别 · OCR</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("features", "ocr")}>截图设置<ArrowRight /></button></header>
-              <OcrCloudSettings settings={s} onChange={ocr => update({ ...s, ocr })} onMessage={props.onMessage} onManageProfiles={() => navigateTo("application", "translation")} />
-              <ModelManager selectedModel={s.ocr.provider === "local" ? "ocr-ppocr-v5-mobile" : undefined} onSelect={async () => { update({ ...s, ocr: { ...s.ocr, provider: "local" } }); props.onMessage("已选择本地 OCR，保存设置后生效"); }} title="本地 OCR 模型" models={props.models.filter(model => model.kind === "ocr")} modelDirectory={view.model_directory} refresh={props.refreshModels} message={props.onMessage} />
+<details className="resource-group" open><summary><span>本地 OCR<HelpTip text="按需加载模型。校验检查模型文件，测试使用内置示例图片。" /></span><span className="resource-actions" onClick={event => event.stopPropagation()}><button type="button" className="ghost" onClick={() => void openModelsDir()}><ExternalLink />模型目录</button><button type="button" className="ghost" onClick={props.refreshModels}><RefreshCw />重新检查</button></span></summary>
+        <ModelManager selectedModel={s.ocr.provider === "local" ? "ocr-ppocr-v5-mobile" : undefined} onSelect={async () => { update({ ...s, ocr: { ...s.ocr, provider: "local" } }); props.onMessage("已选择本地 OCR，保存设置后生效"); }} models={props.models.filter(model => model.kind === "ocr")} refresh={props.refreshModels} message={props.onMessage} /></details><details className="resource-group" open><summary>云端 OCR</summary>              <OcrCloudSettings settings={s} onChange={ocr => update({ ...s, ocr })} onMessage={props.onMessage} onManageProfiles={() => navigateTo("application", "translation")} /></details>
 
     </section><section className="settings-chapter" id="settings-network" aria-labelledby="heading-network">
       <header className="chapter-heading"><div><h2 id="heading-network">网络与下载</h2></div></header>
@@ -1076,7 +1080,7 @@ function formatBytes(bytes: number) {
   return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
-function ModelManager({ models, activeModel, selectedModel, selecting, onSelect, modelDirectory, refresh, message, title = "字幕模型管理" }: { title?: string; models: ModelInfo[]; activeModel?: string; selectedModel?: string; selecting?: boolean; onSelect?: (id: string) => Promise<void>; modelDirectory: string; refresh: () => void; message: (text: string) => void }) {
+function ModelManager({ models, activeModel, selectedModel, selecting, onSelect, refresh, message }: { models: ModelInfo[]; activeModel?: string; selectedModel?: string; selecting?: boolean; onSelect?: (id: string) => Promise<void>; refresh: () => void; message: (text: string) => void }) {
   const [busy, setBusy] = useState<Record<string, string>>({});
   const action = async (modelId: string, label: string, run: () => Promise<unknown>) => {
     setBusy(current => ({ ...current, [modelId]: label }));
@@ -1090,7 +1094,7 @@ function ModelManager({ models, activeModel, selectedModel, selecting, onSelect,
     finally { setBusy(current => { const next = { ...current }; delete next[modelId]; return next; }); }
   };
   return <div className="settings-group model-manager">
-    <div className="settings-group-title"><div><h3>{title}</h3><p title={modelDirectory}>按需下载和加载，可随时校验、测试或删除。</p></div><div><button className="ghost" onClick={() => void openModelsDir()}><ExternalLink />模型目录</button><button className="ghost" onClick={refresh}><RefreshCw />重新检查</button></div></div>
+
     {models.map(model => {
       const progress = model.expected_size_bytes ? Math.min(100, model.downloaded_bytes / model.expected_size_bytes * 100) : 0;
       const installed = model.status === "available" || model.status === "active";
@@ -1116,8 +1120,8 @@ function RailButton({ active, label, onClick, children }: { active: boolean; lab
   );
 }
 function StatusDot({ on, text }: { on: boolean; text: string }) { return <div className="status-dot" data-on={on}><i />{text}</div>; }
-function SettingRow({ title, description, children }: { title: string; description: string; children: React.ReactNode }) { return <div className="setting-row"><div><h3>{title}</h3><p>{description}</p></div>{children}</div>; }
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) { return <label className="field"><span>{label}{hint && <small>{hint}</small>}</span>{children}</label>; }
+function SettingRow({ title, description, children }: { title: string; description: string; children: React.ReactNode }) { return <div className="setting-row"><div><h3>{title}<HelpTip text={description} /></h3></div>{children}</div>; }
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) { return <label className="field"><span>{label}{hint && <HelpTip text={hint} />}</span>{children}</label>; }
 function ResultBlock({ result }: { result: TranslationResult }) { return <article className="result-block"><div><span>{result.source_text}</span><button title="复制译文" onClick={() => void navigator.clipboard.writeText(result.translated_text)}><Copy /></button></div><p>{result.translated_text}</p><small>{result.model} · {result.latency_ms}ms</small></article>; }
 function EmptyState({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) { return <div className="empty-state">{icon}<h3>{title}</h3><p>{text}</p></div>; }
 function HotkeyRecorder({ value, onChange }: { value: string; onChange: (v: string) => void }) {

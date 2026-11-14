@@ -1,3 +1,4 @@
+import { HelpTip } from "./HelpTip";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ArrowDown, ArrowUp, GripVertical, ShieldCheck } from "lucide-react";
@@ -39,7 +40,7 @@ export function ToolbarSettings({ settings, onChange }: { settings: AppSettings;
   };
   const status = mouse.error ?? (!mouse.detected ? "未检测到鼠标 · 接入带侧键的鼠标后可配置" : mouse.buttons < 4 ? "当前鼠标没有可用侧键" : !mouse.hook_ready ? "侧键监听暂不可用，正在自动恢复" : `已检测到 ${mouse.buttons} 键鼠标`);
   return <div className="ocr-toolbar-settings">
-    <div className="setting-row"><div><strong>常驻工具栏</strong><p>保持在桌面右下角、任务栏上方。完成操作后回到停靠位置。</p></div><label className="ocr-entry-switch"><input type="checkbox" aria-label="常驻工具栏" checked={value.resident_toolbar} onChange={e => patch({ resident_toolbar: e.target.checked })} /><span /></label></div>
+    <div className="setting-row"><div><strong>常驻工具栏<HelpTip text="保持在桌面右下角、任务栏上方。完成操作后回到停靠位置。" /></strong></div><label className="ocr-entry-switch"><input type="checkbox" aria-label="常驻工具栏" checked={value.resident_toolbar} onChange={e => patch({ resident_toolbar: e.target.checked })} /><span /></label></div>
     <div className="setting-row"><div><strong>鼠标侧键唤出</strong><p>{status}</p></div><label className="ocr-entry-switch"><input type="checkbox" aria-label="鼠标侧键唤出" disabled={!supported} checked={value.mouse_shortcuts} onChange={e => patch({ mouse_shortcuts: e.target.checked })} /><span /></label></div>
     <div className="ocr-mouse-config">
       <figure className="ocr-mouse-figure">
@@ -98,7 +99,7 @@ function ToolbarModuleRow({ module, enabled, locked, first, last, onToggle, onMo
   const { title, description } = toolbarModules[module];
   return <Reorder.Item className="toolbar-module-row" value={module} dragListener={false} dragControls={controls}>
     <button type="button" className="toolbar-drag-handle" aria-label={`拖动${title}排序`} onPointerDown={e => controls.start(e)} onKeyDown={e => { if (e.key === "ArrowUp" && !first) { e.preventDefault(); onMove(-1); } if (e.key === "ArrowDown" && !last) { e.preventDefault(); onMove(1); } }}><GripVertical /></button>
-    <div className="toolbar-module-copy"><strong>{title}</strong><p>{description}</p></div>
+    <div className="toolbar-module-copy"><strong>{title}<HelpTip text={description} /></strong></div>
     <div className="toolbar-order-buttons"><button type="button" aria-label={`上移${title}`} disabled={first} onClick={() => onMove(-1)}><ArrowUp /></button><button type="button" aria-label={`下移${title}`} disabled={last} onClick={() => onMove(1)}><ArrowDown /></button></div>
     <label className="ocr-entry-switch" title={locked ? "至少保留一个模块" : undefined}><input type="checkbox" aria-label={`启用${title}`} checked={enabled} disabled={locked} onChange={onToggle} /><span /></label>
   </Reorder.Item>;

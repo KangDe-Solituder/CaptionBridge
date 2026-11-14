@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -28,6 +28,90 @@ const LIVE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
 const LIVE_FIRST_TOKEN_GRACE: Duration = Duration::from_millis(500);
 const SELECTION_FIRST_TOKEN_TIMEOUT: Duration = Duration::from_secs(30);
 const SELECTION_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub fn validate_proxy(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+    let url = reqwest::Url::parse(value.trim()).map_err(|_| "代理地址无效")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("代理需为 HTTP(S) 地址，不能包含用户名、密码、查询参数或片段".into());
+    }
+    Ok(())
+}
+
+fn translation_client(proxy: &str) -> Result<reqwest::Client, String> {
+    static CLIENT: OnceLock<Mutex<Option<(String, reqwest::Client)>>> = OnceLock::new();
+    let proxy = proxy.trim();
+    validate_proxy(proxy)?;
+    let mut cached = CLIENT
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|e| e.to_string())?;
+    if let Some((old, client)) = cached.as_ref() {
+        if old == proxy {
+            return Ok(client.clone());
+        }
+    }
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .pool_idle_timeout(Duration::from_secs(90));
+    if !proxy.is_empty() {
+        builder = builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| "代理地址无效")?);
+    }
+    let client = builder.build().map_err(|e| e.to_string())?;
+    *cached = Some((proxy.to_string(), client.clone()));
+    Ok(client)
+}
+
+pub const LIVE_ASR_GUIDANCE: &str = " The current input is an ASR transcript, not verified writing. \
+Use previous source context to understand the current clause and resolve plausible ASR errors. \
+For Japanese, compare likely kana readings, homophones and word boundaries; correct a suspicious word \
+only when pronunciation similarity, grammar and local context jointly support the correction. \
+Do not accept an implausible kanji spelling blindly, but do not rewrite text merely to fit the topic. \
+Preserve negation, numbers, speaker relationships and uncertainty. Do not invent names or their kanji. \
+If evidence is insufficient, keep the uncertainty rather than invent missing speech. \
+Translate only the current input; previous context is already handled and must not be repeated. \
+Do not complete an unfinished thought with guessed future content. Return only the translation, \
+without explanations or a corrected-source transcript.";
+
+fn adapt_openai_payload(settings: &AppSettings, payload: &mut Value, realtime: bool) {
+    let official = reqwest::Url::parse(&settings.llm.endpoint)
+        .ok()
+        .is_some_and(|u| u.scheme() == "https" && u.host_str() == Some("api.openai.com"));
+    // GPT-6 Chat Completions uses a different output budget and reasoning control.
+    if !official || !settings.llm.model.starts_with("gpt-6") {
+        return;
+    }
+    let object = payload.as_object_mut().expect("payload is an object");
+    if let Some(limit) = object.remove("max_tokens") {
+        object.entry("max_completion_tokens").or_insert(limit);
+    }
+    object.remove("enable_thinking");
+    let supports_none = !(settings.llm.model.starts_with("gpt-6-astra")
+        || settings.llm.model.starts_with("gpt-6.1-sol"));
+    if realtime || !settings.llm.thinking_enabled {
+        object.insert(
+            "reasoning_effort".into(),
+            json!(if supports_none { "none" } else { "low" }),
+        );
+    } else {
+        object.entry("reasoning_effort").or_insert(json!("low"));
+    }
+    if object.get("reasoning_effort").and_then(Value::as_str) != Some("none") {
+        for key in ["temperature", "top_p", "top_logprobs", "logprobs"] {
+            object.remove(key);
+        }
+    }
+}
 
 fn first_token_target(settings: &AppSettings, mode: &TranslationMode) -> Option<Duration> {
     matches!(mode, TranslationMode::LiveCaption)
@@ -80,6 +164,11 @@ pub fn create_payload(
         format!(" Previous caption context (use only for terminology and continuity):\n{context}")
     };
     let glossary_hint = glossary_hint(&request.glossary);
+    let asr_hint = if matches!(request.mode, TranslationMode::LiveCaption) {
+        LIVE_ASR_GUIDANCE
+    } else {
+        ""
+    };
     let mut payload = json!({
         "model": settings.llm.model,
         "stream": true,
@@ -89,7 +178,7 @@ pub fn create_payload(
         "messages": [
             {
                 "role": "system",
-                "content": format!("You are doing {task}. {source_hint} Translate into {}. Keep the result {style}. Return only the translation.{context_hint}{glossary_hint}", request.target_language)
+                "content": format!("You are doing {task}. {source_hint} Translate into {}. Keep the result {style}. Return only the translation.{asr_hint}{context_hint}{glossary_hint}", request.target_language)
             },
             {
                 "role": "user",
@@ -128,7 +217,10 @@ pub fn create_payload(
         if payload.get("enable_thinking").is_some() {
             payload["enable_thinking"] = json!(false);
         }
-        if payload.pointer("/chat_template_kwargs/enable_thinking").is_some() {
+        if payload
+            .pointer("/chat_template_kwargs/enable_thinking")
+            .is_some()
+        {
             payload["chat_template_kwargs"]["enable_thinking"] = json!(false);
         }
         if let Some(object) = payload.as_object_mut() {
@@ -136,6 +228,11 @@ pub fn create_payload(
         }
     }
 
+    adapt_openai_payload(
+        settings,
+        &mut payload,
+        matches!(request.mode, TranslationMode::LiveCaption),
+    );
     Ok(payload)
 }
 
@@ -159,17 +256,7 @@ where
     let started = Instant::now();
     let payload = create_payload(&settings, &request)?;
     let endpoint = normalize_endpoint(&settings.llm.endpoint);
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    let client = CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            // Translation providers are expected to be reachable directly in China.
-            // Do not inherit HTTP(S)_PROXY or the Windows user proxy from the host.
-            .no_proxy()
-            .connect_timeout(Duration::from_secs(2))
-            .pool_idle_timeout(Duration::from_secs(90))
-            .build()
-            .expect("valid shared HTTP client")
-    });
+    let client = translation_client(&settings.llm.proxy_url)?;
     let first_token_target = first_token_target(&settings, &request.mode);
     let first_token_deadline =
         first_token_target.map(|target| TokioInstant::now() + target + LIVE_FIRST_TOKEN_GRACE);
@@ -433,15 +520,8 @@ pub async fn correct_batch(
     // body must not be able to turn streaming back on.
     payload["stream"] = Value::Bool(false);
 
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    let client = CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .no_proxy()
-            .connect_timeout(Duration::from_secs(2))
-            .pool_idle_timeout(Duration::from_secs(90))
-            .build()
-            .expect("valid shared HTTP client")
-    });
+    adapt_openai_payload(settings, &mut payload, true);
+    let client = translation_client(&settings.llm.proxy_url)?;
     let response = timeout(
         CORRECTION_TIMEOUT,
         authenticated(
@@ -539,6 +619,75 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    fn caption_request() -> TranslationRequest {
+        TranslationRequest {
+            mode: TranslationMode::LiveCaption,
+            source_text: "寝息が聞こえます".into(),
+            source_language: "ja".into(),
+            target_language: "中文".into(),
+            context: vec!["さっき寝ちゃった".into()],
+            glossary: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn official_terra_uses_supported_budget_and_forces_no_reasoning_in_captions() {
+        let mut settings = AppSettings::default();
+        settings.llm.model = "gpt-6.1-terra".into();
+        settings.llm.thinking_enabled = true;
+        settings.llm.extra_body_json =
+            r#"{"reasoning_effort":"high","enable_thinking":true}"#.into();
+        let payload = create_payload(&settings, &caption_request()).unwrap();
+        assert!(payload.get("max_tokens").is_none());
+        assert!(payload.get("enable_thinking").is_none());
+        assert_eq!(payload["max_completion_tokens"], 256);
+        assert_eq!(payload["reasoning_effort"], "none");
+        assert!(payload["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("pronunciation similarity"));
+        assert_eq!(payload["messages"][1]["content"], "寝息が聞こえます");
+        settings.llm.endpoint = "https://example.com/v1".into();
+        let other = create_payload(&settings, &caption_request()).unwrap();
+        assert!(other.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn proxy_change_rebuilds_client_and_rejects_credentials_in_url() {
+        assert!(translation_client("").is_ok());
+        assert!(translation_client("http://127.0.0.1:10808").is_ok());
+        assert!(translation_client("").is_ok());
+        assert!(validate_proxy("http://user:password@localhost:8080").is_err());
+        assert!(validate_proxy("socks5://localhost:8080").is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "uses saved OpenAI profile/key for two short billed translation requests"]
+    async fn saved_openai_translation_smoke() {
+        let paths = crate::settings::AppPaths::shared().unwrap();
+        let mut settings = crate::settings::load(&paths).unwrap();
+        let profile = settings
+            .llm_profiles
+            .iter()
+            .find(|p| {
+                reqwest::Url::parse(&p.config.endpoint)
+                    .ok()
+                    .is_some_and(|u| u.host_str() == Some("api.openai.com"))
+            })
+            .expect("official OpenAI profile required")
+            .clone();
+        let key = crate::secrets::profile_key(&profile.id)
+            .unwrap()
+            .expect("stored key required");
+        settings.llm = profile.config;
+        for mode in [TranslationMode::Selection, TranslationMode::LiveCaption] {
+            let mut req = caption_request();
+            req.mode = mode;
+            let result = translate(settings.clone(), key.clone(), req).await.unwrap();
+            assert!(!result.translated_text.trim().is_empty());
+        }
+    }
 
     #[test]
     fn normalizes_chat_completions_endpoint() {
@@ -648,9 +797,12 @@ mod tests {
         settings.llm.thinking_enabled = true;
         settings.llm.extra_body_json = r#"{"thinking":{"type":"enabled","budget_tokens":1024},"enable_thinking":true,"reasoning_effort":"low","chat_template_kwargs":{"enable_thinking":true},"temperature":0.2}"#.into();
         let request = TranslationRequest {
-            mode: TranslationMode::LiveCaption, source_text: "こんにちは".into(),
-            source_language: "ja".into(), target_language: "中文".into(),
-            context: vec![], glossary: vec![],
+            mode: TranslationMode::LiveCaption,
+            source_text: "こんにちは".into(),
+            source_language: "ja".into(),
+            target_language: "中文".into(),
+            context: vec![],
+            glossary: vec![],
         };
         let payload = create_payload(&settings, &request).unwrap();
         assert_eq!(payload["thinking"], json!({"type":"disabled"}));

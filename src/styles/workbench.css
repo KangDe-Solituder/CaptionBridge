@@ -78,3 +78,17 @@
 @media (max-width: 560px) { .quick-actions { grid-template-columns: 1fr; }.quick-actions article:first-child { border-right: 0; border-bottom: 1px solid var(--line); }.quick-actions article { min-height: 240px; }.translation-chain { display: flex; }.translation-chain > strong { margin-top: 15px; }.translation-chain .chain-list { width: 100%; margin-top: 10px; }.glossary-add { grid-template-columns: 1fr; }.page-header { flex-wrap: wrap; }.accent-choices { grid-template-columns: 1fr; }.accent-swatch { height: 30px; }.system-caption-source { align-items: flex-start; flex-wrap: wrap; } }
 @media (max-width: 760px) { .caption-records { position: static; } }
 html[data-motion="reduced"] .rail, html[data-motion="reduced"] .rail-label { transition: none; }
+
+.help-tip { display: inline-flex; vertical-align: middle; margin-left: 7px; color: var(--muted); cursor: help; flex: 0 0 auto; }
+.help-tip:focus-visible { outline: 2px solid var(--accent); border-radius: 4px; }
+.help-tip .help-tip-content { position: fixed; z-index: 10000; width: min(320px, calc(100vw - 16px)); box-sizing: border-box; padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface-3); color: var(--text); box-shadow: var(--elev-2); font-size: 13px; font-weight: 400; line-height: 1.7; letter-spacing: 0; text-transform: none; white-space: normal; text-align: left; pointer-events: none; }
+.resource-group { border-top: 1px solid var(--line); margin-top: 18px; }
+.resource-group > summary { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; cursor: pointer; padding: 20px 0; font-size: 16px; font-weight: 650; color: var(--text); list-style: none; }
+.resource-group > summary::-webkit-details-marker { display: none; }
+.resource-group > summary::before { content: "▶"; color: var(--muted); font-size: 10px; }
+.resource-group[open] > summary::before { content: "▼"; }
+.resource-group > summary .resource-actions { margin-left: auto; }
+.resource-group .setting-row { padding-top: 8px; }
+.resource-actions { display: flex; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
+.profile-unlink { display: flex; align-items: center; margin-top: 18px; }
+.profile-bindings { padding: 0 18px 14px; font-size: 12px; color: var(--muted); }

@@ -147,8 +147,12 @@ pub fn save(paths: &AppPaths, settings: &AppSettings) -> Result<(), String> {
 
 pub fn normalize(settings: &mut AppSettings) {
     if let crate::models::CaptionSourceConfig::LocalAsr {
-        vad_profile, channel_mode, suppress_non_speech_segments, ..
-    } = &mut settings.captions.source {
+        vad_profile,
+        channel_mode,
+        suppress_non_speech_segments,
+        ..
+    } = &mut settings.captions.source
+    {
         *vad_profile = settings.captions.audio_mode;
         *channel_mode = crate::models::AudioChannelMode::Mix;
         *suppress_non_speech_segments = false;

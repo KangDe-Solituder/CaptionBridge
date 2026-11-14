@@ -67,6 +67,8 @@ pub struct LlmProviderSettings {
     pub temperature: f32,
     #[serde(default)]
     pub thinking_enabled: bool,
+    #[serde(default)]
+    pub proxy_url: String,
 }
 
 impl Default for LlmProviderSettings {
@@ -81,6 +83,7 @@ impl Default for LlmProviderSettings {
             max_tokens: 768,
             temperature: 0.2,
             thinking_enabled: false,
+            proxy_url: String::new(),
         }
     }
 }
@@ -129,6 +132,8 @@ fn default_selection_hotkey() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptionSettings {
     #[serde(default)]
+    pub cloud: CloudAsrSettings,
+    #[serde(default)]
     pub source: CaptionSourceConfig,
     pub enabled: bool,
     pub auto_launch: bool,
@@ -147,6 +152,7 @@ pub struct CaptionSettings {
 impl Default for CaptionSettings {
     fn default() -> Self {
         Self {
+            cloud: CloudAsrSettings::default(),
             source: CaptionSourceConfig::default(),
             enabled: true,
             auto_launch: true,
@@ -169,6 +175,9 @@ fn default_model_mirror() -> String {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CaptionSourceConfig {
     WindowsLiveCaption,
+    CloudAsr {
+        provider: CloudAsrProvider,
+    },
     LocalAsr {
         model_id: String,
         #[serde(default = "default_asr_device")]
@@ -184,6 +193,72 @@ pub enum CaptionSourceConfig {
         #[serde(default = "default_true")]
         suppress_non_speech_segments: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudAsrProvider {
+    Openai,
+    Deepseek,
+}
+
+impl CloudAsrProvider {
+    pub fn host(self) -> &'static str {
+        match self {
+            Self::Openai => "api.openai.com",
+            Self::Deepseek => "api.deepseek.com",
+        }
+    }
+    pub fn model(self) -> &'static str {
+        match self {
+            Self::Openai => "gpt-transcribe",
+            Self::Deepseek => "deepseek-asr",
+        }
+    }
+    pub fn endpoint(self) -> &'static str {
+        match self {
+            Self::Openai => "https://api.openai.com/v1/audio/transcriptions",
+            Self::Deepseek => "https://api.deepseek.com/v1/tools/asr",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct CloudAsrConfig {
+    pub profile_id: Option<String>,
+    pub endpoint: String,
+    pub proxy_enabled: bool,
+    pub proxy_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct CloudAsrSettings {
+    pub openai: CloudAsrConfig,
+    pub deepseek: CloudAsrConfig,
+}
+impl Default for CloudAsrSettings {
+    fn default() -> Self {
+        Self {
+            openai: CloudAsrConfig {
+                endpoint: CloudAsrProvider::Openai.endpoint().into(),
+                ..Default::default()
+            },
+            deepseek: CloudAsrConfig {
+                endpoint: CloudAsrProvider::Deepseek.endpoint().into(),
+                ..Default::default()
+            },
+        }
+    }
+}
+impl CloudAsrSettings {
+    pub fn config(&self, provider: CloudAsrProvider) -> &CloudAsrConfig {
+        match provider {
+            CloudAsrProvider::Openai => &self.openai,
+            CloudAsrProvider::Deepseek => &self.deepseek,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -213,26 +288,27 @@ impl CaptionSourceConfig {
         match self {
             Self::WindowsLiveCaption => CaptionSourceKind::WindowsLiveCaption,
             Self::LocalAsr { .. } => CaptionSourceKind::LocalAsr,
+            Self::CloudAsr { .. } => CaptionSourceKind::CloudAsr,
         }
     }
 
     pub fn model_id(&self) -> Option<&str> {
         match self {
-            Self::WindowsLiveCaption => None,
+            Self::WindowsLiveCaption | Self::CloudAsr { .. } => None,
             Self::LocalAsr { model_id, .. } => Some(model_id),
         }
     }
 
     pub fn channel_mode(&self) -> Option<AudioChannelMode> {
         match self {
-            Self::WindowsLiveCaption => None,
+            Self::WindowsLiveCaption | Self::CloudAsr { .. } => None,
             Self::LocalAsr { channel_mode, .. } => Some(*channel_mode),
         }
     }
 
     pub fn channel_switch_sensitivity(&self) -> Option<ChannelSwitchSensitivity> {
         match self {
-            Self::WindowsLiveCaption => None,
+            Self::WindowsLiveCaption | Self::CloudAsr { .. } => None,
             Self::LocalAsr {
                 channel_switch_sensitivity,
                 ..
@@ -242,7 +318,7 @@ impl CaptionSourceConfig {
 
     pub fn suppress_non_speech_segments(&self) -> Option<bool> {
         match self {
-            Self::WindowsLiveCaption => None,
+            Self::WindowsLiveCaption | Self::CloudAsr { .. } => None,
             Self::LocalAsr {
                 suppress_non_speech_segments,
                 ..
@@ -323,6 +399,7 @@ pub struct VadParameters {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptionSourceKind {
+    CloudAsr,
     WindowsLiveCaption,
     LocalAsr,
 }

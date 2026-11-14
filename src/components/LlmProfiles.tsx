@@ -1,3 +1,5 @@
+import { HelpTip } from "./HelpTip";
+import { profileDependents } from "../lib/profile-dependencies";
 import { BrainCircuit, Check, Loader2, Plus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -24,19 +26,20 @@ export function LlmProfiles({ view, onChanged, onMessage, onTest, testing }: {
     finally { setBusy(false); }
   };
   return <div className="llm-profiles">
-    <div className="profile-toolbar"><p>{profiles.length ? "选择一套配置，用于后续的划词、字幕和截图翻译。" : "连接你的语言模型，开始翻译。"}</p><button className="primary" disabled={busy} onClick={() => setEditor("new")}><Plus />添加配置</button></div>
+    <div className="profile-toolbar"><span>翻译配置<HelpTip text="选择一套配置用于后续的划词、字幕和截图翻译。ASR 和 OCR 仅借用所关联配置的凭据，不随此选择切换。" /></span><button className="primary" disabled={busy} onClick={() => setEditor("new")}><Plus />添加配置</button></div>
     {profiles.length ? <div className="profile-grid">{profiles.map(profile => <article className="profile-card" data-active={active === profile.id} key={profile.id}>
       <button className="profile-select" aria-pressed={active === profile.id} disabled={busy} onClick={() => void act(() => isTauri ? activateLlmProfile(profile.id) : Promise.resolve(preview(profiles, profile.id)), "已切换翻译配置；新任务将使用此配置")}>
         <span className="profile-status">{active === profile.id ? <><Check />正在使用</> : "点击启用"}</span>
         <h3>{profile.name}</h3><p className="profile-model">{profile.config.model}</p><p className="profile-endpoint">{profile.config.endpoint}</p>
         <small>Chat Completions · {profile.api_key_configured ? "密钥已托管" : "无 API Key"}</small>
       </button>
-      <div className="profile-actions"><button disabled={busy} onClick={() => setEditor(profile)}>编辑</button><button disabled={busy} onClick={() => {
+{profileDependents(view.settings, profile.id).length > 0 && <div className="profile-bindings">关联：{profileDependents(view.settings, profile.id).join("、")}<HelpTip text="此配置正在被识别服务引用。请先在模型与资源中切换来源、解除关联并保存，再移除配置、清空密钥或修改接口地址。可以直接更换有效密钥。" /></div>}
+      <div className="profile-actions"><button disabled={busy} onClick={() => setEditor(profile)}>编辑</button><button disabled={busy || profileDependents(view.settings, profile.id).length > 0} onClick={() => {
         if (confirm(`移除“${profile.name}”及其保存的密钥？`)) void act(() => isTauri ? removeLlmProfile(profile.id) : Promise.resolve(preview(profiles.filter(p => p.id !== profile.id), active === profile.id ? null : active)), "配置已移除");
       }}>移除</button></div>
     </article>)}</div> : <div className="profile-empty"><BrainCircuit /><h3>还没有翻译配置</h3><p>添加服务地址和模型名称，即可连接云端或本地模型。</p><button className="ghost" onClick={() => setEditor("new")}><Plus />添加第一套配置</button></div>}
-    {profiles.length > 0 && <div className="profile-test"><button className="ghost" disabled={!active || busy || testing} onClick={onTest}>{testing ? <Loader2 className="spin" /> : <BrainCircuit />}测试当前配置</button>{!active && <span>请选择一套配置以启用翻译。</span>}</div>}
-    <p className="profile-note">配置独立保存。API Key 仅存放在 Windows 凭据管理器中，编辑时不会回填。测试会向当前模型发送一句示例文本。</p>
+    {profiles.length > 0 && <div className="profile-test"><button className="ghost" disabled={!active || busy || testing} onClick={onTest}>{testing ? <Loader2 className="spin" /> : <BrainCircuit />}测试当前配置</button><HelpTip text="测试向当前模型发送一句示例文本。配置独立保存，API Key 仅存放在 Windows 凭据管理器中，编辑时不会回填。" />{!active && <span>请选择一套配置以启用翻译。</span>}</div>}
+
     {editor && <ProfileEditor profile={editor === "new" ? undefined : editor} onClose={() => setEditor(null)} onSave={async (input) => {
       let updated: SettingsView;
       if (isTauri) updated = await saveLlmProfile(input);
@@ -68,14 +71,15 @@ function ProfileEditor({ profile, onClose, onSave }: { profile?: LlmProfile; onC
       try { await onSave({ id: profile?.id, name: name.trim(), config, api_key: key || undefined, clear_api_key: clearKey }); setKey(""); onClose(); }
       catch (e) { setError(String(e)); } finally { setBusy(false); }
     }}>
-      <header><div><span className="eyebrow">TRANSLATION SERVICE</span><h2 id="profile-dialog-title">{profile ? "编辑配置" : "添加翻译配置"}</h2><p>连接兼容 OpenAI Chat Completions 的服务。</p></div><button type="button" className="ghost" aria-label="关闭配置编辑" disabled={busy} onClick={() => { setKey(""); onClose(); }}><X /></button></header>
+      <header><div><span className="eyebrow">TRANSLATION SERVICE</span><h2 id="profile-dialog-title">{profile ? "编辑配置" : "添加翻译配置"}<HelpTip text="连接兼容 OpenAI Chat Completions 的服务。" /></h2></div><button type="button" className="ghost" aria-label="关闭配置编辑" disabled={busy} onClick={() => { setKey(""); onClose(); }}><X /></button></header>
       <fieldset disabled={busy}>
         <label className="profile-field">配置名称<input autoFocus required maxLength={80} placeholder="例如：日常翻译、本地模型" value={name} onChange={e => setName(e.target.value)} /></label>
         <label className="profile-field">接口地址<input type="url" required placeholder="https://api.example.com/v1" autoComplete="off" value={config.endpoint} onChange={e => patch({ endpoint: e.target.value })} /></label>
         <div className="two-cols"><label className="profile-field">模型名称<input required placeholder="服务提供的模型 ID" value={config.model} onChange={e => patch({ model: e.target.value })} /></label><label className="profile-field">目标语言<input required value={config.target_language} onChange={e => patch({ target_language: e.target.value })} /></label></div>
-        <label className="profile-field">API Key <small>{profile?.api_key_configured ? "已安全保存 · 留空保留原密钥" : "可选 · 无需认证的本地服务可留空"}</small><input type="password" autoComplete="new-password" value={key} disabled={clearKey} placeholder={profile?.api_key_configured ? "仅在更换密钥时填写" : "输入 API Key"} onChange={e => setKey(e.target.value)} /></label>
+        <label className="profile-field"><span>API Key <HelpTip text={profile?.api_key_configured ? "已安全保存 · 留空保留原密钥" : "可选 · 无需认证的本地服务可留空"} /></span><input type="password" autoComplete="new-password" value={key} disabled={clearKey} placeholder={profile?.api_key_configured ? "仅在更换密钥时填写" : "输入 API Key"} onChange={e => setKey(e.target.value)} /></label>
         {profile?.api_key_configured && <label className="profile-clear"><input type="checkbox" checked={clearKey} onChange={e => { setClearKey(e.target.checked); if (e.target.checked) setKey(""); }} />清除这套配置已保存的密钥</label>}
         <details className="settings-advanced"><summary>高级请求设置<span>思考模式、响应时限与附加参数</span></summary>
+          <label className="profile-field"><span>此接口的代理地址<HelpTip text="留空直连，仅影响这套配置的翻译与纠错；不继承系统代理。" /></span><input type="url" placeholder="http://127.0.0.1:10808" autoComplete="off" value={config.proxy_url ?? ""} onChange={e => patch({ proxy_url: e.target.value })} /></label>
           <label className="profile-clear"><input type="checkbox" checked={config.thinking_enabled} onChange={e => patch({ thinking_enabled: e.target.checked })} />启用思考模式</label>
           <div className="two-cols"><label className="profile-field">字幕首 token 截止（秒）<input type="number" min={1} max={5} step={.25} value={config.timeout_milliseconds / 1000} onChange={e => patch({ timeout_milliseconds: Number(e.target.value) * 1000 })} /></label><label className="profile-field">最大输出 tokens<input type="number" min={128} max={32768} value={config.max_tokens} onChange={e => patch({ max_tokens: Number(e.target.value) })} /></label></div>
           <label className="profile-field">Extra Body JSON<textarea placeholder="{}" value={config.extra_body_json} onChange={e => patch({ extra_body_json: e.target.value })} /></label>

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from contextlib import ExitStack
 from streaming_asr import Windows, PendingWindows, Recognizer
+from cloud_audio import CloudWindows, AudioEmitter
 import ctypes
 import os
 import queue
@@ -547,17 +548,17 @@ class Worker:
             cudnn_error=cudnn_error,
         )
 
-    def start(self) -> None:
-        if self.model is None:
+    def start(self, cloud: bool = False) -> None:
+        if self.model is None and not cloud:
             raise RuntimeError("model_not_loaded")
         if self.capture_thread and self.capture_thread.is_alive():
             return
         if self.inference_thread and self.inference_thread.is_alive():
             raise RuntimeError("previous_inference_not_stopped")
         mode = self.profile.get("mode", "default")
-        self.windows = Windows(mode)
+        self.windows = CloudWindows() if cloud else Windows(mode)
         self.pending_windows = PendingWindows()
-        self.recognizer = Recognizer(self.model, self.model_id, mode, emit)
+        self.recognizer = AudioEmitter(emit) if cloud else Recognizer(self.model, self.model_id, mode, emit)
         self.stop_capture.clear()
         self.inference_thread = threading.Thread(target=self.inference_loop, name="asr-inference", daemon=True)
         self.inference_thread.start()
@@ -901,6 +902,7 @@ def main() -> None:
             elif name == "dry_run": worker.dry_run()
             elif name == "probe_dependencies": worker.probe_dependencies()
             elif name == "start": worker.start()
+            elif name == "start_cloud": worker.start(cloud=True)
             elif name == "stop": worker.stop()
             elif name == "flush": worker.stop()
             elif name == "reset_routing": worker.reset_routing()

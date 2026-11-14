@@ -16,6 +16,53 @@ pub struct ProfileInput {
     pub clear_api_key: bool,
 }
 
+pub fn dependents(settings: &AppSettings, id: &str) -> Vec<&'static str> {
+    let mut result = Vec::new();
+    if settings.captions.cloud.openai.profile_id.as_deref() == Some(id) {
+        result.push("OpenAI ASR");
+    }
+    if settings.captions.cloud.deepseek.profile_id.as_deref() == Some(id) {
+        result.push("DeepSeek ASR");
+    }
+    if settings.ocr.cloud_profile_id.as_deref() == Some(id) {
+        result.push("DeepSeek OCR");
+    }
+    result
+}
+
+fn guard_dependencies(settings: &AppSettings, id: &str) -> Result<(), String> {
+    let names = dependents(settings, id);
+    if names.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "该配置已关联：{}。请先在模型与资源中切换来源并解除关联，再删除或修改接口/清空密钥。",
+            names.join("、")
+        ))
+    }
+}
+
+#[cfg(test)]
+mod dependency_tests {
+    use super::*;
+    #[test]
+    fn inactive_bindings_also_block_removal_and_unbinding_releases_them() {
+        let mut settings = AppSettings::default();
+        settings.captions.cloud.deepseek.profile_id = Some("shared".into());
+        settings.ocr.cloud_profile_id = Some("shared".into());
+        assert_eq!(
+            dependents(&settings, "shared"),
+            ["DeepSeek ASR", "DeepSeek OCR"]
+        );
+        assert!(guard_dependencies(&settings, "shared").is_err());
+        assert!(guard_dependencies(&settings, "other").is_ok());
+        settings.captions.cloud.deepseek.profile_id = None;
+        assert!(guard_dependencies(&settings, "shared").is_err());
+        settings.ocr.cloud_profile_id = None;
+        assert!(guard_dependencies(&settings, "shared").is_ok());
+    }
+}
+
 pub fn migrate_legacy(settings: &mut AppSettings, has_key: bool) {
     let defaults = LlmProviderSettings::default();
     if settings.llm_profiles.is_empty()
@@ -49,7 +96,12 @@ fn validate(input: &mut ProfileInput, previous: Option<&LlmProfile>) -> Result<(
     if input.config.model.is_empty() {
         return Err("请填写模型名称".into());
     }
+    input.config.proxy_url = input.config.proxy_url.trim().to_string();
+    crate::llm::validate_proxy(&input.config.proxy_url)?;
     let url = reqwest::Url::parse(&input.config.endpoint).map_err(|_| "请填写有效的接口地址")?;
+    if matches!(url.host_str(), Some("openai.com" | "www.openai.com")) {
+        return Err("OpenAI 官方 API 地址是 https://api.openai.com/v1，请勿填写官网地址".into());
+    }
     if !matches!(url.scheme(), "https" | "http")
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -134,6 +186,13 @@ pub async fn save_llm_profile(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let old_key = secrets::profile_key(&id)?;
+    if previous.as_ref().is_some_and(|p| {
+        p.config.endpoint.trim_end_matches('/')
+            != input.config.endpoint.trim().trim_end_matches('/')
+            || input.clear_api_key
+    }) {
+        guard_dependencies(&current, &id)?;
+    }
     if let Some(profile) = previous.as_mut() {
         profile.api_key_configured |= old_key.is_some();
         if profile.api_key_configured
@@ -208,6 +267,7 @@ pub async fn remove_llm_profile(
     state: State<'_, AppState>,
 ) -> Result<SettingsView, String> {
     let mut current = state.settings.write().map_err(|e| e.to_string())?;
+    guard_dependencies(&current, &id)?;
     if !current.llm_profiles.iter().any(|p| p.id == id) {
         return Err("配置不存在".into());
     }

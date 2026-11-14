@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod asr_cloud;
 mod asr_dependencies;
 mod asr_worker;
 mod captions;
@@ -37,9 +38,9 @@ use std::{
 
 use captions::CaptionController;
 use models::{
-    AppSettings, AsmrChannelState, AsrDependencyReport, CaptionExportEntry,
-    CaptionRuntimeState, CaptionSourceConfig, CaptionSourceHealth, CorrectionProgressEvent,
-    Glossary, GlossaryImportResult, ModelInfo, RuntimeLogEntry, RuntimeStatus, SessionPageView,
+    AppSettings, AsmrChannelState, AsrDependencyReport, CaptionExportEntry, CaptionRuntimeState,
+    CaptionSourceConfig, CaptionSourceHealth, CorrectionProgressEvent, Glossary,
+    GlossaryImportResult, ModelInfo, RuntimeLogEntry, RuntimeStatus, SessionPageView,
     SessionSummary, SettingsSaveRequest, SettingsView, TranslationMode, TranslationRequest,
     TranslationResult,
 };
@@ -221,13 +222,29 @@ async fn save_settings(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SettingsView, String> {
+    let restart_source;
     let view = {
         let mut current = state.settings.write().map_err(|e| e.to_string())?;
         request.settings.llm = current.llm.clone();
         request.settings.llm_profiles = current.llm_profiles.clone();
+        restart_source = current.captions.source != request.settings.captions.source
+            || current.captions.cloud != request.settings.captions.cloud;
+        for provider in [
+            models::CloudAsrProvider::Openai,
+            models::CloudAsrProvider::Deepseek,
+        ] {
+            let config = request.settings.captions.cloud.config(provider);
+            if config.profile_id.is_some()
+                || request.settings.captions.source == (CaptionSourceConfig::CloudAsr { provider })
+            {
+                asr_cloud::validate(config, provider, &request.settings)?;
+            }
+        }
         settings::normalize(&mut request.settings);
         network::validate_download_settings(&request.settings.downloads)?;
-        if request.settings.ocr.provider == "deepseek" {
+        if request.settings.ocr.provider == "deepseek"
+            || request.settings.ocr.cloud_profile_id.is_some()
+        {
             ocr_cloud::validate_config(&request.settings.ocr, &request.settings)?;
         }
         if !request.settings.llm.extra_body_json.trim().is_empty() {
@@ -267,6 +284,14 @@ async fn save_settings(
         );
     if stop_captions {
         set_caption_running_inner(app, state.inner().clone(), false).await?;
+    } else if restart_source
+        && !matches!(
+            *state.caption_state.read().map_err(|e| e.to_string())?,
+            CaptionRuntimeState::Stopped | CaptionRuntimeState::Error
+        )
+    {
+        set_caption_running_inner(app.clone(), state.inner().clone(), false).await?;
+        set_caption_running_inner(app, state.inner().clone(), true).await?;
     }
     Ok(view)
 }
@@ -800,6 +825,14 @@ fn open_models_dir(state: State<'_, AppState>) -> Result<(), String> {
 async fn preflight_source(source: &CaptionSourceConfig, state: &AppState) -> Result<(), String> {
     match source {
         CaptionSourceConfig::WindowsLiveCaption => Ok(()),
+        CaptionSourceConfig::CloudAsr { provider } => {
+            let settings = state.settings.read().map_err(|e| e.to_string())?;
+            asr_cloud::validate(
+                settings.captions.cloud.config(*provider),
+                *provider,
+                &settings,
+            )
+        }
         CaptionSourceConfig::LocalAsr {
             model_id,
             device,
@@ -827,9 +860,7 @@ async fn switch_caption_source(
             | CaptionRuntimeState::Running
             | CaptionRuntimeState::LoadingModel
     );
-    if was_running {
-        preflight_source(&source, &state).await?;
-    }
+    preflight_source(&source, &state).await?;
     if was_running {
         state.set_caption_state(&app, CaptionRuntimeState::Switching);
     }
@@ -1409,6 +1440,7 @@ fn run_app() {
             llm_profiles::activate_llm_profile,
             llm_profiles::remove_llm_profile,
             test_download_proxy,
+            asr_cloud::test_cloud_asr,
             test_llm,
             translate_selection,
             set_caption_running,

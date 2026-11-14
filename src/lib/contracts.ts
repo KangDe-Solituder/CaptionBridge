@@ -7,6 +7,7 @@ export interface LlmProviderSettings {
   profile_id?: string | null;
   endpoint: string; model: string; target_language: string; extra_body_json: string;
   timeout_milliseconds: number; max_tokens: number; temperature: number; thinking_enabled: boolean;
+  proxy_url?: string;
 }
 export interface LlmProfile { id: string; name: string; config: LlmProviderSettings; api_key_configured: boolean; }
 export interface SelectionSettings { enabled: boolean; clipboard_fallback_enabled: boolean; hotkey: string; trigger_mode: "hotkey" | "automatic"; }
@@ -15,13 +16,16 @@ export type MouseAction = "default" | "toolbar" | "capture";
 export interface MouseCapabilities { detected: boolean; buttons: number; hook_ready: boolean; error?: string | null; }
 export interface ToolbarSnapshot { text: string; x: number; y: number; mode: "hidden" | "docked" | "transient" | "expanded"; revision: number; }
 export interface OcrSettings { enabled: boolean; provider: "local" | "deepseek"; cloud_profile_id?: string | null; cloud_endpoint: string; empty_retries: number; source_language: string; target_language: string; source_placement: "inline" | "bottom"; resident_toolbar: boolean; mouse_shortcuts: boolean; mouse_button_1: MouseAction; mouse_button_2: MouseAction; }
+export interface CloudAsrConfig { profile_id?: string | null; endpoint: string; proxy_enabled: boolean; proxy_url: string; }
 export interface CaptionSettings {
+  cloud: { openai: CloudAsrConfig; deepseek: CloudAsrConfig };
   source: CaptionSourceConfig;
   enabled: boolean; auto_launch: boolean; poll_milliseconds: number;
   stable_milliseconds: number; max_duration_milliseconds: number; max_chars: number; context_segments: number;
   audio_mode: "default" | "quick"; model_mirror_url: string;
 }
 export type CaptionSourceConfig =
+  | { type: "cloud_asr"; provider: "openai" | "deepseek" }
   | { type: "windows_live_caption" }
   | {
     type: "local_asr"; model_id: string; device: string; compute_type: string;
@@ -55,7 +59,7 @@ export interface TranslationResult {
 }
 export interface CaptionSegment {
   id: string; source_text: string; revision: number; committed: boolean;
-  source: "windows_live_caption" | "local_asr"; model_id?: string;
+  source: "windows_live_caption" | "local_asr" | "cloud_asr"; model_id?: string;
   start_ms: number; end_ms: number; final_result: boolean; time_source: "model" | "estimated";
 }
 export interface RuntimeStatus {
