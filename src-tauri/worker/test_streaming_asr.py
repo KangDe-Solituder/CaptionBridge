@@ -53,9 +53,51 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(policy.push(0, "みなせさんこんにちは今日は", False), "")
         self.assertEqual(policy.push(0, "みなせさんこんにちは今日は楽しい", False), "今日は")
 
+    def test_revised_prefix_does_not_swallow_disinfect_word(self):
+        # Recorded v3 hypotheses at 15:02–15:12. The old fuzzy endpoint
+        # consumed 消毒 as a replacement for the already emitted なんか.
+        policy = Agreement()
+        hypotheses = [
+            "机一応なんか", "机一応なんか消毒",
+            "机一応消毒したりとか", "机一応消毒したりとか",
+            "とか机一応なんか消毒したりとかそういう事を",
+            "とか机一応消毒したりとかそういうことをやっていました",
+        ]
+        text = "".join(policy.push(0, value, i == len(hypotheses) - 1)
+                       for i, value in enumerate(hypotheses))
+        self.assertEqual(text.count("消毒"), 1)
+        self.assertIn("消毒したりとか", text)
+        self.assertTrue(text.endswith("そういうことをやっていました"))
+
+    def test_revised_boundary_does_not_skip_to_incidental_last_character(self):
+        policy = Agreement()
+        policy.push(0, "机一応なんか", False)
+        policy.push(0, "机一応なんか", False)
+        # The trailing か also appears in the previously committed なんか.
+        self.assertEqual(policy.push(0, "机一応消毒したりとか", True), "消毒したりとか")
+
+    def test_no_shared_anchor_preserves_new_stable_text(self):
+        policy = Agreement()
+        policy.push(0, "はい", False)
+        policy.push(0, "はい", False)
+        self.assertEqual(policy.push(0, "消毒します", False), "")
+        self.assertEqual(policy.push(0, "消毒します", True), "消毒します")
+
     def test_overlap_exact_priority_and_no_single_character_dedup(self):
         self.assertEqual(overlap("前の話こんにちは", "こんにちは次の話"), 5)
         self.assertEqual(overlap("はい", "いろいろ"), 0)
+
+    def test_fuzzy_overlap_cannot_consume_start_of_next_sentence(self):
+        past = "初見さんありがとうございます"
+        current = "初検査ありがとうございます今日は穏やかボイスで"
+        cut = overlap(past, current)
+        self.assertEqual(current[cut:], "今日は穏やかボイスで")
+
+    def test_repeated_phrase_in_hypothesis_is_not_globally_removed(self):
+        policy = Agreement()
+        policy.push(0, "そうそう本当の本当の話", False)
+        self.assertEqual(policy.push(0, "そうそう本当の本当の話です", True),
+                         "そうそう本当の本当の話です")
 
     def test_queue_coalesces_partials_but_retains_boundaries(self):
         queue = PendingWindows()

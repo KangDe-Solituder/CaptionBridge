@@ -5,6 +5,7 @@ never waits for inference. No language-model history is fed back into Whisper.
 """
 from collections import deque
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 import threading
 import time
 import unicodedata
@@ -118,8 +119,23 @@ def anchor(old, new):
         return 0
     if new.startswith(old):
         return len(old)
-    return min(range(max(0, len(old) - 8), min(len(new), len(old) + 8) + 1),
-               key=lambda i: (distance(old, new[:i]), abs(i - len(old))), default=len(new))
+    # An edit-distance endpoint can consume replacement words as if they had
+    # already been emitted (e.g. 机一応なんか -> 机一応消毒したりとか).
+    # Locate an actual matching run instead. A revised earlier kanji spelling
+    # can still be skipped when the following committed phrase matches, but
+    # unmatched new text at the boundary must remain eligible for emission.
+    matches = SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks()
+    for match in reversed(matches):
+        if match.size >= 3:
+            return match.b + match.size
+    # Preserve even a short exact prefix, without using an incidental single
+    # character later in the hypothesis as evidence for an entire old phrase.
+    prefix = 0
+    for a, b in zip(old, new):
+        if a != b:
+            break
+        prefix += 1
+    return prefix
 
 
 def overlap(past, current):
@@ -132,7 +148,17 @@ def overlap(past, current):
         edits = distance(past[-k:], current[:k])
         if edits / k <= 0.30:
             choices.append((k - edits, k))
-    return max(choices, default=(0, 0))[1]
+    size = max(choices, default=(0, 0))[1]
+    if not size:
+        return 0
+    # When the old suffix itself matches, don't swallow extra new characters
+    # after that endpoint (今日は -> 日は). If the old suffix was revised too,
+    # retain fuzzy overlap handling instead of replaying its spelling change.
+    matches = SequenceMatcher(None, past[-size:], current[:size], autojunk=False).get_matching_blocks()
+    for match in reversed(matches):
+        if match.size >= 3 and match.a + match.size == size:
+            return match.b + match.size
+    return size
 
 
 class Agreement:
