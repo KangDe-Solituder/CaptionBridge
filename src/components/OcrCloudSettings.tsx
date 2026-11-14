@@ -1,3 +1,4 @@
+import { Select } from "./Select";
 import { HelpTip } from "./HelpTip";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, Cloud, Loader2, X } from "lucide-react";
@@ -54,20 +55,31 @@ function OcrEditor({ config, profiles, onClose, onApply, onManageProfiles }: {
   const [endpoint, setEndpoint] = useState(config.cloud_endpoint);
   const selected = profiles.some(p => p.id === id);
   const valid = officialDeepSeekEndpoint(endpoint.trim());
-  useEffect(() => { const node = dialog.current; node?.showModal(); return () => node?.close(); }, []);
-  return createPortal(<dialog ref={dialog} className="profile-dialog" aria-labelledby="ocr-cloud-title" onCancel={e => { e.preventDefault(); onClose(); }}>
+  useEffect(() => { const node = dialog.current; node?.showModal(); node?.querySelector<HTMLButtonElement>('[role="combobox"]')?.focus(); return () => node?.close(); }, []);
+  return createPortal(<dialog ref={dialog} className="profile-dialog cloud-config-dialog" aria-labelledby="ocr-cloud-title" onCancel={e => { e.preventDefault(); onClose(); }}>
     <form onSubmit={e => { e.preventDefault(); if (selected && valid) onApply({ ...config, cloud_profile_id: id, cloud_endpoint: endpoint.trim() }); }}>
       <header><div><span className="eyebrow">CLOUD OCR</span><h2 id="ocr-cloud-title">DeepSeek 文字识别<HelpTip text="复用已保存的凭据，无需再次填写密钥。" /></h2></div><button type="button" className="ghost" aria-label="关闭 OCR 编辑" onClick={onClose}><X /></button></header>
       <fieldset>
-        <label className="profile-field"><span>关联凭据配置<HelpTip text="仅列出使用官方 HTTPS 接口且已保存密钥的配置；不会改变当前翻译来源。" /></span><select autoFocus required value={selected ? id : ""} onChange={e => setId(e.target.value)}><option value="">请选择 DeepSeek 官方配置</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.name} · {p.config.model}</option>)}</select></label>
-
-        <button type="button" className="ghost" onClick={onManageProfiles}>管理翻译配置</button>
-        <label className="profile-field"><span>OCR API 地址<HelpTip text="固定使用文字识别模式。密钥只发送到官方域名，不跟随重定向。" /></span><input required type="url" disabled={!selected} value={endpoint} onChange={e => setEndpoint(e.target.value)} autoComplete="off" /></label>
-        {selected && !valid && <p className="profile-error" role="alert">请填写 api.deepseek.com 的 HTTPS 地址，不支持自定义端口、查询参数或片段。</p>}
-        <button type="button" className="ghost" disabled={!selected} onClick={() => setEndpoint("https://api.deepseek.com/v1/tools/ocr")}>恢复官方默认地址</button>
-{config.cloud_profile_id && <div className="profile-unlink"><button type="button" className="ghost" disabled={config.provider === "deepseek"} onClick={() => onApply({ ...config, cloud_profile_id: null })}>解除关联</button><HelpTip text="如果仍为当前来源，请先选择本地 OCR 并保存。解除后请保存设置，再删除翻译配置。" /></div>}
+        <div className="cloud-config-section cloud-config-line">
+          <label className="profile-field"><span>关联凭据配置<HelpTip text="仅列出使用官方 HTTPS 接口且已保存密钥的配置；不会改变当前翻译来源。" /></span>
+            <Select autoFocus aria-label="关联凭据配置" value={selected ? id : ""} onChange={setId}
+              options={[{ value: "", label: "请选择 DeepSeek 官方配置" }, ...profiles.map(p => ({ value: p.id, label: p.name + " · " + p.config.model }))]} />
+          </label>
+          <button type="button" className="ghost" onClick={onManageProfiles}>管理翻译配置</button>
+        </div>
+        <div className="cloud-config-section">
+          <div className="cloud-config-line">
+            <label className="profile-field"><span>OCR API 地址<HelpTip text="固定使用文字识别模式。密钥只发送到官方域名，不跟随重定向。" /></span><input required type="url" disabled={!selected} value={endpoint} onChange={e => setEndpoint(e.target.value)} autoComplete="off" /></label>
+            <button type="button" className="ghost" disabled={!selected} onClick={() => setEndpoint("https://api.deepseek.com/v1/tools/ocr")}>恢复官方地址</button>
+          </div>
+          {selected && !valid && <p className="profile-error" role="alert">请填写 api.deepseek.com 的 HTTPS 地址，不支持自定义端口、查询参数或片段。</p>}
+        </div>
       </fieldset>
-      <footer><span>应用后，点击主页面「保存设置」。</span><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={!selected || !valid}><Check />应用</button></footer>
+      <footer className="cloud-config-footer">
+        {config.cloud_profile_id && <div className="profile-unlink"><button type="button" className="ghost" disabled={config.provider === "deepseek"} onClick={() => onApply({ ...config, cloud_profile_id: null })}>解除关联</button><HelpTip text="如果仍为当前来源，请先选择本地 OCR 并保存。解除后请保存设置，再删除翻译配置。" /></div>}
+        <div className="cloud-config-confirm"><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={!selected || !valid}><Check />应用</button></div>
+        <p className="cloud-config-note">应用后保存设置生效</p>
+      </footer>
     </form>
   </dialog>, document.body);
 }

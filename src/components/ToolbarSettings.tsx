@@ -1,3 +1,4 @@
+import { Select } from "./Select";
 import { HelpTip } from "./HelpTip";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -14,8 +15,8 @@ export function ToolbarSettings({ settings, onChange }: { settings: AppSettings;
   const [mouse, setMouse] = useState<MouseCapabilities>({ detected: false, buttons: 0, hook_ready: false });
   const [selected, setSelected] = useState(1);
   const clip = useId().replace(/:/g, "");
-  const first = useRef<HTMLSelectElement>(null);
-  const second = useRef<HTMLSelectElement>(null);
+  const first = useRef<HTMLButtonElement>(null);
+  const second = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!isTauri) { setMouse({ detected: true, buttons: 5, hook_ready: true }); return; }
     let alive = true;
@@ -61,9 +62,8 @@ export function ToolbarSettings({ settings, onChange }: { settings: AppSettings;
       </figure>
       <div className="ocr-mouse-bindings">{([1, 2] as const).map(number => <label className="ocr-mouse-binding" data-active={configurable && selected === number} key={number}>
         <span><b>{number}</b><strong>侧键 {number}</strong><small>{number === 1 ? "通常为后退" : "通常为前进"}</small></span>
-        <select ref={number === 1 ? first : second} aria-label={`侧键 ${number} 的动作`} disabled={!configurable || (number === 2 && mouse.buttons < 5)} value={number === 1 ? value.mouse_button_1 : value.mouse_button_2} onFocus={() => setSelected(number)} onChange={e => patch(number === 1 ? { mouse_button_1: e.target.value as MouseAction } : { mouse_button_2: e.target.value as MouseAction })}>
-          <option value="default">默认配置 · 保留原用途</option><option value="toolbar">唤出工具栏</option><option value="capture" disabled={!settings.ocr.enabled}>{settings.ocr.enabled ? "直接截图翻译" : "直接截图翻译 · 模块已关闭"}</option>
-        </select>
+        <Select ref={number === 1 ? first : second} aria-label={`侧键 ${number} 的动作`} disabled={!configurable || (number === 2 && mouse.buttons < 5)} value={number === 1 ? value.mouse_button_1 : value.mouse_button_2} onFocus={() => setSelected(number)} onChange={action => patch(number === 1 ? { mouse_button_1: action as MouseAction } : { mouse_button_2: action as MouseAction })}
+          options={[{ value: "default", label: "默认配置 · 保留原用途" }, { value: "toolbar", label: "唤出工具栏" }, { value: "capture", label: settings.ocr.enabled ? "直接截图翻译" : "直接截图翻译 · 模块已关闭", disabled: !settings.ocr.enabled }]} />
       </label>)}</div>
     </div>
     <p className="ocr-mouse-note"><ShieldCheck /><span>{!supported && value.mouse_shortcuts ? "设备不可用时暂停接管，保留已保存的绑定。" : "仅在本应用运行期间接管已绑定的侧键，默认配置不拦截。"}退出应用后恢复原用途。修改后点击“保存设置”生效。</span></p>

@@ -34,7 +34,9 @@ enum WorkerCommand<'a> {
     },
     DryRun,
     ProbeDependencies,
-    Start,
+    Start {
+        transcription_mode: crate::models::TranscriptionMode,
+    },
     StartCloud,
     Stop,
     Shutdown,
@@ -43,6 +45,15 @@ enum WorkerCommand<'a> {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerEvent {
+    Review {
+        group_id: u64,
+        revision: u64,
+        text: String,
+        start_ms: u64,
+        end_ms: u64,
+        latency_ms: u64,
+        model_id: String,
+    },
     Audio {
         wav_base64: String,
         start_ms: u64,
@@ -285,8 +296,11 @@ impl AsrWorker {
         }
     }
 
-    pub async fn start(&mut self) -> Result<(), String> {
-        self.send(WorkerCommand::Start).await
+    pub async fn start(
+        &mut self,
+        transcription_mode: crate::models::TranscriptionMode,
+    ) -> Result<(), String> {
+        self.send(WorkerCommand::Start { transcription_mode }).await
     }
     pub async fn start_cloud(&mut self) -> Result<(), String> {
         self.send(WorkerCommand::StartCloud).await
@@ -440,5 +454,23 @@ mod tests {
             WorkerEvent::Partial { text, .. } => assert_eq!(text, "こんにちは"),
             _ => panic!("unexpected worker event"),
         }
+    }
+
+    #[test]
+    fn review_protocol_carries_stable_identity_and_revision() {
+        let event = decode_protocol_line(br#"{"type":"review","group_id":3,"revision":2,"text":"test","start_ms":36000,"end_ms":48000,"latency_ms":420,"model_id":"whisper-large-v3"}"#).unwrap().unwrap();
+        assert!(matches!(
+            event,
+            WorkerEvent::Review {
+                group_id: 3,
+                revision: 2,
+                ..
+            }
+        ));
+        let command = serde_json::to_value(WorkerCommand::Start {
+            transcription_mode: crate::models::TranscriptionMode::Consensus,
+        })
+        .unwrap();
+        assert_eq!(command["transcription_mode"], "consensus");
     }
 }

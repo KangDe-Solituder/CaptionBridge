@@ -145,6 +145,8 @@ pub struct CaptionSettings {
     pub context_segments: usize,
     #[serde(default)]
     pub audio_mode: VadProfile,
+    #[serde(default)]
+    pub transcription_mode: TranscriptionMode,
     #[serde(default = "default_model_mirror")]
     pub model_mirror_url: String,
 }
@@ -162,6 +164,7 @@ impl Default for CaptionSettings {
             max_chars: 96,
             context_segments: 2,
             audio_mode: VadProfile::Default,
+            transcription_mode: TranscriptionMode::Basic,
             model_mirror_url: default_model_mirror(),
         }
     }
@@ -342,6 +345,14 @@ pub enum VadProfile {
     #[serde(alias = "normal", alias = "asmr")]
     Default,
     Quick,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionMode {
+    #[default]
+    Basic,
+    Consensus,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

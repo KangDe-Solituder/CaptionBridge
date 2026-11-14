@@ -9,6 +9,9 @@ from __future__ import annotations
 import json
 from contextlib import ExitStack
 from streaming_asr import Windows, PendingWindows, Recognizer
+from consensus_asr import ConsensusWindows, ConsensusRecognizer
+import tempfile
+import shutil
 from cloud_audio import CloudWindows, AudioEmitter
 import ctypes
 import os
@@ -352,6 +355,7 @@ class Worker:
         self.runtime_directory_handles = []
         self.runtime_dll_handles = []
         self.gpu_runtime_preloaded = False
+        self.alignment_directory = None
 
     def preload_gpu_runtime(self) -> None:
         if self.gpu_runtime_preloaded or sys.platform != "win32":
@@ -432,6 +436,23 @@ class Worker:
         if not path.joinpath("model.bin").is_file():
             raise FileNotFoundError(f"model.bin not found in {path}")
         emit("loading_progress", progress=0.05, message="initializing_cuda")
+        # The distributed Kotoba conversion has large-v3 alignment heads,
+        # which address nonexistent decoder layers. Keep verified files intact;
+        # use a same-volume temporary view with a corrected tiny config.
+        if command.get("model_id", "").startswith("kotoba"):
+            config = json.loads(path.joinpath("config.json").read_text(encoding="utf-8"))
+            if any(layer >= 2 or head >= 20 for layer, head in config.get("alignment_heads", [])):
+                self.alignment_directory = tempfile.TemporaryDirectory(prefix=".alignment-", dir=path.parent)
+                view = Path(self.alignment_directory.name)
+                for original in path.iterdir():
+                    if original.is_file() and original.name != "config.json":
+                        if original.name == "model.bin":
+                            os.link(original, view / original.name)
+                        else:
+                            shutil.copy2(original, view / original.name)
+                config["alignment_heads"] = [[1, head] for head in range(20)]
+                (view / "config.json").write_text(json.dumps(config), encoding="utf-8")
+                path = view
         self.model = WhisperModel(
             str(path),
             device=command.get("device", "cuda"),
@@ -548,7 +569,7 @@ class Worker:
             cudnn_error=cudnn_error,
         )
 
-    def start(self, cloud: bool = False) -> None:
+    def start(self, cloud: bool = False, transcription_mode: str = "basic") -> None:
         if self.model is None and not cloud:
             raise RuntimeError("model_not_loaded")
         if self.capture_thread and self.capture_thread.is_alive():
@@ -556,9 +577,14 @@ class Worker:
         if self.inference_thread and self.inference_thread.is_alive():
             raise RuntimeError("previous_inference_not_stopped")
         mode = self.profile.get("mode", "default")
-        self.windows = CloudWindows() if cloud else Windows(mode)
+        review = not cloud and transcription_mode == "consensus"
+        if review and self.model_id not in ("whisper-large-v3", "kotoba-whisper-v2.0-faster"):
+            raise RuntimeError("三段一致性确认暂仅支持 Whisper large-v3 和 Kotoba")
+        self.windows = CloudWindows() if cloud else (ConsensusWindows() if review else Windows(mode))
         self.pending_windows = PendingWindows()
-        self.recognizer = AudioEmitter(emit) if cloud else Recognizer(self.model, self.model_id, mode, emit)
+        self.recognizer = AudioEmitter(emit) if cloud else (
+            ConsensusRecognizer(self.model, self.model_id, emit) if review
+            else Recognizer(self.model, self.model_id, mode, emit))
         self.stop_capture.clear()
         self.inference_thread = threading.Thread(target=self.inference_loop, name="asr-inference", daemon=True)
         self.inference_thread.start()
@@ -598,6 +624,9 @@ class Worker:
         self.stop(flush=False)
         self.model = None
         self.model_id = None
+        if self.alignment_directory is not None:
+            self.alignment_directory.cleanup()
+            self.alignment_directory = None
         self.utterance = []
         try:
             import ctranslate2
@@ -901,14 +930,14 @@ def main() -> None:
             elif name == "configure": worker.configure(command)
             elif name == "dry_run": worker.dry_run()
             elif name == "probe_dependencies": worker.probe_dependencies()
-            elif name == "start": worker.start()
+            elif name == "start": worker.start(transcription_mode=command.get("transcription_mode", "basic"))
             elif name == "start_cloud": worker.start(cloud=True)
             elif name == "stop": worker.stop()
             elif name == "flush": worker.stop()
             elif name == "reset_routing": worker.reset_routing()
             elif name == "unload": worker.unload()
             elif name == "shutdown":
-                worker.stop(flush=False)
+                worker.unload()
                 emit("shutdown")
                 return
             else: raise ValueError(f"unknown_command:{name}")

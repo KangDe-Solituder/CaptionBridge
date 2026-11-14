@@ -95,10 +95,22 @@ struct FinalQueue {
 impl FinalQueue {
     async fn push(&self, job: TranslationJob) -> Result<(), String> {
         let mut jobs = self.jobs.lock().await;
+        if let Some(pending) = jobs
+            .iter_mut()
+            .find(|x| job.segment.id.starts_with("review-") && x.segment.id == job.segment.id)
+        {
+            if pending.segment.revision < job.segment.revision {
+                *pending = job;
+            }
+            return Ok(());
+        }
         if let Some(last) = jobs.back_mut() {
             let combined =
                 last.segment.source_text.chars().count() + job.segment.source_text.chars().count();
-            if combined <= 96 {
+            if combined <= 96
+                && !last.segment.id.starts_with("review-")
+                && !job.segment.id.starts_with("review-")
+            {
                 last.segment.source_text.push_str(&job.segment.source_text);
                 last.segment.end_ms = job.segment.end_ms;
                 return Ok(());
@@ -129,6 +141,13 @@ impl FinalQueue {
 
     async fn depth(&self) -> u32 {
         self.jobs.lock().await.len() as u32
+    }
+    async fn superseded(&self, segment: &CaptionSegment) -> bool {
+        self.jobs
+            .lock()
+            .await
+            .iter()
+            .any(|job| job.segment.id == segment.id && job.segment.revision > segment.revision)
     }
     fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
@@ -283,7 +302,7 @@ async fn run_session(app: AppHandle, state: AppState, stop: Arc<AtomicBool>) -> 
                 &app,
                 &state,
                 &source,
-                settings.captions.context_segments,
+                &settings.captions,
                 &stop,
                 &queue,
                 &accepted_context,
@@ -358,6 +377,11 @@ fn spawn_translator(
                     error: Some(error),
                 },
             };
+            // An old in-flight translation cannot overwrite a newer ASR
+            // hypothesis. Its replacement stays in the ordered bounded queue.
+            if queue.superseded(&segment).await {
+                continue;
+            }
             let first_token_timed_out = result
                 .error
                 .as_deref()
@@ -610,11 +634,12 @@ async fn run_local_source(
     app: &AppHandle,
     state: &AppState,
     source: &CaptionSourceConfig,
-    context_limit: usize,
+    settings: &crate::models::CaptionSettings,
     stop: &AtomicBool,
     queue: &FinalQueue,
     context: &Mutex<VecDeque<String>>,
 ) -> Result<(), String> {
+    let context_limit = settings.context_segments;
     let model_id = source
         .model_id()
         .ok_or_else(|| "本地来源没有模型".to_string())?;
@@ -637,7 +662,14 @@ async fn run_local_source(
     } else {
         worker.configure(source).await?;
     }
-    worker.start().await?;
+    let mode = if matches!(model_id, "whisper-large-v3" | "kotoba-whisper-v2.0-faster") {
+        settings.transcription_mode
+    } else {
+        crate::models::TranscriptionMode::Basic
+    };
+    worker.start(mode).await?;
+    let review_session = uuid::Uuid::new_v4();
+    let mut review_context: VecDeque<(u64, String)> = VecDeque::new();
     let mut stopping_at: Option<Instant> = None;
     state.set_caption_state(app, CaptionRuntimeState::Running);
     state.set_source_health(app, CaptionSourceHealth::Ready);
@@ -651,6 +683,61 @@ async fn run_local_source(
             return Err("ASR 停止超时，已释放 Worker；尾段可能未完成".into());
         }
         match tokio::time::timeout(Duration::from_millis(250), worker.next()).await {
+            Ok(Ok(WorkerEvent::Review {
+                group_id,
+                revision,
+                text,
+                start_ms,
+                end_ms,
+                latency_ms,
+                model_id,
+            })) => {
+                state.asr_latency_ms.store(latency_ms, Ordering::Relaxed);
+                state.last_caption_update_ms.store(
+                    chrono::Utc::now().timestamp_millis().max(0) as u64,
+                    Ordering::Relaxed,
+                );
+                let previous = review_context
+                    .iter()
+                    .filter(|(id, _)| *id < group_id)
+                    .rev()
+                    .take(context_limit)
+                    .map(|(_, text)| text.clone())
+                    .collect::<Vec<_>>();
+                if let Some((_, old)) = review_context.iter_mut().find(|(id, _)| *id == group_id) {
+                    *old = text.clone();
+                } else {
+                    review_context.push_back((group_id, text.clone()));
+                }
+                while review_context.len() > context_limit.max(4) + 2 {
+                    review_context.pop_front();
+                }
+                if review_context.back().is_some_and(|(id, _)| *id == group_id) {
+                    let _ = app.emit("caption:source", &text);
+                }
+                let segment = CaptionSegment {
+                    id: format!("review-{review_session}-{group_id}"),
+                    source_text: text,
+                    revision,
+                    committed: true,
+                    source: CaptionSourceKind::LocalAsr,
+                    model_id: Some(model_id),
+                    start_ms,
+                    end_ms,
+                    final_result: true,
+                    time_source: CaptionTimeSource::Model,
+                };
+                let _ = app.emit("caption:segment", &segment);
+                queue
+                    .push(TranslationJob {
+                        segment,
+                        context: previous.into_iter().rev().collect(),
+                    })
+                    .await?;
+                state
+                    .translation_queue_depth
+                    .store(queue.depth().await, Ordering::Relaxed);
+            }
             Ok(Ok(WorkerEvent::Partial {
                 text,
                 start_ms,
@@ -910,6 +997,38 @@ mod tests {
                 VadProfile::Default
             );
         }
+    }
+
+    #[tokio::test]
+    async fn review_replaces_pending_work_without_merging_or_reordering() {
+        let queue = FinalQueue::default();
+        let job = |id: &str, revision| TranslationJob {
+            segment: CaptionSegment {
+                id: id.into(),
+                source_text: format!("稿{revision}"),
+                revision,
+                committed: true,
+                source: CaptionSourceKind::LocalAsr,
+                model_id: None,
+                start_ms: 0,
+                end_ms: 12000,
+                final_result: true,
+                time_source: CaptionTimeSource::Model,
+            },
+            context: vec![],
+        };
+        queue.push(job("review-a", 1)).await.unwrap();
+        let in_flight = queue.pop().await.unwrap();
+        queue.push(job("review-a", 2)).await.unwrap();
+        queue.push(job("review-b", 1)).await.unwrap();
+        queue.push(job("review-a", 3)).await.unwrap();
+        queue.push(job("review-a", 2)).await.unwrap();
+        assert!(queue.superseded(&in_flight.segment).await);
+        assert_eq!(queue.depth().await, 2);
+        let updated = queue.pop().await.unwrap();
+        assert_eq!(updated.segment.id, "review-a");
+        assert_eq!(updated.segment.revision, 3);
+        assert_eq!(queue.pop().await.unwrap().segment.id, "review-b");
     }
 
     #[test]

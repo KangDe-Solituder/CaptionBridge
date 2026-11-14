@@ -99,11 +99,30 @@ pub fn read_records(path: &Path) -> Vec<SessionRecord> {
     let Ok(file) = fs::File::open(path) else {
         return Vec::new();
     };
-    BufReader::new(file)
+    let raw = BufReader::new(file)
         .lines()
         .map_while(Result::ok)
         .filter_map(|line| serde_json::from_str::<SessionRecord>(&line).ok())
-        .collect()
+        .collect::<Vec<_>>();
+    // JSONL remains append-only. Revisions replace the same row on reading,
+    // exporting and correcting; its original chronological position is kept.
+    let mut records: Vec<SessionRecord> = Vec::new();
+    let mut positions = std::collections::HashMap::new();
+    for record in raw {
+        if let Some(&index) = positions
+            .get(&record.segment.id)
+            .filter(|_| record.segment.id.starts_with("review-"))
+        {
+            let old: &mut SessionRecord = &mut records[index];
+            if record.segment.revision > old.segment.revision {
+                *old = record;
+            }
+        } else {
+            positions.insert(record.segment.id.clone(), records.len());
+            records.push(record);
+        }
+    }
+    records
 }
 
 pub fn rewrite_records(path: &Path, records: &[SessionRecord]) -> Result<(), String> {
@@ -149,26 +168,13 @@ pub fn summarize(root: &Path, current_id: Option<&str>) -> Vec<SessionSummary> {
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let mut entry_count = 0_usize;
-        let mut first_record = None;
-        let mut has_correction = false;
-        if let Ok(file) = fs::File::open(&path) {
-            for line in BufReader::new(file).lines().map_while(Result::ok) {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                entry_count += 1;
-                if first_record.is_none() {
-                    first_record = serde_json::from_str::<SessionRecord>(&line).ok();
-                }
-                if !has_correction && line.contains("\"corrected\":{") {
-                    has_correction = true;
-                }
-            }
-        }
+        let records = read_records(&path);
+        let entry_count = records.len();
+        let first_record = records.first();
+        let has_correction = records.iter().any(|r| r.corrected.is_some());
         summaries.push(SessionSummary {
             is_current: current_id == Some(id.as_str()),
-            created_at: created_at_of(&path, first_record.as_ref()),
+            created_at: created_at_of(&path, first_record),
             first_source: first_record
                 .as_ref()
                 .map(|record| record.segment.source_text.clone())
@@ -274,6 +280,30 @@ mod tests {
         let entries = fs::read_dir(&root).unwrap().count();
         assert_eq!(entries, 1);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn review_records_replace_in_place_in_history_and_summary() {
+        let root = std::env::temp_dir().join(format!("caption-review-{}", uuid::Uuid::new_v4()));
+        let session = JsonlSession::start(&root).unwrap();
+        let mut first = sample_record("first");
+        first.segment.id = "review-a".into();
+        let mut second = sample_record("second");
+        second.segment.id = "review-b".into();
+        session.append(&first.segment, &first.result).unwrap();
+        session.append(&second.segment, &second.result).unwrap();
+        first.segment.revision = 2;
+        first.segment.source_text = "corrected".into();
+        session.append(&first.segment, &first.result).unwrap();
+        first.segment.revision = 1;
+        first.segment.source_text = "stale".into();
+        session.append(&first.segment, &first.result).unwrap();
+        let records = read_records(session.path());
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].segment.source_text, "corrected");
+        assert_eq!(records[1].segment.source_text, "second");
+        assert_eq!(summarize(&root, None)[0].entry_count, 2);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

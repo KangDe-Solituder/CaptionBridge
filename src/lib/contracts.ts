@@ -23,6 +23,7 @@ export interface CaptionSettings {
   enabled: boolean; auto_launch: boolean; poll_milliseconds: number;
   stable_milliseconds: number; max_duration_milliseconds: number; max_chars: number; context_segments: number;
   audio_mode: "default" | "quick"; model_mirror_url: string;
+  transcription_mode: "basic" | "consensus";
 }
 export type CaptionSourceConfig =
   | { type: "cloud_asr"; provider: "openai" | "deepseek" }

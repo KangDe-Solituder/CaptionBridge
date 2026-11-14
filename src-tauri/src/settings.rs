@@ -298,6 +298,7 @@ mod tests {
         expected.ocr.cloud_profile_id = Some("ocr-test-profile".into());
         expected.ocr.cloud_endpoint = "https://api.deepseek.com/tools/ocr".into();
         expected.ocr.empty_retries = 2;
+        expected.captions.transcription_mode = crate::models::TranscriptionMode::Consensus;
 
         save(&paths, &expected).unwrap();
         let actual = load(&paths).unwrap();
@@ -317,8 +318,26 @@ mod tests {
         assert_eq!(actual.ocr.cloud_profile_id, expected.ocr.cloud_profile_id);
         assert_eq!(actual.ocr.cloud_endpoint, expected.ocr.cloud_endpoint);
         assert_eq!(actual.ocr.empty_retries, 2);
+        assert_eq!(
+            actual.captions.transcription_mode,
+            crate::models::TranscriptionMode::Consensus
+        );
 
         let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn old_settings_keep_basic_transcription() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["captions"]
+            .as_object_mut()
+            .unwrap()
+            .remove("transcription_mode");
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            settings.captions.transcription_mode,
+            crate::models::TranscriptionMode::Basic
+        );
     }
 
     #[test]

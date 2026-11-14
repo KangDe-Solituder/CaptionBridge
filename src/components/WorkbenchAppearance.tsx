@@ -57,9 +57,9 @@ export function AppearanceChoices({ settings: s, onChange }: { settings: AppSett
   return <>
     <div className="appearance-mode"><div><h3>明暗模式</h3><p>{s.visual.theme === "system" ? "正在跟随系统" : dark ? "深色" : "明亮"}</p></div><div><button className="ghost" onClick={() => onChange({ ...s, visual: { ...s.visual, theme: dark ? "light" : "dark" } })}>{dark ? <Sun /> : <Moon />}{dark ? "切换明亮" : "切换深色"}</button><button className="ghost" disabled={s.visual.theme === "system"} onClick={() => onChange({ ...s, visual: { ...s.visual, theme: "system" } })}>跟随系统</button></div></div>
     <div className="accent-choices" aria-label="配色风格">
-      {([{ id: "purple", title: "经典紫", text: "现有风格 · 紫蓝点缀" }, { id: "green", title: "荧光绿", text: "清晰醒目的局部强调" }, { id: "blue", title: "晴空蓝", text: "轻盈柔和的蓝色点缀" }] as const).map(choice => <button key={choice.id} type="button" data-palette={choice.id} aria-pressed={(s.visual.accent ?? "purple") === choice.id} onClick={() => onChange({ ...s, visual: { ...s.visual, accent: choice.id } })}><span className="accent-swatch"><i /><i /><i /></span><strong>{choice.title}</strong><small>{choice.text}</small></button>)}
+      {([{ id: "purple", title: "经典紫", text: "现有风格 · 紫蓝点缀" }, { id: "green", title: "荧光绿", text: "炭黑底色 · 荧光点缀" }, { id: "blue", title: "晴空蓝", text: "轻盈柔和的蓝色点缀" }] as const).map(choice => <button key={choice.id} type="button" data-palette={choice.id} aria-pressed={(s.visual.accent ?? "purple") === choice.id} onClick={() => onChange({ ...s, visual: { ...s.visual, accent: choice.id } })}><span className="accent-swatch"><i /><i /><i /></span><strong>{choice.title}</strong><small>{choice.text}</small></button>)}
     </div>
-    <p className="appearance-note">风格只调整按钮、选中态与局部强调色，保留现有窗口底色。</p>
+    <p className="appearance-note">荧光绿搭配更沉静的中性底色；经典紫与晴空蓝保留现有窗口底色。</p>
   </>;
 }
 

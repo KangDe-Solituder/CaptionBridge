@@ -1,7 +1,11 @@
-/* Workbench composition. Existing surface/background tokens stay intact. */
+/* Workbench composition. Green has a neutral canvas instead of purple gradients. */
 :root { --canvas-accent: #6d5ae0; }
 :root[data-theme="dark"] { --canvas-accent: #a78bfa; }
 .content { background: radial-gradient(circle at 88% -12%, color-mix(in srgb, var(--canvas-accent) 7%, transparent), transparent 36%), radial-gradient(circle at -8% 108%, color-mix(in srgb, var(--coral) 4%, transparent), transparent 30%); }
+:root[data-accent="green"] .shell { background: var(--bg); }
+:root[data-accent="green"] .content { background: transparent; }
+:root[data-theme="dark"][data-accent="green"] .subtitle-preview-window:not([data-transparent="true"]) { background: var(--surface); border-color: var(--line-strong); }
+:root[data-theme="dark"][data-accent="green"] .subtitle-preview-header { color: var(--muted); border-color: var(--line); }
 .shell { position: relative; grid-template-columns: 76px minmax(0, 1fr); }
 .shell[data-sidebar-fixed="true"] { grid-template-columns: 216px minmax(0, 1fr); }
 .shell > .content { grid-column: 2; padding: 34px clamp(22px, 3vw, 48px) 48px; }
@@ -83,12 +87,73 @@ html[data-motion="reduced"] .rail, html[data-motion="reduced"] .rail-label { tra
 .help-tip:focus-visible { outline: 2px solid var(--accent); border-radius: 4px; }
 .help-tip .help-tip-content { position: fixed; z-index: 10000; width: min(320px, calc(100vw - 16px)); box-sizing: border-box; padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface-3); color: var(--text); box-shadow: var(--elev-2); font-size: 13px; font-weight: 400; line-height: 1.7; letter-spacing: 0; text-transform: none; white-space: normal; text-align: left; pointer-events: none; }
 .resource-group { border-top: 1px solid var(--line); margin-top: 18px; }
-.resource-group > summary { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; cursor: pointer; padding: 20px 0; font-size: 16px; font-weight: 650; color: var(--text); list-style: none; }
-.resource-group > summary::-webkit-details-marker { display: none; }
-.resource-group > summary::before { content: "▶"; color: var(--muted); font-size: 10px; }
-.resource-group[open] > summary::before { content: "▼"; }
-.resource-group > summary .resource-actions { margin-left: auto; }
+.resource-group-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding: 18px 0; }
+.resource-group-title { display: flex; align-items: center; gap: 5px; }
+.resource-group-title > button { display: flex; align-items: center; gap: 9px; padding: 6px 0; background: transparent; color: var(--text); font-size: 16px; font-weight: 650; cursor: pointer; border-radius: 5px; }
+.resource-group-title > button:hover { color: var(--accent); }
+.resource-group-title > button > svg { color: var(--muted); transition: transform var(--dur-base) var(--ease-out); }
+.resource-group-header .resource-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.resource-group-reveal { overflow: hidden; }
+.resource-group-content { display: flow-root; }
 .resource-group .setting-row { padding-top: 8px; }
 .resource-actions { display: flex; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
 .profile-unlink { display: flex; align-items: center; margin-top: 18px; }
 .profile-bindings { padding: 0 18px 14px; font-size: 12px; color: var(--muted); }
+
+/* Shared themed selection menus, including controls inside native dialogs. */
+.select-trigger {
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 14px;
+  width: 100%; min-width: 0; min-height: 40px; padding: 9px 12px;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2);
+  color: var(--text); font-size: var(--t-md); text-align: left; cursor: pointer;
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast), background var(--dur-fast);
+}
+.select-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select-trigger > svg { flex-shrink: 0; color: var(--muted); transition: transform var(--dur-fast); }
+.select-trigger:hover:not(:disabled) { border-color: var(--line-strong); background: var(--surface-3); }
+.select-trigger[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+.select-trigger[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.select-trigger:disabled { opacity: .45; cursor: not-allowed; }
+.select-menu {
+  position: fixed; z-index: 10000; overflow-y: auto; overscroll-behavior: contain;
+  padding: 5px; border: 1px solid var(--line-strong); border-radius: 12px;
+  background: var(--surface); color: var(--text); box-shadow: var(--elev-3);
+  font-size: var(--t-md); font-weight: 500; animation: select-enter 120ms ease-out;
+}
+.select-menu [role="option"] {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  min-height: 36px; padding: 8px 10px; border-radius: 7px; cursor: pointer;
+}
+.select-menu [role="option"] > span { overflow-wrap: anywhere; min-width: 0; }
+.select-menu [role="option"] > svg { flex-shrink: 0; color: var(--accent); }
+.select-menu [role="option"][data-active="true"] { background: var(--surface-3); }
+.select-menu [role="option"][aria-selected="true"] { background: var(--accent-soft); color: var(--accent); }
+.select-menu [role="option"][aria-disabled="true"] { opacity: .4; cursor: not-allowed; }
+.setting-row > .select-trigger { width: auto; min-width: 130px; }
+.export-row > .select-trigger { width: 110px; }
+@keyframes select-enter { from { opacity: 0; } to { opacity: 1; } }
+
+/* Credentials, endpoint and proxy form distinct sections with inline actions. */
+.cloud-config-dialog { width: min(760px, 92vw); }
+.cloud-config-dialog header { margin-bottom: 8px; }
+.cloud-config-section { padding: 22px 0; }
+.cloud-config-section + .cloud-config-section { border-top: 1px solid var(--line); }
+.cloud-config-line { display: grid; grid-template-columns: minmax(0, 1fr) 138px; align-items: end; gap: 16px; }
+.cloud-config-dialog .profile-field { margin: 0; gap: 10px; }
+.cloud-config-line > button { min-height: 40px; padding-inline: 10px; }
+.cloud-config-dialog .setting-row { padding: 0; border: 0; min-height: 38px; }
+.cloud-config-dialog .setting-row h3 { margin: 0; font-size: var(--t-md); }
+.cloud-config-dialog .cloud-proxy-field { margin-top: 18px; max-width: 100%; }
+.cloud-config-dialog .profile-error { margin-top: 12px; }
+.profile-dialog .cloud-config-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 14px; margin-top: 0; padding-top: 20px; border-top: 1px solid var(--line); }
+.cloud-config-footer .profile-unlink { margin: 0; gap: 3px; }
+.cloud-config-confirm { display: flex; gap: 10px; margin-left: auto; }
+.cloud-config-note { flex-basis: 100%; margin: 0; color: var(--muted); font-size: var(--t-xs); }
+@media (max-width: 560px) {
+  .cloud-config-line { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .cloud-config-line > button { justify-self: end; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .select-menu { animation: none; }
+  .resource-group-title > button > svg { transition: none; }
+}

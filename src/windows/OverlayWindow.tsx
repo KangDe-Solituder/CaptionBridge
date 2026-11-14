@@ -7,6 +7,7 @@ import { getRuntimeStatus, getSettings, refreshCaption, saveOverlayPosition, sav
 import type { AppSettings, CaptionSourceHealth, CaptionTranslatedEvent, SettingsView } from "../lib/contracts";
 import { useTheme, previewSettings } from "../lib/ui-shared";
 import { currentWindow, isTauri } from "../lib/window";
+import { acceptTranslation } from "../lib/caption-feed";
 
 const demoOverlayItems: CaptionTranslatedEvent[] = [
   { segment: { id: "demo-1", source_text: "それでは、今日の配信を始めたいと思います", revision: 1, committed: true, source: "local_asr", start_ms: 0, end_ms: 2600, final_result: true, time_source: "model" }, result: { source_text: "", translated_text: "那么，开始今天的直播吧", model: "demo", latency_ms: 800, first_token_ms: 300, cached: false } },
@@ -35,7 +36,7 @@ export function OverlayWindow() {
     void getRuntimeStatus().then(v => setHealth(v.source_health));
     const ps = [
       listen<string>("caption:source", e => setCurrentSource(e.payload)),
-      listen<CaptionTranslatedEvent>("caption:translated", e => setItems(v => [...v, e.payload].slice(-12))),
+      listen<CaptionTranslatedEvent>("caption:translated", e => setItems(v => acceptTranslation(v, e.payload))),
       listen<CaptionSourceHealth>("caption:health-changed", e => setHealth(e.payload)),
       listen<SettingsView>("settings:changed", e => setSettings(e.payload.settings)),
       listen<AppSettings["visual"]["theme"]>("settings:theme-changed", e => setSettings(current => current ? { ...current, visual: { ...current.visual, theme: e.payload } } : current)),
