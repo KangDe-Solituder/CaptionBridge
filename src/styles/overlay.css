@@ -4,7 +4,9 @@
   height: 100vh; overflow: hidden; user-select: text;
   border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
   border-radius: var(--r-xl);
-  box-shadow: var(--elev-2), inset 0 1px 0 rgba(255, 255, 255, .06);
+  /* Clip the backdrop and all child layers to the same outline as the frame. */
+  clip-path: inset(0 round var(--r-xl));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
   transition: background var(--dur-base) ease, border-color var(--dur-base) ease, box-shadow var(--dur-base) ease;
 }
 .overlay-window[data-transparent="true"] { border-color: transparent; box-shadow: none; background: transparent !important; backdrop-filter: none !important; }

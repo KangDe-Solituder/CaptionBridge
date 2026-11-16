@@ -1,30 +1,19 @@
 import { Moon, Sun, Monitor, Grip, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { AppSettings } from "../lib/contracts";
-import { currentWindow, isTauri } from "../lib/window";
 
 export function useSidebarDock() {
-  const [mode, setMode] = useState<"auto" | "fixed" | "floating">(() => {
-    const value = localStorage.getItem("workbench-sidebar");
-    return value === "fixed" || value === "floating" ? value : "auto";
+  const [fixed, setFixed] = useState(() => {
+    try {
+      const saved = localStorage.getItem("workbench-sidebar");
+      if (saved === "fixed" || saved === "floating") return saved === "fixed";
+    } catch { /* Use the initial window width if storage is unavailable. */ }
+    return window.innerWidth >= 1440;
   });
-  const [wide, setWide] = useState(window.innerWidth >= 1440);
-  const [maximized, setMaximized] = useState(false);
   useEffect(() => {
-    let alive = true;
-    const update = () => {
-      setWide(window.innerWidth >= 1440);
-      if (isTauri) void currentWindow.isMaximized().then(value => { if (alive) setMaximized(value); }).catch(() => {});
-      else setMaximized(!!document.fullscreenElement);
-    };
-    update();
-    window.addEventListener("resize", update);
-    document.addEventListener("fullscreenchange", update);
-    return () => { alive = false; window.removeEventListener("resize", update); document.removeEventListener("fullscreenchange", update); };
-  }, []);
-  const fixed = mode === "fixed" || (mode === "auto" && (wide || maximized));
-  const changeMode = (next: typeof mode) => { setMode(next); localStorage.setItem("workbench-sidebar", next); };
-  return { fixed, mode, toggle: () => changeMode(fixed ? "floating" : "fixed"), reset: () => changeMode("auto") };
+    try { localStorage.setItem("workbench-sidebar", fixed ? "fixed" : "floating"); } catch { /* Keep the current session responsive. */ }
+  }, [fixed]);
+  return { fixed, toggle: () => setFixed(value => !value) };
 }
 
 function useSystemDark() {
@@ -57,7 +46,7 @@ export function AppearanceChoices({ settings: s, onChange }: { settings: AppSett
   return <>
     <div className="appearance-mode"><div><h3>明暗模式</h3><p>{s.visual.theme === "system" ? "正在跟随系统" : dark ? "深色" : "明亮"}</p></div><div><button className="ghost" onClick={() => onChange({ ...s, visual: { ...s.visual, theme: dark ? "light" : "dark" } })}>{dark ? <Sun /> : <Moon />}{dark ? "切换明亮" : "切换深色"}</button><button className="ghost" disabled={s.visual.theme === "system"} onClick={() => onChange({ ...s, visual: { ...s.visual, theme: "system" } })}>跟随系统</button></div></div>
     <div className="accent-choices" aria-label="配色风格">
-      {([{ id: "purple", title: "经典紫", text: "现有风格 · 紫蓝点缀" }, { id: "green", title: "荧光绿", text: "炭黑底色 · 荧光点缀" }, { id: "blue", title: "晴空蓝", text: "轻盈柔和的蓝色点缀" }] as const).map(choice => <button key={choice.id} type="button" data-palette={choice.id} aria-pressed={(s.visual.accent ?? "purple") === choice.id} onClick={() => onChange({ ...s, visual: { ...s.visual, accent: choice.id } })}><span className="accent-swatch"><i /><i /><i /></span><strong>{choice.title}</strong><small>{choice.text}</small></button>)}
+      {([{ id: "purple", title: "经典紫", text: "现有风格 · 紫蓝点缀" }, { id: "green", title: "荧光绿", text: "炭黑底色 · 荧光点缀" }, { id: "blue", title: "晴空蓝", text: "明快纯净的蓝色点缀" }] as const).map(choice => <button key={choice.id} type="button" data-palette={choice.id} aria-pressed={(s.visual.accent ?? "purple") === choice.id} onClick={() => onChange({ ...s, visual: { ...s.visual, accent: choice.id } })}><span className="accent-swatch"><i /><i /><i /></span><strong>{choice.title}</strong><small>{choice.text}</small></button>)}
     </div>
     <p className="appearance-note">荧光绿搭配更沉静的中性底色；经典紫与晴空蓝保留现有窗口底色。</p>
   </>;

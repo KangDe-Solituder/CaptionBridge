@@ -1,12 +1,18 @@
 import { ChevronRight } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { HelpTip } from "./HelpTip";
 
-export function ResourceGroup({ title, hint, actions, children, reduceMotion }: {
-  title: string; hint?: string; actions?: ReactNode; children: ReactNode; reduceMotion: boolean;
+export function ResourceGroup({ preferenceKey, title, hint, actions, children, reduceMotion }: {
+  preferenceKey: string; title: string; hint?: string; actions?: ReactNode; children: ReactNode; reduceMotion: boolean;
 }) {
-  const [open, setOpen] = useState(true);
+  const storageKey = `resource-group-open:${preferenceKey}`;
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem(storageKey) !== "false"; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(storageKey, String(open)); } catch { /* Keep usable when storage is unavailable. */ }
+  }, [storageKey, open]);
   const id = useId();
   const systemReduced = useReducedMotion();
   return <section className="resource-group">

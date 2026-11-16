@@ -59,7 +59,7 @@ pub async fn recognize(
         .map_err(|_| "无法准备截图")?;
     let response = client
         .post(official_url(&config.cloud_endpoint)?)
-        .bearer_auth(key)
+        .bearer_auth(&key)
         .multipart(
             reqwest::multipart::Form::new()
                 .text("purpose", "text_recognition")
@@ -92,7 +92,12 @@ pub async fn recognize(
         bytes.extend_from_slice(&chunk);
     }
     let value = serde_json::from_slice(&bytes).map_err(|_| "OCR 返回了无效 JSON")?;
-    parse_response(&value)
+    let blocks = parse_response(&value)?;
+    // Never forward a credential echoed by the service to translation/history.
+    if blocks.iter().any(|block| block.text.contains(&key)) {
+        return Err("OCR 返回异常，已阻止显示敏感信息".into());
+    }
+    Ok(blocks)
 }
 
 fn clean_text(text: &str) -> String {

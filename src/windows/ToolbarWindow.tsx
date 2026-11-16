@@ -1,3 +1,4 @@
+import { translationProfile } from "../lib/model-choices";
 import { enabledToolbarButtons, toolbarButtons, type ToolbarButton } from "../lib/toolbar-modules";
 import { Fragment } from "react";
 import { startOcrCapture } from "./OcrWindow";
@@ -78,7 +79,7 @@ export function ToolbarWindow() {
       await invoke("expand_toolbar");
       if (activeRequest.current !== ticket) return;
       setExpanded(true);
-      const translated = await translateSelection({ mode: "selection", source_text: selection.text, source_language: "auto", target_language: settings.llm.target_language }, ticket);
+      const translated = await translateSelection({ mode: "selection", source_text: selection.text, source_language: "auto", target_language: translationProfile(settings, "selection")?.target_language ?? "中文" }, ticket);
       if (activeRequest.current === ticket) setResult(translated);
     } catch (error) {
       if (activeRequest.current === ticket) setResult({ ...emptyResult, source_text: selection.text, error: String(error) });
@@ -146,7 +147,7 @@ export function ToolbarWindow() {
             </nav>
           </header>
           <div className="language-row">
-            <span>自动检测</span><ArrowRight /><strong>{settings?.llm.target_language}</strong>
+            <span>自动检测</span><ArrowRight /><strong>{settings ? translationProfile(settings, "selection")?.target_language : ""}</strong>
             <button onClick={() => setShowOriginal(v => !v)}>{showOriginal ? "隐藏原文" : "显示原文"}</button>
           </div>
           <section className="result-content">

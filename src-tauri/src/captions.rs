@@ -173,7 +173,7 @@ pub fn spawn_caption_session(app: AppHandle, state: AppState) -> CaptionControll
 }
 
 async fn run_session(app: AppHandle, state: AppState, stop: Arc<AtomicBool>) -> Result<(), String> {
-    let (settings, api_key) = crate::translation_context(&state)?;
+    let (settings, api_key) = crate::translation_context(&state, TranslationMode::LiveCaption)?;
     let source = settings.captions.source.clone();
     // One session file per process lifetime: stopping and restarting captions
     // keeps appending to the same record; only a fresh process starts a new one.

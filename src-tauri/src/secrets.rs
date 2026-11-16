@@ -1,6 +1,40 @@
 const SERVICE: &str = "com.dimfi.livecaption";
 const PRIMARY_API_KEY: &str = "primary-api-key";
 
+/// Hold a possible key prefix across streaming chunks before publishing text.
+pub struct ResponseKeyFilter<'a> {
+    key: &'a str,
+    pending: String,
+}
+
+impl<'a> ResponseKeyFilter<'a> {
+    pub fn new(key: &'a str) -> Self {
+        Self {
+            key,
+            pending: String::new(),
+        }
+    }
+
+    pub fn push(&mut self, text: &str) -> String {
+        if self.key.is_empty() {
+            return text.to_string();
+        }
+        self.pending.push_str(text);
+        self.pending = self.pending.replace(self.key, "[密钥已隐藏]");
+        let split = self
+            .pending
+            .char_indices()
+            .find(|(index, _)| self.key.starts_with(&self.pending[*index..]))
+            .map_or(self.pending.len(), |(index, _)| index);
+        let suffix = self.pending.split_off(split);
+        std::mem::replace(&mut self.pending, suffix)
+    }
+
+    pub fn finish(self) -> String {
+        self.pending
+    }
+}
+
 pub fn normalize_api_key(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
     let key = trimmed
@@ -18,6 +52,21 @@ pub fn normalize_api_key(input: &str) -> Result<String, String> {
     }
 
     Ok(key.to_string())
+}
+
+pub fn validate_credential_transport(endpoint: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(endpoint).map_err(|_| "接口地址无效")?;
+    if url.scheme() == "https"
+        || (url.scheme() == "http"
+            && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")))
+    {
+        Ok(())
+    } else {
+        Err(
+            "使用 API Key 的远程接口必须使用 HTTPS；本机 localhost/127.0.0.1/::1 可使用 HTTP"
+                .into(),
+        )
+    }
 }
 
 fn entry() -> Result<keyring::Entry, String> {
@@ -84,7 +133,10 @@ pub fn translation_key(settings: &crate::models::AppSettings) -> Result<String, 
         .find(|p| p.id == id)
         .ok_or("当前翻译配置不存在，请重新选择")?;
     match profile_key(id)? {
-        Some(key) => Ok(key),
+        Some(key) => {
+            validate_credential_transport(&settings.llm.endpoint)?;
+            Ok(key)
+        }
         None if !profile.api_key_configured => Ok(String::new()),
         None => Err("当前配置的密钥不可用，请编辑配置并重新保存 API Key".into()),
     }
@@ -94,6 +146,46 @@ pub fn translation_key(settings: &crate::models::AppSettings) -> Result<String, 
 mod profile_tests {
     use super::*;
     use crate::models::{AppSettings, LlmProfile, LlmProviderSettings};
+
+    #[test]
+    fn credentials_require_tls_except_for_loopback_services() {
+        for endpoint in [
+            "https://example.com/v1",
+            "http://localhost:1234/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://[::1]:1234/v1",
+        ] {
+            assert!(validate_credential_transport(endpoint).is_ok());
+        }
+        for endpoint in [
+            "http://example.com/v1",
+            "http://localhost.example.com",
+            "http://192.168.1.2:1234",
+            "file:///key",
+        ] {
+            assert!(validate_credential_transport(endpoint).is_err());
+        }
+    }
+
+    #[test]
+    fn echoed_key_is_filtered_across_every_stream_boundary() {
+        let key = "synthetic-test-credential";
+        for boundary in 0..=key.len() {
+            let mut filter = ResponseKeyFilter::new(key);
+            let mut output = filter.push("服务返回：");
+            output.push_str(&filter.push(&key[..boundary]));
+            output.push_str(&filter.push(&key[boundary..]));
+            output.push_str(&filter.push("。"));
+            output.push_str(&filter.finish());
+            assert_eq!(output, "服务返回：[密钥已隐藏]。");
+            assert!(!output.contains(key));
+        }
+        let mut local = ResponseKeyFilter::new("");
+        assert_eq!(local.push("正常译文"), "正常译文");
+        let mut partial = ResponseKeyFilter::new(key);
+        assert_eq!(partial.push("syn"), "");
+        assert_eq!(partial.finish(), "syn");
+    }
 
     #[test]
     #[ignore = "writes temporary isolated Windows credentials and removes them afterward"]

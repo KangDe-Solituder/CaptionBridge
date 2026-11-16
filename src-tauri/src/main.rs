@@ -22,6 +22,7 @@ mod segmenter;
 mod sessions;
 mod settings;
 mod toolbar;
+mod translation_routes;
 mod windows_integration;
 
 use std::{
@@ -228,22 +229,36 @@ async fn save_settings(
         request.settings.llm = current.llm.clone();
         request.settings.llm_profiles = current.llm_profiles.clone();
         restart_source = current.captions.source != request.settings.captions.source
-            || current.captions.cloud != request.settings.captions.cloud;
+            || current.captions.cloud != request.settings.captions.cloud
+            || current
+                .translation_profiles
+                .as_ref()
+                .map(|r| &r.live_caption)
+                != request
+                    .settings
+                    .translation_profiles
+                    .as_ref()
+                    .map(|r| &r.live_caption);
         for provider in [
             models::CloudAsrProvider::Openai,
             models::CloudAsrProvider::Deepseek,
         ] {
             let config = request.settings.captions.cloud.config(provider);
-            if config.profile_id.is_some()
-                || request.settings.captions.source == (CaptionSourceConfig::CloudAsr { provider })
+            if (config != current.captions.cloud.config(provider) && config.profile_id.is_some())
+                || (request.settings.captions.source != current.captions.source
+                    && request.settings.captions.source
+                        == (CaptionSourceConfig::CloudAsr { provider }))
             {
                 asr_cloud::validate(config, provider, &request.settings)?;
             }
         }
         settings::normalize(&mut request.settings);
         network::validate_download_settings(&request.settings.downloads)?;
-        if request.settings.ocr.provider == "deepseek"
-            || request.settings.ocr.cloud_profile_id.is_some()
+        if (request.settings.ocr.provider != current.ocr.provider
+            && request.settings.ocr.provider == "deepseek")
+            || ((request.settings.ocr.cloud_profile_id != current.ocr.cloud_profile_id
+                || request.settings.ocr.cloud_endpoint != current.ocr.cloud_endpoint)
+                && request.settings.ocr.cloud_profile_id.is_some())
         {
             ocr_cloud::validate_config(&request.settings.ocr, &request.settings)?;
         }
@@ -310,8 +325,25 @@ async fn test_download_proxy(proxy_url: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn test_llm(state: State<'_, AppState>) -> Result<TranslationResult, String> {
-    let (settings, key) = translation_context(&state)?;
+async fn test_llm(
+    profile_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<TranslationResult, String> {
+    let (settings, key) = if let Some(id) = profile_id {
+        let current = state.settings.read().map_err(|e| e.to_string())?;
+        let mut selected = current.clone();
+        selected.llm = current
+            .llm_profiles
+            .iter()
+            .find(|p| p.id == id)
+            .ok_or("配置不存在")?
+            .config
+            .clone();
+        let key = secrets::translation_key(&selected)?;
+        (selected, key)
+    } else {
+        translation_context(&state, TranslationMode::Selection)?
+    };
     llm::translate(
         settings.clone(),
         key,
@@ -327,12 +359,16 @@ async fn test_llm(state: State<'_, AppState>) -> Result<TranslationResult, Strin
     .await
 }
 
-fn translation_context(state: &AppState) -> Result<(AppSettings, String), String> {
+fn translation_context(
+    state: &AppState,
+    mode: TranslationMode,
+) -> Result<(AppSettings, String), String> {
     // Keep the endpoint/model snapshot and credential lookup under the same lock.
     // Editing a profile must never pair its old endpoint with its new API key.
     let settings = state.settings.read().map_err(|e| e.to_string())?;
+    let settings = translation_routes::resolve(&settings, &mode)?;
     let key = secrets::translation_key(&settings)?;
-    Ok((settings.clone(), key))
+    Ok((settings, key))
 }
 
 fn translation_glossary(state: &AppState) -> Vec<models::GlossaryPair> {
@@ -351,7 +387,10 @@ async fn translate_selection(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<TranslationResult, String> {
-    let (settings, key) = translation_context(&state)?;
+    let (settings, key) = translation_context(&state, request.mode.clone())?;
+    if matches!(request.mode, TranslationMode::Selection) {
+        request.target_language = settings.llm.target_language.clone();
+    }
     if request.glossary.is_empty() {
         request.glossary = translation_glossary(&state);
     }
@@ -405,7 +444,7 @@ async fn set_caption_running_inner(
                 stale.join.abort();
             }
         }
-        secrets::translation_key(&*state.settings.read().map_err(|e| e.to_string())?)?;
+        translation_context(&state, TranslationMode::LiveCaption)?;
         state.set_caption_state(&app, CaptionRuntimeState::Starting);
         state.log("info", "正在启动实时字幕翻译");
         *controller = Some(captions::spawn_caption_session(app, state.clone()));
@@ -1175,7 +1214,7 @@ async fn correct_caption_session(
             return Err("该记录正在纠错中".to_string());
         }
     }
-    let (settings, api_key) = match translation_context(&state) {
+    let (settings, api_key) = match translation_context(&state, TranslationMode::LiveCaption) {
         Ok(context) => context,
         Err(error) => {
             state.correction_tasks.lock().await.remove(&id);

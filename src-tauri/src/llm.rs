@@ -285,39 +285,12 @@ where
             };
         let status = response.status();
         if !status.is_success() {
-            let read_error_body = response.text();
-            let body = if let (Some(target), Some(deadline)) =
-                (first_token_target, first_token_deadline)
-            {
-                timeout_at(deadline, read_error_body)
-                    .await
-                    .map_err(|_| first_token_timeout_error(target, started.elapsed()))?
-                    .map_err(|error| error.to_string())?
-            } else if let Some(deadline) = selection_first_token_deadline {
-                timeout_at(deadline, read_error_body)
-                    .await
-                    .map_err(|_| "读取 LLM 错误响应超时（30 秒）".to_string())?
-                    .map_err(|error| error.to_string())?
-            } else {
-                unreachable!()
-            };
-            let parsed = serde_json::from_str::<Value>(&body).ok();
-            let message = parsed
-                .as_ref()
-                .and_then(|value| value.pointer("/error/message"))
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| body.chars().take(500).collect::<String>());
-            let message = if message.trim().is_empty() {
-                "LLM 请求失败".to_string()
-            } else {
-                message
-            };
-            return Err(format!("{status}: {message}"));
+            return Err(http_failure(status));
         }
 
         let mut pending = Vec::<u8>::new();
         let mut translated = String::new();
+        let mut key_filter = crate::secrets::ResponseKeyFilter::new(&api_key);
         let mut first_token_ms = 0;
         let mut stream_warning = None;
         let mut stream_done = false;
@@ -382,8 +355,11 @@ where
                     if first_token_ms == 0 {
                         first_token_ms = started.elapsed().as_millis();
                     }
+                    let delta = key_filter.push(&delta);
                     translated.push_str(&delta);
-                    on_delta(delta);
+                    if !delta.is_empty() {
+                        on_delta(delta);
+                    }
                 }
             }
             if stream_done {
@@ -396,9 +372,17 @@ where
                 if first_token_ms == 0 {
                     first_token_ms = started.elapsed().as_millis();
                 }
+                let delta = key_filter.push(&delta);
                 translated.push_str(&delta);
-                on_delta(delta);
+                if !delta.is_empty() {
+                    on_delta(delta);
+                }
             }
+        }
+        let tail = key_filter.finish();
+        if !tail.is_empty() {
+            translated.push_str(&tail);
+            on_delta(tail);
         }
         if translated.trim().is_empty() {
             return Err("LLM 流式响应没有返回翻译内容".to_string());
@@ -537,19 +521,13 @@ pub async fn correct_batch(
     .map_err(|error| error.to_string())?;
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.map_err(|error| error.to_string())?;
-        let parsed = serde_json::from_str::<Value>(&body).ok();
-        let message = parsed
-            .as_ref()
-            .and_then(|value| value.pointer("/error/message"))
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| body.chars().take(500).collect::<String>());
-        return Err(format!("{status}: {message}"));
+        return Err(http_failure(status));
     }
     let body: Value = response.json().await.map_err(|error| error.to_string())?;
     let content = extract_content(&body).ok_or_else(|| "纠错响应没有返回内容".to_string())?;
-    parse_correction(&content, entries)
+    let mut filter = crate::secrets::ResponseKeyFilter::new(api_key);
+    let clean = filter.push(&content) + &filter.finish();
+    parse_correction(&clean, entries)
 }
 
 fn parse_correction(
@@ -699,6 +677,37 @@ mod tests {
             normalize_endpoint("https://example.com/v1/chat/completions"),
             "https://example.com/v1/chat/completions"
         );
+    }
+
+    #[tokio::test]
+    async fn upstream_error_body_never_reaches_translation_error() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0; 8192];
+            let _ = stream.read(&mut request).unwrap();
+            let body = r#"{"error":{"message":"Authorization: Bearer synthetic-echo-test-key"}}"#;
+            let response = format!("HTTP/1.1 401 Unauthorized\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let mut settings = AppSettings::default();
+        settings.llm.endpoint = format!("http://{address}/v1");
+        let error = translate(
+            settings,
+            "synthetic-echo-test-key".into(),
+            caption_request(),
+        )
+        .await
+        .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("401"));
+        assert!(!error.contains("synthetic-echo-test-key"));
+        assert!(!error.contains("Authorization"));
     }
 
     #[test]
@@ -906,6 +915,20 @@ mod tests {
         .is_err());
         assert!(parse_correction("没有 JSON", &entries).is_err());
     }
+}
+
+// Never expose an upstream error body: gateways may echo Authorization headers.
+fn http_failure(status: reqwest::StatusCode) -> String {
+    let message = match status.as_u16() {
+        401 | 403 => "认证失败，请检查 API Key 和账户权限",
+        402 => "账户余额不足",
+        404 => "接口或模型不存在，请检查配置",
+        429 => "请求频率或额度已达上限，请稍后重试",
+        500..=599 => "服务端暂时不可用，请稍后重试",
+        300..=399 => "接口返回重定向，为保护凭据未跟随，请检查接口地址",
+        _ => "请求失败，请检查接口、模型及请求参数",
+    };
+    format!("LLM 请求失败（HTTP {}）：{message}", status.as_u16())
 }
 
 fn authenticated(request: reqwest::RequestBuilder, key: &str) -> reqwest::RequestBuilder {

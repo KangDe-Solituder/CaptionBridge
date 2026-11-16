@@ -1,3 +1,5 @@
+import { FeatureModels } from "./components/FeatureModels";
+import { translationProfile, translationRoutes } from "./lib/model-choices";
 import { Select } from "./components/Select";
 import { ResourceGroup } from "./components/ResourceGroup";
 import { HelpTip } from "./components/HelpTip";
@@ -28,7 +30,7 @@ import {
   exportGlossary, getGlossary, getRuntimeLogs, getRuntimeStatus, getSettings, importGlossary,
   listCaptionSessions, newCaptionSession, openLogsDir, openSessionsDir, readCaptionSession,
   saveGlossary, saveSettings, setTheme, setCaptionRunning, testLlm, listModels, downloadModel, cancelModelDownload,
-  verifyModel, testModel, deleteModel, openModelsDir, switchCaptionSource,
+  verifyModel, testModel, deleteModel, openModelsDir,
   checkAsrDependencies, openAsrDependencyUrl, downloadAsrGpuRuntime, cancelAsrGpuRuntime, testDownloadProxy,
 } from "./lib/api";
 import type {
@@ -110,9 +112,18 @@ function formatEntryTime(iso: string) {
 
 function MainWindow() {
   const sidebar = useSidebarDock();
-  const switchingSource = useRef(false);
   const [settingsAnchor, setSettingsAnchor] = useState<string>();
   const [view, setView] = useState<SettingsView | null>(null);
+  const [savedView, setSavedView] = useState<SettingsView | null>(null);
+  const acceptSettings = useCallback((next: SettingsView) => { setView(next); setSavedView(next); }, []);
+  const acceptProfiles = useCallback((next: SettingsView) => {
+    setView(current => current ? mergeProfileView(current, next) : next);
+    setSavedView(current => current ? mergeProfileView(current, next) : next);
+  }, []);
+  const acceptTheme = useCallback((theme: AppSettings["visual"]["theme"]) => {
+    const apply = (current: SettingsView | null) => current ? { ...current, settings: { ...current.settings, visual: { ...current.settings.visual, theme } } } : current;
+    setView(apply); setSavedView(apply);
+  }, []);
   const [bootError, setBootError] = useState("");
   // browser preview may deep-link a page with ?page=captions|glossary|settings
   const [page, setPage] = useState<Page>(() => {
@@ -159,12 +170,12 @@ function MainWindow() {
       setBootError("初始化等待时间过长。后台仍在运行，你可以重试加载界面。");
     }, 4_000);
     try {
-      setView(await getSettings());
+      acceptSettings(await getSettings());
     } catch (error) {
       if (!("__TAURI_INTERNALS__" in window)) {
         const cachedTheme = localStorage.getItem("livecaption-theme");
         const theme = cachedTheme === "light" || cachedTheme === "dark" ? cachedTheme : "system";
-        setView({ settings: { ...previewSettings, visual: { ...previewSettings.visual, theme } }, api_key_configured: false, model_directory: "E:\\Personal\\个人兴趣\\Livecaption\\Model" });
+        acceptSettings({ settings: { ...previewSettings, visual: { ...previewSettings.visual, theme } }, api_key_configured: false, model_directory: "E:\\Personal\\个人兴趣\\Livecaption\\Model" });
       } else {
         setBootError(`读取配置失败：${String(error)}`);
       }
@@ -198,9 +209,9 @@ function MainWindow() {
     const unsubs = [
       listen<void>("ocr:resources", () => { setSettingsAnchor("ocr-models"); setPage("settings"); setSettingsTab("resources"); }),
       listen<string>("ocr:error", e => setMessage(e.payload)),
-      listen<SettingsView>("llm:profiles-changed", e => setView(current => current ? mergeProfileView(current, e.payload) : e.payload)),
-      listen<SettingsView>("settings:changed", e => { if (!switchingSource.current) setView(e.payload); }),
-      listen<AppSettings["visual"]["theme"]>("settings:theme-changed", e => setView(current => current ? { ...current, settings: { ...current.settings, visual: { ...current.settings.visual, theme: e.payload } } } : current)),
+      listen<SettingsView>("llm:profiles-changed", e => acceptProfiles(e.payload)),
+      listen<SettingsView>("settings:changed", e => acceptSettings(e.payload)),
+      listen<AppSettings["visual"]["theme"]>("settings:theme-changed", e => acceptTheme(e.payload)),
       listen<TranslationResult>("translation:finished", e => setSelectionResult(e.payload)),
       listen("caption:translated", () => scheduleSessionRefresh()),
       listen<void>("caption:sessions-changed", () => void refreshSessions()),
@@ -245,11 +256,11 @@ function MainWindow() {
   const update = useCallback((next: AppSettings) => setView(v => v ? { ...v, settings: next } : v), []);
 
   const persist = async () => {
-    if (!settings || savingTheme) return;
+    if (!settings || savingTheme || saving) return;
     setSaving(true); setMessage("");
     try {
-      const saved = await saveSettings(settings);
-      setView(saved); setMessage("设置已保存");
+      const saved = isTauri ? await saveSettings(settings) : { ...view!, settings };
+      acceptSettings(saved); setMessage("设置已保存");
     } catch (error) { setMessage(String(error)); }
     finally { setSaving(false); }
   };
@@ -259,7 +270,7 @@ function MainWindow() {
     setSavingTheme(true);
     try {
       if (isTauri) await setTheme(theme);
-      setView(current => current ? { ...current, settings: { ...current.settings, visual: { ...current.settings.visual, theme } } } : current);
+      acceptTheme(theme);
     } catch (error) { setMessage(`主题未保存：${String(error)}`); }
     finally { setSavingTheme(false); }
   };
@@ -311,24 +322,6 @@ function MainWindow() {
     catch (error) { setMessage(String(error)); }
   };
 
-  const selectSource = async (source: CaptionSourceConfig) => {
-    if (switchingSource.current) return;
-    if (!isTauri) {
-      setView(current => current ? { ...current, settings: { ...current.settings, captions: { ...current.settings.captions, source } } } : current);
-      return;
-    }
-    switchingSource.current = true;
-    try {
-      await switchCaptionSource(source);
-      const saved = await getSettings();
-      // Source selection applies immediately, but must not discard edits in other chapters.
-      setView(current => current ? { ...current, settings: { ...current.settings, captions: { ...current.settings.captions, source: saved.settings.captions.source } } } : saved);
-      setStatus(await getRuntimeStatus());
-      setMessage(status.caption_running ? "正在切换字幕来源" : "字幕来源已更新");
-    } catch (error) { setMessage(String(error)); }
-    finally { switchingSource.current = false; }
-  };
-
   if (!settings || !view) return (
     <main className="boot">
       {bootError
@@ -351,7 +344,6 @@ function MainWindow() {
           <span className="rail-spacer" />
           <SidebarThemeControl theme={settings.visual.theme} onChange={theme => void changeTheme(theme)} disabled={savingTheme || saving} />
           <button className="rail-pin" aria-label={sidebar.fixed ? "取消固定侧栏" : "固定侧栏"} aria-pressed={sidebar.fixed} onClick={sidebar.toggle}>{sidebar.fixed ? <PinOff /> : <Pin />}<span className="rail-label">{sidebar.fixed ? "取消固定侧栏" : "固定侧栏"}</span></button>
-          {sidebar.mode !== "auto" && <button className="rail-reset" onClick={sidebar.reset} title="恢复宽窗口自动固定"><RotateCcw /><span className="rail-label">恢复自动</span></button>}
           <span className="version">v0.5</span>
         </aside>
 
@@ -368,9 +360,9 @@ function MainWindow() {
               {page === "captions" && <CaptionPage status={status} sessions={sessions} viewingSession={viewingSession} onSelectSession={selectSession} onToggle={toggleCaptions} onMessage={setMessage} />}
               {page === "glossary" && <GlossaryPage onMessage={setMessage} />}
               {page === "settings" && (
-                <SettingsPage tab={settingsTab} setTab={setSettingsTab} anchor={settingsAnchor} onAnchorHandled={() => setSettingsAnchor(undefined)} view={view} onProfilesChanged={next => setView(current => current ? mergeProfileView(current, next) : next)}
-                  update={update} onSave={persist} saving={saving || savingTheme} testing={testing} onTest={runTest}
-                  models={models} status={status} onSelectSource={selectSource} refreshModels={() => void refreshModels(true)} onMessage={setMessage}
+                <SettingsPage tab={settingsTab} setTab={setSettingsTab} anchor={settingsAnchor} onAnchorHandled={() => setSettingsAnchor(undefined)} view={view} onProfilesChanged={acceptProfiles}
+                  dirty={!!savedView && JSON.stringify(settings) !== JSON.stringify(savedView.settings)} update={update} onSave={persist} saving={saving || savingTheme} testing={testing} onTest={runTest}
+                  models={models} status={status} refreshModels={() => void refreshModels(true)} onMessage={setMessage}
                   logs={logs} logQuery={logQuery} setLogQuery={setLogQuery}
                   onClearLogs={async () => { await clearRuntimeLogs(); setLogs([]); }} />
               )}
@@ -409,7 +401,7 @@ function SelectionPage({ settings, status, result, testing, onTest, onSettings }
     <div className="quick-layout"><section className="quick-actions">
       <article><div className="workflow-icon"><MousePointer2 /></div><h2>划词翻译</h2><p>{automatic ? "选中有效文字后，在光标旁显示工具栏。" : "选中文字，用快捷键唤出翻译工具栏。"}</p><footer><span>{automatic ? "自动感知选区" : displayHotkey(settings.selection.hotkey)} · {settings.selection.enabled ? "已启用" : "已关闭"}</span><button className="ghost" aria-label="划词翻译设置" onClick={() => onSettings("features", "selection")}><Settings /></button></footer></article>
       <article><div className="workflow-icon"><ScanText /></div><h2>截图翻译</h2><p>框选图片或屏幕文字，识别后按文字块翻译。</p>{ocrError && <p role="alert">{ocrError}</p>}<footer><button className="primary" disabled={!settings.ocr.enabled} onClick={() => { setOcrError(""); void startOcrCapture().catch(e => setOcrError(String(e))); }}><ScanText />开始截图</button><button className="ghost" aria-label="截图翻译设置" onClick={() => onSettings("features", "ocr")}><Settings /></button></footer></article>
-    </section><section className="translation-chain"><header><h2>当前翻译配置</h2><button className="ghost" aria-label="配置翻译服务" onClick={() => onSettings("application", "translation")}><Settings /></button></header><div className="chain-symbol"><Languages /></div><strong>{settings.llm.model || "尚未配置服务"}</strong><p>目标语言 · {settings.llm.target_language}</p><div className="chain-list"><span>划词快捷键<b>{status.selection_hotkey_registered ? "已注册" : "未注册"}</b></span><span>字幕来源<b>{sourceName(settings.captions.source)}</b></span></div><button className="ghost" disabled={testing || !settings.llm.profile_id} onClick={onTest}>{testing ? <Loader2 className="spin" /> : <Activity />}测试翻译连接</button><small>向当前模型发送一句示例文本，检查翻译连接。</small></section></div>
+    </section><section className="translation-chain"><header><h2>当前翻译配置</h2><button className="ghost" aria-label="配置翻译服务" onClick={() => onSettings("features", "selection")}><Settings /></button></header><div className="chain-symbol"><Languages /></div><strong>{translationProfile(settings, "selection")?.model || "尚未配置服务"}</strong><p>目标语言 · {translationProfile(settings, "selection")?.target_language ?? "—"}</p><div className="chain-list"><span>划词快捷键<b>{status.selection_hotkey_registered ? "已注册" : "未注册"}</b></span><span>字幕来源<b>{sourceName(settings.captions.source)}</b></span></div><button className="ghost" disabled={testing || !translationRoutes(settings).selection} onClick={onTest}>{testing ? <Loader2 className="spin" /> : <Activity />}测试翻译连接</button><small>向当前模型发送一句示例文本，检查翻译连接。</small></section></div>
     <section className="recent-section"><div className="section-label"><span>最近翻译</span>{result.translated_text && <small>{result.latency_ms}ms</small>}</div>{result.translated_text ? <ResultBlock result={result} /> : <div className="quiet-empty"><Languages /><div><h3>还没有翻译记录</h3><p>去任意应用选中一段文字试试。</p></div></div>}</section>
   </div>;
 }
@@ -855,7 +847,7 @@ function GlossaryPage({ onMessage }: { onMessage: (message: string) => void }) {
   </div>;
 }
 
-function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab: SettingsTab; setTab: (v: SettingsTab) => void; view: SettingsView; onProfilesChanged: (view: SettingsView) => void; update: (v: AppSettings) => void; onSave: () => void; saving: boolean; testing: boolean; onTest: () => void; logs: RuntimeLogEntry[]; logQuery: string; setLogQuery: (v: string) => void; onClearLogs: () => void; models: ModelInfo[]; status: RuntimeStatus; onSelectSource: (source: CaptionSourceConfig) => Promise<void>; refreshModels: () => void; onMessage: (message: string) => void }) {
+function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab: SettingsTab; setTab: (v: SettingsTab) => void; view: SettingsView; onProfilesChanged: (view: SettingsView) => void; update: (v: AppSettings) => void; onSave: () => void; dirty: boolean; saving: boolean; testing: boolean; onTest: () => void; logs: RuntimeLogEntry[]; logQuery: string; setLogQuery: (v: string) => void; onClearLogs: () => void; models: ModelInfo[]; status: RuntimeStatus; refreshModels: () => void; onMessage: (message: string) => void }) {
   const { tab, setTab, view, update } = props; const s = view.settings;
   const pendingChapter = useRef<string | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -921,8 +913,10 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
   const tabs = [{ id: "appearance", label: "外观与浮窗", icon: Palette }, { id: "features", label: "功能与入口", icon: MousePointer2 }, { id: "resources", label: "模型与资源", icon: Cpu }, { id: "application", label: "翻译与应用", icon: Languages }, { id: "diagnostics", label: "日志与诊断", icon: FileText }] as const;
   const filteredLogs = props.logs.filter(l => `${l.level} ${l.message}`.toLowerCase().includes(props.logQuery.toLowerCase()));
   return <div className="page settings-page" ref={contentRef}>
-    <PageHeader eyebrow="PREFERENCES" title="设置" description="让翻译，按照你的习惯运行。" action={<button className="primary" onClick={props.onSave} disabled={props.saving}>{props.saving ? <Loader2 className="spin" /> : <Check />}保存设置</button>} />
-    <div className="settings-layout"><div className="settings-tabs" role="tablist" aria-label="设置分类" aria-orientation="vertical">
+    <span className="settings-eyebrow">PREFERENCES</span>
+    <div className="settings-layout"><aside className="settings-sidebar">
+      <header className="settings-intro"><h1>设置</h1><p>让翻译，按照你的习惯运行。</p></header>
+      <div className="settings-tabs" role="tablist" aria-label="设置分类" aria-orientation="vertical">
       {tabs.map(t => <button id={`tab-${t.id}`} role="tab" aria-selected={tab === t.id} aria-controls="settings-panel" data-active={tab === t.id} key={t.id} onClick={() => setTab(t.id)} onKeyDown={event => {
         const direction = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : ["ArrowLeft", "ArrowUp"].includes(event.key) ? -1 : 0;
         if (!direction && event.key !== "Home" && event.key !== "End") return;
@@ -933,12 +927,17 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
         {tab === t.id && <motion.span className="tab-thumb" layoutId="settings-tab" transition={{ type: "spring", stiffness: 480, damping: 40 }} />}<t.icon /><span>{t.label}</span>
       </button>)}
     </div>
-    <div id="settings-panel" role="tabpanel" aria-labelledby={`tab-${tab}`}>
+      <div className="settings-save-area"><button type="button" className="settings-save" data-dirty={props.dirty} onClick={props.onSave} disabled={!props.dirty || props.saving}>
+        {props.saving ? <Loader2 className="spin" /> : <Check />}<span>{props.saving ? "保存中…" : "保存设置"}</span>
+      </button><span className="settings-save-status" role="status">{props.dirty ? "有未保存的更改" : "已保存"}</span></div>
+    </aside>
+    <div inert={props.saving} id="settings-panel" role="tabpanel" aria-labelledby={`tab-${tab}`}>
 {tab === "features" && <><section className="settings-chapter" id="settings-toolbar" aria-labelledby="heading-toolbar">
       <header className="chapter-heading"><div><h2 id="heading-toolbar">工具栏</h2></div></header>
       <ToolbarSettings settings={s} onChange={update} />
     </section><section className="settings-chapter" id="settings-selection" aria-labelledby="heading-selection">
       <header className="chapter-heading"><div><h2 id="heading-selection">划词翻译</h2></div></header>
+      <FeatureModels mode="selection" settings={s} models={props.models} onChange={update} />
 
         <SettingRow title="划词触发方式" description="自动模式只在明确拖选结束后显示按钮；双击选词不会触发。"><Segmented value={s.selection.trigger_mode} options={[{ label: "快捷键", value: "hotkey" }, { label: "自动出现", value: "automatic" }]} onChange={trigger_mode => update({ ...s, selection: { ...s.selection, trigger_mode } })} /></SettingRow>
         {s.selection.trigger_mode === "hotkey" && <SettingRow title="划词触发快捷键" description="至少包含一个修饰键；Ctrl+Win+L 保留给 Windows 实时字幕。"><HotkeyRecorder value={s.selection.hotkey} onChange={hotkey => update({ ...s, selection: { ...s.selection, hotkey } })} /></SettingRow>}
@@ -946,6 +945,7 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
 
     </section><section className="settings-chapter" id="settings-captions" aria-labelledby="heading-captions">
       <header className="chapter-heading"><div><h2 id="heading-captions">实时字幕</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("resources", "asr-models")}>管理 ASR 资源<ArrowRight /></button></header>
+      <FeatureModels mode="live_caption" settings={s} models={props.models} onChange={update} />
 
         <SettingRow title="翻译上下文" description="上下文来自已接受的 final 原文，不受上一条 LLM 成败影响。"><Segmented value={String(s.captions.context_segments)} options={[0, 1, 2, 4].map(value => ({ label: `${value} 条`, value: String(value) }))} onChange={value => update({ ...s, captions: { ...s.captions, context_segments: Number(value) } })} /></SettingRow>
         {s.captions.source.type === "local_asr" && <>
@@ -959,23 +959,25 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
         </>}
     </section><section className="settings-chapter" id="settings-ocr" aria-labelledby="heading-ocr">
       <header className="chapter-heading"><div><h2 id="heading-ocr">截图翻译</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("resources", "ocr-models")}>管理 OCR 资源<ArrowRight /></button></header>
+      <FeatureModels mode="screenshot" settings={s} models={props.models} onChange={update} />
       <div className="two-cols"><Field label="默认原文语言" hint="仅用于翻译，不限制 OCR 自动识别的语言。"><Select aria-label="默认原文语言" value={s.ocr.source_language} onChange={source_language => update({ ...s, ocr: { ...s.ocr, source_language } })} options={[{ value: "auto", label: "自动检测" }, ...["中文", "English", "日本語"].map(value => ({ value, label: value }))]} /></Field>
-      <Field label="默认译文语言" hint="留空时跟随应用中的翻译服务设置。"><input maxLength={40} placeholder={`跟随翻译服务 · ${s.llm.target_language}`} value={s.ocr.target_language} onChange={e => update({ ...s, ocr: { ...s.ocr, target_language: e.target.value } })} /></Field></div>
+      <Field label="默认译文语言" hint="留空时跟随应用中的翻译服务设置。"><input maxLength={40} placeholder={`跟随截图翻译模型 · ${s.llm_profiles.find(p => p.id === translationRoutes(s).screenshot)?.config.target_language ?? "中文"}`} value={s.ocr.target_language} onChange={e => update({ ...s, ocr: { ...s.ocr, target_language: e.target.value } })} /></Field></div>
       <SettingRow title="识别结果为空时，额外重试次数" description="默认额外重试一次；云端每次重试都会重新上传同一张选区图片。认证、余额或翻译错误不触发此重试。"><Select aria-label="空结果额外重试次数" value={s.ocr.empty_retries} onChange={value => update({ ...s, ocr: { ...s.ocr, empty_retries: Number(value) } })} options={[0, 1, 2, 3].map(n => ({ value: String(n), label: n + " 次" + (n === 1 ? "（默认）" : "") }))} /></SettingRow>
       <SettingRow title="原文位置" description="设置结果窗口的默认布局；也可以在结果窗口临时调整。"><Segmented value={s.ocr.source_placement} options={[{ label: "每块译文下方", value: "inline" }, { label: "底部显示选中块", value: "bottom" }]} onChange={source_placement => update({ ...s, ocr: { ...s.ocr, source_placement } })} /></SettingRow>
     </section></>}{tab === "resources" && <><section className="settings-chapter" id="settings-asr-models" aria-labelledby="heading-asr-models">
       <header className="chapter-heading"><div><h2 id="heading-asr-models">语音识别 · ASR</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("features", "captions")}>字幕设置<ArrowRight /></button></header>
-<ResourceGroup title="本地 ASR" hint="检查 Worker、NVIDIA 驱动、CUDA/cuDNN 实际加载状态和 CTranslate2 GPU 可用性；旧 Worker 会自动改用模型推理验证。" reduceMotion={s.visual.reduce_motion}
+<ResourceGroup preferenceKey="windows-asr" title="Windows ASR" hint="Windows 负责语音识别；应用读取系统字幕，进行稳定分段、去重和翻译，不使用本地三段一致性确认。" reduceMotion={s.visual.reduce_motion}>
+  <div className="system-caption-source"><div><h3>Windows Live Captions</h3><p>Windows 系统组件 · 通过系统管理语言与识别 · 无需下载本应用的 ASR 模型</p></div></div>
+</ResourceGroup><ResourceGroup preferenceKey="local-asr" title="本地 ASR" hint="检查 Worker、NVIDIA 驱动、CUDA/cuDNN 实际加载状态和 CTranslate2 GPU 可用性；旧 Worker 会自动改用模型推理验证。" reduceMotion={s.visual.reduce_motion}
           actions={<><button type="button" className="ghost" onClick={() => void openModelsDir()}><ExternalLink />模型目录</button><button type="button" className="ghost" onClick={props.refreshModels}><RefreshCw />重新检查</button><button type="button" className="ghost" onClick={() => void runDependencyCheck()} disabled={checkingDependencies}>{checkingDependencies ? <Loader2 className="spin" /> : <Activity />}检查依赖</button></>}>
-        <div className="system-caption-source"><div><h3>Windows Live Caption</h3><p>Windows 系统字幕 · 无需下载 ASR 模型</p></div><button className="ghost" disabled={s.captions.source.type === "windows_live_caption" || props.status.caption_state === "switching"} onClick={() => void props.onSelectSource({ type: "windows_live_caption" })}>{s.captions.source.type === "windows_live_caption" ? <><Check />当前来源</> : "选中"}</button></div>
-        <ModelManager selectedModel={s.captions.source.type === "local_asr" ? s.captions.source.model_id : undefined} selecting={props.status.caption_state === "switching"} onSelect={model_id => props.onSelectSource({ type: "local_asr", model_id, device: "cuda", compute_type: "int8_float16", vad_profile: s.captions.audio_mode, channel_mode: s.captions.source.type === "local_asr" ? s.captions.source.channel_mode : "mix", channel_switch_sensitivity: s.captions.source.type === "local_asr" ? s.captions.source.channel_switch_sensitivity : "standard", suppress_non_speech_segments: s.captions.source.type === "local_asr" ? s.captions.source.suppress_non_speech_segments : false })} models={props.models.filter(model => model.kind === "asr")} activeModel={props.status.active_model} refresh={props.refreshModels} message={props.onMessage} />
-</ResourceGroup><ResourceGroup title="云端 ASR" reduceMotion={s.visual.reduce_motion}><AsrCloudSettings settings={s} onChange={captions => update({ ...s, captions })} onMessage={props.onMessage} onManageProfiles={() => navigateTo("application", "translation")} /></ResourceGroup>
+        <ModelManager models={props.models.filter(model => model.kind === "asr")} activeModel={props.status.active_model} refresh={props.refreshModels} message={props.onMessage} />
+</ResourceGroup><ResourceGroup preferenceKey="cloud-asr" title="云端 ASR" reduceMotion={s.visual.reduce_motion}><AsrCloudSettings settings={s} onChange={captions => update({ ...s, captions })} onMessage={props.onMessage} onManageProfiles={() => navigateTo("application", "translation")} /></ResourceGroup>
 
     </section><section className="settings-chapter" id="settings-ocr-models" aria-labelledby="heading-ocr-models">
       <header className="chapter-heading"><div><h2 id="heading-ocr-models">文字识别 · OCR</h2></div><button className="ghost chapter-link" onClick={() => navigateTo("features", "ocr")}>截图设置<ArrowRight /></button></header>
-<ResourceGroup title="本地 OCR" hint="按需加载模型。校验检查模型文件，测试使用内置示例图片。" reduceMotion={s.visual.reduce_motion}
+<ResourceGroup preferenceKey="local-ocr" title="本地 OCR" hint="按需加载模型。校验检查模型文件，测试使用内置示例图片。" reduceMotion={s.visual.reduce_motion}
           actions={<><button type="button" className="ghost" onClick={() => void openModelsDir()}><ExternalLink />模型目录</button><button type="button" className="ghost" onClick={props.refreshModels}><RefreshCw />重新检查</button></>}>
-        <ModelManager selectedModel={s.ocr.provider === "local" ? "ocr-ppocr-v5-mobile" : undefined} onSelect={async () => { update({ ...s, ocr: { ...s.ocr, provider: "local" } }); props.onMessage("已选择本地 OCR，保存设置后生效"); }} models={props.models.filter(model => model.kind === "ocr")} refresh={props.refreshModels} message={props.onMessage} /></ResourceGroup><ResourceGroup title="云端 OCR" reduceMotion={s.visual.reduce_motion}>              <OcrCloudSettings settings={s} onChange={ocr => update({ ...s, ocr })} onMessage={props.onMessage} onManageProfiles={() => navigateTo("application", "translation")} /></ResourceGroup>
+        <ModelManager models={props.models.filter(model => model.kind === "ocr")} refresh={props.refreshModels} message={props.onMessage} /></ResourceGroup><ResourceGroup preferenceKey="cloud-ocr" title="云端 OCR" reduceMotion={s.visual.reduce_motion}>              <OcrCloudSettings settings={s} onChange={ocr => update({ ...s, ocr })} onMessage={props.onMessage} onManageProfiles={() => navigateTo("application", "translation")} /></ResourceGroup>
 
     </section><section className="settings-chapter" id="settings-network" aria-labelledby="heading-network">
       <header className="chapter-heading"><div><h2 id="heading-network">网络与下载</h2></div></header>
@@ -1010,7 +1012,7 @@ function SettingsPage(props: { anchor?: string; onAnchorHandled: () => void; tab
         <Field label={`字幕浮窗透明度 · ${Math.round(s.overlay.opacity * 100)}%`} hint="同时调整文字与背景的整体透明度"><Slider min={0.2} max={1} step={0.05} value={s.overlay.opacity} onChange={opacity => update({ ...s, overlay: { ...s.overlay, opacity } })} /></Field>
         <SettingRow title="字幕颜色" description="也可以直接在字幕浮窗右下角随时更换。"><label className="color-control"><input type="color" value={s.overlay.caption_color} onChange={e => update({ ...s, overlay: { ...s.overlay, caption_color: e.target.value } })} /><span>{s.overlay.caption_color.toUpperCase()}</span></label></SettingRow>
       </div><SubtitlePreview settings={s} /></div>
-    </section></>}<footer className="settings-footer"><span>修改完成后，保存以应用设置。</span><button className="primary" onClick={props.onSave} disabled={props.saving}>{props.saving ? <Loader2 className="spin" /> : <Check />}保存设置</button></footer>
+    </section></>}
     </div>
 
     </div>
@@ -1084,7 +1086,7 @@ function formatBytes(bytes: number) {
   return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
-function ModelManager({ models, activeModel, selectedModel, selecting, onSelect, refresh, message }: { models: ModelInfo[]; activeModel?: string; selectedModel?: string; selecting?: boolean; onSelect?: (id: string) => Promise<void>; refresh: () => void; message: (text: string) => void }) {
+function ModelManager({ models, activeModel, refresh, message }: { models: ModelInfo[]; activeModel?: string; refresh: () => void; message: (text: string) => void }) {
   const [busy, setBusy] = useState<Record<string, string>>({});
   const action = async (modelId: string, label: string, run: () => Promise<unknown>) => {
     setBusy(current => ({ ...current, [modelId]: label }));
@@ -1106,7 +1108,7 @@ function ModelManager({ models, activeModel, selectedModel, selecting, onSelect,
       return <article className="model-row" key={model.id} data-status={model.status}>
         <div className="model-copy"><div><strong>{model.display_name}</strong><span className="badge" data-tone={modelStatusTone(model.status)}>{modelStatusText(model.status)}</span></div><p>{model.repository} · {model.license} · {formatBytes(model.expected_size_bytes)}</p>{model.status === "downloading" && <div className="download-progress"><i style={{ width: `${progress}%` }} /><small>{progress.toFixed(1)}% · {formatBytes(model.downloaded_bytes)}</small></div>}{model.error && <small className="model-error">{model.error}</small>}</div>
         <div className="model-actions">
-          {installed && (selectedModel === model.id ? <span className="model-selected"><Check />当前来源</span> : onSelect && <button className="primary" disabled={selecting} onClick={() => void onSelect(model.id)}>选中</button>)}
+
           {busyLabel ? <button className="ghost" disabled><Loader2 className="spin" />正在{busyLabel}</button> : model.status === "downloading" ? <button className="ghost" onClick={() => void action(model.id, "取消下载", () => cancelModelDownload(model.id))}>暂停/取消</button> : !installed ? <button className="primary" onClick={() => void action(model.id, model.status === "not_installed" ? "下载" : "重试", () => downloadModel(model.id))}><Download />{model.status === "not_installed" ? "下载" : "重试"}</button> : <><button className="ghost" onClick={() => void action(model.id, "校验", () => verifyModel(model.id))}>校验</button><button className="ghost" disabled={activeModel === model.id} onClick={() => void action(model.id, "测试", () => testModel(model.id))}>测试</button><button className="ghost danger-text" disabled={activeModel === model.id} onClick={() => { if (confirm(`删除 ${model.display_name}？`)) void action(model.id, "删除", () => deleteModel(model.id)); }}><Trash2 /></button></>}
         </div>
       </article>;
@@ -1141,5 +1143,5 @@ function HotkeyRecorder({ value, onChange }: { value: string; onChange: (v: stri
 }
 
 function mergeProfileView(current: SettingsView, next: SettingsView): SettingsView {
-  return { ...current, api_key_configured: next.api_key_configured, settings: { ...current.settings, llm: next.settings.llm, llm_profiles: next.settings.llm_profiles } };
+  return { ...current, api_key_configured: next.api_key_configured, settings: { ...current.settings, llm: next.settings.llm, llm_profiles: next.settings.llm_profiles, translation_profiles: translationRoutes({ ...current.settings, llm_profiles: next.settings.llm_profiles }) } };
 }

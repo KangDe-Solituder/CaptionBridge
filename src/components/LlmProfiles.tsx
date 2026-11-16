@@ -3,12 +3,12 @@ import { profileDependents } from "../lib/profile-dependencies";
 import { BrainCircuit, Check, Loader2, Plus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { activateLlmProfile, removeLlmProfile, saveLlmProfile } from "../lib/api";
+import { testLlm, removeLlmProfile, saveLlmProfile } from "../lib/api";
 import type { LlmProfile, LlmProviderSettings, SettingsView } from "../lib/contracts";
 import { previewSettings } from "../lib/ui-shared";
 import { isTauri } from "../lib/window";
 
-export function LlmProfiles({ view, onChanged, onMessage, onTest, testing }: {
+export function LlmProfiles({ view, onChanged, onMessage }: {
   view: SettingsView; onChanged: (view: SettingsView) => void; onMessage: (message: string) => void;
   onTest: () => void; testing: boolean;
 }) {
@@ -26,19 +26,22 @@ export function LlmProfiles({ view, onChanged, onMessage, onTest, testing }: {
     finally { setBusy(false); }
   };
   return <div className="llm-profiles">
-    <div className="profile-toolbar"><span>翻译配置<HelpTip text="选择一套配置用于后续的划词、字幕和截图翻译。ASR 和 OCR 仅借用所关联配置的凭据，不随此选择切换。" /></span><button className="primary" disabled={busy} onClick={() => setEditor("new")}><Plus />添加配置</button></div>
-    {profiles.length ? <div className="profile-grid">{profiles.map(profile => <article className="profile-card" data-active={active === profile.id} key={profile.id}>
-      <button className="profile-select" aria-pressed={active === profile.id} disabled={busy} onClick={() => void act(() => isTauri ? activateLlmProfile(profile.id) : Promise.resolve(preview(profiles, profile.id)), "已切换翻译配置；新任务将使用此配置")}>
-        <span className="profile-status">{active === profile.id ? <><Check />正在使用</> : "点击启用"}</span>
+    <div className="profile-toolbar"><span>翻译配置<HelpTip text="在此管理、测试连接与模型。请在功能与入口分别选择各功能的翻译模型；云端识别只引用凭据。" /></span><button className="primary" disabled={busy} onClick={() => setEditor("new")}><Plus />添加配置</button></div>
+    {profiles.length ? <div className="profile-grid">{profiles.map(profile => {
+      const bindings = profileDependents(view.settings, profile.id);
+      const apiLinked = bindings.api.length > 0;
+      return <article className="profile-card" key={profile.id}>
+      <div className="profile-select">
         <h3>{profile.name}</h3><p className="profile-model">{profile.config.model}</p><p className="profile-endpoint">{profile.config.endpoint}</p>
         <small>Chat Completions · {profile.api_key_configured ? "密钥已托管" : "无 API Key"}</small>
-      </button>
-{profileDependents(view.settings, profile.id).length > 0 && <div className="profile-bindings">关联：{profileDependents(view.settings, profile.id).join("、")}<HelpTip text="此配置正在被识别服务引用。请先在模型与资源中切换来源、解除关联并保存，再移除配置、清空密钥或修改接口地址。可以直接更换有效密钥。" /></div>}
-      <div className="profile-actions"><button disabled={busy} onClick={() => setEditor(profile)}>编辑</button><button disabled={busy || profileDependents(view.settings, profile.id).length > 0} onClick={() => {
-        if (confirm(`移除“${profile.name}”及其保存的密钥？`)) void act(() => isTauri ? removeLlmProfile(profile.id) : Promise.resolve(preview(profiles.filter(p => p.id !== profile.id), active === profile.id ? null : active)), "配置已移除");
+      </div>
+      {apiLinked && <div className="profile-bindings">API 关联：{bindings.api.join("、")}<HelpTip text="这些识别服务使用此配置的接口与凭据。请先在模型与资源中解除或更换关联并保存，再移除此配置。" /></div>}
+      {bindings.model.length > 0 && <div className="profile-bindings">模型关联：{bindings.model.join("、")}<HelpTip text="允许移除。引用此模型的功能会递补到剩余首个配置，无剩余项则清空；其他功能的选择保持不变。" /></div>}
+      <div className="profile-actions"><button disabled={busy} onClick={async () => { setBusy(true); try { onMessage(isTauri ? (await testLlm(profile.id)).translated_text : "预览环境不发送网络请求"); } catch (error) { onMessage(String(error)); } finally { setBusy(false); } }}>测试</button><button disabled={busy} onClick={() => setEditor(profile)}>编辑</button><button disabled={busy || apiLinked} title={apiLinked ? "请先解除或更换 API 关联并保存" : undefined} onClick={() => {
+        if (confirm(`移除“${profile.name}”及其保存的密钥？\n模型关联：${bindings.model.join("、") || "无"}。引用它的翻译功能会递补到剩余首个配置，无剩余项则清空；相关运行任务将停止。`)) void act(() => isTauri ? removeLlmProfile(profile.id) : Promise.resolve(preview(profiles.filter(p => p.id !== profile.id), active === profile.id ? null : active)), "配置已移除；受影响的翻译选择已递补，无剩余配置则已清空");
       }}>移除</button></div>
-    </article>)}</div> : <div className="profile-empty"><BrainCircuit /><h3>还没有翻译配置</h3><p>添加服务地址和模型名称，即可连接云端或本地模型。</p><button className="ghost" onClick={() => setEditor("new")}><Plus />添加第一套配置</button></div>}
-    {profiles.length > 0 && <div className="profile-test"><button className="ghost" disabled={!active || busy || testing} onClick={onTest}>{testing ? <Loader2 className="spin" /> : <BrainCircuit />}测试当前配置</button><HelpTip text="测试向当前模型发送一句示例文本。配置独立保存，API Key 仅存放在 Windows 凭据管理器中，编辑时不会回填。" />{!active && <span>请选择一套配置以启用翻译。</span>}</div>}
+    </article>; })}</div> : <div className="profile-empty"><BrainCircuit /><h3>还没有翻译配置</h3><p>添加服务地址和模型名称，即可连接云端或本地模型。</p><button className="ghost" onClick={() => setEditor("new")}><Plus />添加第一套配置</button></div>}
+
 
     {editor && <ProfileEditor profile={editor === "new" ? undefined : editor} onClose={() => setEditor(null)} onSave={async (input) => {
       let updated: SettingsView;

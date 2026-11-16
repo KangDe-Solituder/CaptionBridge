@@ -4,7 +4,7 @@ import type { AppSettings, TranslationResult } from "./contracts";
 export const emptyResult: TranslationResult = { source_text: "", translated_text: "", model: "", latency_ms: 0, first_token_ms: 0, cached: false };
 
 export const previewSettings: AppSettings = {
-  schema_version: 11,
+  schema_version: 12,
   toolbar_order: ["selection", "ocr", "captions"],
   llm_profiles: [],
   ocr: { enabled: true, provider: "local", cloud_profile_id: null, cloud_endpoint: "https://api.deepseek.com/v1/tools/ocr", empty_retries: 1, source_language: "auto", target_language: "", source_placement: "inline", resident_toolbar: false, mouse_shortcuts: false, mouse_button_1: "default", mouse_button_2: "default" },

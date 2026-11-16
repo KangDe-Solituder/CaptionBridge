@@ -19,9 +19,8 @@
 }
 .logo {
   display: grid; width: 46px; height: 46px; place-items: center; margin-bottom: 8px;
-  color: #6d5ae0; position: relative;
+  color: var(--accent); position: relative;
 }
-:root[data-theme="dark"] .logo { color: #a78bfa; }
 .logo-mark { display: block; width: 46px; height: 46px; background: currentColor; mask: url("../assets/app-icon.svg") center / contain no-repeat; }
 .rail nav { display: grid; gap: 6px; width: 100%; }
 .rail-button {

@@ -29,6 +29,7 @@
       {
         "label": "overlay",
         "title": "LiveCaption Overlay",
+        "shadow": false,
         "url": "index.html",
         "width": 760,
         "height": 170,

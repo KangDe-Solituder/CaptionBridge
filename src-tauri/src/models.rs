@@ -574,6 +574,8 @@ pub fn default_toolbar_order() -> Vec<ToolbarModule> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
+    #[serde(default)]
+    pub translation_profiles: Option<TranslationProfiles>,
     pub schema_version: u32,
     #[serde(default = "default_toolbar_order")]
     pub toolbar_order: Vec<ToolbarModule>,
@@ -593,7 +595,8 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            schema_version: 11,
+            schema_version: 12,
+            translation_profiles: None,
             toolbar_order: default_toolbar_order(),
             llm: LlmProviderSettings::default(),
             llm_profiles: Vec::new(),
@@ -909,4 +912,11 @@ mod visual_compatibility_tests {
         assert_eq!(restored.accent, AccentStyle::Green);
         assert!(matches!(restored.theme, ThemeMode::Dark));
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct TranslationProfiles {
+    pub selection: Option<String>,
+    pub live_caption: Option<String>,
+    pub screenshot: Option<String>,
 }

@@ -7,7 +7,7 @@ export const saveSettings = (settings: AppSettings) =>
   invoke<SettingsView>("save_settings", { request: { settings } });
 export const hideSelectionToolbar = () => invoke<void>("hide_selection_toolbar");
 export const testDownloadProxy = (proxyUrl: string) => invoke<string>("test_download_proxy", { proxyUrl });
-export const testLlm = () => invoke<TranslationResult>("test_llm");
+export const testLlm = (profileId?: string) => invoke<TranslationResult>("test_llm", { profileId });
 export const saveLlmProfile = (input: { id?: string; name: string; config: import("./contracts").LlmProviderSettings; api_key?: string; clear_api_key: boolean }) => invoke<SettingsView>("save_llm_profile", { input });
 export const activateLlmProfile = (id: string) => invoke<SettingsView>("activate_llm_profile", { id });
 export const removeLlmProfile = (id: string) => invoke<SettingsView>("remove_llm_profile", { id });

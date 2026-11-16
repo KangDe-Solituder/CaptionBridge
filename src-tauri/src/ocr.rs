@@ -442,10 +442,12 @@ pub async fn recognize_ocr(
     let defaults = state.settings.read().map_err(|e| e.to_string())?.clone();
     let source = source_language
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or(defaults.ocr.source_language);
+        .unwrap_or_else(|| defaults.ocr.source_language.clone());
     let target = target_language.filter(|s| !s.trim().is_empty()).unwrap_or({
         if defaults.ocr.target_language.is_empty() {
-            defaults.llm.target_language
+            crate::translation_routes::resolve(&defaults, &TranslationMode::Screenshot)
+                .map(|s| s.llm.target_language)
+                .unwrap_or_else(|_| "中文".into())
         } else {
             defaults.ocr.target_language
         }
@@ -678,7 +680,15 @@ async fn translate_blocks(app: AppHandle, state: AppState, id: u64) {
         return;
     }
     let (settings, key) = match state.settings.read() {
-        Ok(settings) => (settings.clone(), crate::secrets::translation_key(&settings)),
+        Ok(settings) => {
+            match crate::translation_routes::resolve(&settings, &TranslationMode::Screenshot) {
+                Ok(selected) => {
+                    let key = crate::secrets::translation_key(&selected);
+                    (selected, key)
+                }
+                Err(error) => (settings.clone(), Err(error)),
+            }
+        }
         Err(_) => return,
     };
     let glossary = crate::translation_glossary(&state);

@@ -1,3 +1,4 @@
+import { cloudReady } from "../lib/model-choices";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, Cloud, Loader2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -22,10 +23,9 @@ export function AsrCloudSettings({ settings, onChange, onMessage, onManageProfil
   return <div className="cloud-asr-list">{(["openai", "deepseek"] as const).map(provider => {
     const config = settings.captions.cloud[provider];
     const profile = settings.llm_profiles.find(p => p.id === config.profile_id && p.api_key_configured && officialAsrEndpoint(p.config.endpoint, provider));
-    const configured = !!profile && officialAsrEndpoint(config.endpoint, provider) && (!config.proxy_enabled || !!config.proxy_url.trim());
-    const selected = source.type === "cloud_asr" && source.provider === provider;
+  const configured = cloudReady(settings, "asr", provider);
     return <article className="model-row" key={provider}><div className="model-copy"><div><strong><Cloud size={16} /> {provider === "openai" ? "OpenAI · GPT-Transcribe" : "DeepSeek ASR"}</strong><HelpTip text="上传系统音频进行识别，最长 6 秒，遇停顿提前提交。识别费用由关联账户承担；后续翻译使用独立选择的翻译服务。当前针对日语配信配置。" /><span className="badge">{configured ? "已配置" : "待配置"}</span></div><p>{profile ? `关联：${profile.name}` : "尚未关联凭据"} · {config.proxy_enabled ? "独立代理" : "直连"}</p></div>
-      <div className="model-actions">{selected ? <span className="model-selected"><Check />当前来源</span> : <button className="primary" disabled={!configured} onClick={() => { onChange({ ...settings.captions, source: { type: "cloud_asr", provider } }); onMessage("已选择云端 ASR，保存设置后生效"); }}>选中</button>}
+      <div className="model-actions">
       <button className="ghost" onClick={() => setEditing(provider)}>编辑</button><button className="ghost" disabled={!configured || !!testing} onClick={async () => { setTesting(provider); try { onMessage(isTauri ? await invoke<string>("test_cloud_asr", { provider, config }) : "请在原生程序中测试"); } catch (e) { onMessage(String(e)); } finally { setTesting(undefined); } }}>{testing === provider && <Loader2 className="spin" />}测试</button></div></article>;
   })}{editing && <Editor provider={editing} config={settings.captions.cloud[editing]} selected={source.type === "cloud_asr" && source.provider === editing} settings={settings} onClose={() => setEditing(undefined)} onManage={() => { setEditing(undefined); onManageProfiles(); }} onApply={config => { onChange({ ...settings.captions, cloud: { ...settings.captions.cloud, [editing]: config } }); setEditing(undefined); onMessage("ASR 配置已更新，请保存设置"); }} />}</div>;
 }
@@ -60,7 +60,7 @@ function Editor({ provider, config, settings, selected, onClose, onManage, onApp
         {!valid && <p role="status" className="profile-error">请关联有效配置，并检查接口与代理地址。</p>}
       </fieldset>
       <footer className="cloud-config-footer">
-        {config.profile_id && <div className="profile-unlink"><button type="button" className="ghost" disabled={selected} onClick={() => onApply({ ...draft, profile_id: null })}>解除关联</button><HelpTip text={selected ? "请先切换 ASR 来源并保存，再解除关联。" : "解除后该识别来源将不可用，不会删除翻译配置或密钥。应用后需要保存设置。"} /></div>}
+        {config.profile_id && <div className="profile-unlink"><button type="button" className="ghost" disabled={selected} onClick={() => onApply({ ...draft, profile_id: null })}>解除关联</button><HelpTip text={selected ? "请先在功能与入口切换识别来源并保存，再解除关联。" : "解除后该识别来源将不可用，不会删除翻译配置或密钥。应用后需要保存设置。"} /></div>}
         <div className="cloud-config-confirm"><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={!valid}>应用</button></div>
         <p className="cloud-config-note">应用后保存设置生效</p>
       </footer>

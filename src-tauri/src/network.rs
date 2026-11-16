@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::models::DownloadSettings;
 
 pub fn validate_download_settings(settings: &DownloadSettings) -> Result<(), String> {
-    if !settings.proxy_enabled {
+    if !settings.proxy_enabled && settings.proxy_url.trim().is_empty() {
         return Ok(());
     }
     let value = settings.proxy_url.trim();
@@ -16,6 +16,15 @@ pub fn validate_download_settings(settings: &DownloadSettings) -> Result<(), Str
     }
     if url.host_str().is_none() {
         return Err("代理地址缺少主机名".to_string());
+    }
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(
+            "下载代理地址不能包含用户名、密码、查询参数或片段，以免敏感信息写入配置".into(),
+        );
     }
     Ok(())
 }
@@ -94,5 +103,22 @@ mod tests {
     #[test]
     fn disabled_proxy_does_not_require_an_address() {
         assert!(validate_download_settings(&DownloadSettings::default()).is_ok());
+    }
+
+    #[test]
+    fn credentials_are_rejected_even_in_disabled_download_proxy() {
+        for enabled in [true, false] {
+            for url in [
+                "http://user:password@localhost:8080",
+                "http://localhost:8080?token=test",
+                "http://localhost:8080#secret",
+            ] {
+                assert!(validate_download_settings(&DownloadSettings {
+                    proxy_enabled: enabled,
+                    proxy_url: url.into()
+                })
+                .is_err());
+            }
+        }
     }
 }

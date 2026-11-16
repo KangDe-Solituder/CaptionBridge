@@ -45,6 +45,10 @@
 /* Categories and bounded settings cards. */
 .content:has(.settings-page) { padding: 34px clamp(22px, 3vw, 48px) 48px; }
 .page.settings-page { width: 100%; max-width: 1320px; }
+.settings-eyebrow { display: block; margin-bottom: 12px; color: var(--accent); font-size: var(--t-xs); font-weight: 800; letter-spacing: .16em; }
+.settings-intro { margin-bottom: 28px; }
+.settings-intro h1 { margin: 0; font-size: clamp(23px, 2.2vw, 30px); font-weight: 730; letter-spacing: -.03em; }
+.settings-intro p { margin-top: 12px; color: var(--muted); font-size: var(--t-md); line-height: 1.65; text-wrap: pretty; }
 .settings-layout { display: grid; grid-template-columns: 166px minmax(0, 1fr); gap: 26px; align-items: start; }
 .settings-tabs { position: sticky; top: 0; display: flex; flex-direction: column; border: 0; background: transparent; padding: 0; margin: 0; gap: 7px; border-radius: 0; }
 .settings-tabs button { display: flex; align-items: center; justify-content: flex-start; flex: none; gap: 11px; padding: 13px 14px; text-align: left; min-height: 46px; }
@@ -61,7 +65,7 @@
 .accent-choices button { padding: 12px; text-align: left; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-2); cursor: pointer; min-width: 0; }
 .accent-choices button[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }.accent-choices strong, .accent-choices small { display: block; }.accent-choices small { font-size: 11px; color: var(--muted); margin-top: 5px; }
 .accent-swatch { display: flex; align-items: center; gap: 7px; height: 52px; margin-bottom: 12px; }.accent-swatch i { width: 28px; height: 28px; background: #a78bfa; border-radius: 9px; }.accent-swatch i:nth-child(2) { opacity: .6; }.accent-swatch i:nth-child(3) { opacity: .25; }
-[data-palette="green"] .accent-swatch i { background: #a7d96d; }[data-palette="blue"] .accent-swatch i { background: #7fbded; }.appearance-note { color: var(--muted); font-size: 11px; margin: 16px 0 5px; line-height: 1.7; }
+[data-palette="green"] .accent-swatch i { background: #a7d96d; }[data-palette="blue"] .accent-swatch i { background: #009dff; }.appearance-note { color: var(--muted); font-size: 11px; margin: 16px 0 5px; line-height: 1.7; }
 #settings-overlay { container-type: inline-size; }.overlay-appearance-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }.overlay-appearance-grid > div { min-width: 0; }
 .subtitle-preview { margin: 0; min-width: 0; align-self: start; }.subtitle-preview-stage { padding: 20px 0; }.subtitle-preview-window { background: #1f1c2a; border: 1px solid #443d58; border-radius: 16px; color: #f2eff9; overflow: hidden; box-shadow: var(--elev-2); }.subtitle-preview-window[data-transparent="true"] { background: transparent; box-shadow: none; border-color: transparent; }
 .subtitle-preview-header { padding: 12px 14px; display: flex; justify-content: space-between; gap: 10px; color: #a59fb6; font-size: 11px; border-bottom: 1px solid #302b3f; }.subtitle-preview-header span { display: flex; align-items: center; gap: 6px; }.subtitle-preview-header i { width: 6px; height: 6px; background: #4ecb92; border-radius: 50%; }.subtitle-preview-header svg { width: 14px; height: 14px; }
@@ -69,7 +73,7 @@
 .subtitle-preview-window[data-transparent="true"] .subtitle-preview-header, .subtitle-preview-window[data-transparent="true"] .subtitle-preview-source { opacity: 0; }.subtitle-preview-window[data-transparent="true"]:hover .subtitle-preview-header, .subtitle-preview-window[data-transparent="true"]:hover .subtitle-preview-source { opacity: 1; }
 @container (min-width: 750px) { .overlay-appearance-grid { grid-template-columns: minmax(0, 1.2fr) minmax(310px, 1fr); } }
 .profile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.profile-select { padding: 20px; }.profile-select h3 { margin: 16px 0 10px; }.profile-actions { padding: 0 20px 18px; }.profile-actions button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }.profile-note { line-height: 1.8; }.profile-toolbar { align-items: flex-start; }.profile-toolbar p { line-height: 1.8; }
-.system-caption-source { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line); }.system-caption-source p { color: var(--muted); margin-top: 7px; font-size: 12px; }.model-selected { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; background: var(--accent-soft); color: var(--accent); border-radius: 8px; font-size: 12px; white-space: nowrap; }.model-selected svg { width: 14px; height: 14px; }.model-actions { flex-wrap: wrap; }.settings-chapter .model-row { gap: 16px; }.settings-chapter .model-copy { min-width: 0; }
+.system-caption-source { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 0; }.system-caption-source p { color: var(--muted); margin-top: 7px; font-size: 12px; }.model-selected { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; background: var(--accent-soft); color: var(--accent); border-radius: 8px; font-size: 12px; white-space: nowrap; }.model-selected svg { width: 14px; height: 14px; }.model-actions { flex-wrap: wrap; }.settings-chapter .model-row { gap: 16px; }.settings-chapter .model-copy { min-width: 0; }
 /* Independent transcript/history cards preserve the existing history-follow behavior. */
 .caption-workspace { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 22px; margin-top: 24px; align-items: start; }
 .caption-records { position: sticky; top: 0; max-height: min(680px, calc(100vh - 68px)); overflow-y: auto; overscroll-behavior: contain; }
@@ -94,7 +98,9 @@ html[data-motion="reduced"] .rail, html[data-motion="reduced"] .rail-label { tra
 .resource-group-title > button > svg { color: var(--muted); transition: transform var(--dur-base) var(--ease-out); }
 .resource-group-header .resource-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
 .resource-group-reveal { overflow: hidden; }
-.resource-group-content { display: flow-root; }
+.resource-group-content { display: flow-root; padding-inline-start: 26px; }
+.system-caption-source + .model-manager { padding-top: 0; }
+.system-caption-source + .model-manager > .model-row:first-child { border-top: 0; }
 .resource-group .setting-row { padding-top: 8px; }
 .resource-actions { display: flex; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
 .profile-unlink { display: flex; align-items: center; margin-top: 18px; }
@@ -157,3 +163,47 @@ html[data-motion="reduced"] .rail, html[data-motion="reduced"] .rail-label { tra
   .select-menu { animation: none; }
   .resource-group-title > button > svg { transition: none; }
 }
+
+
+/* Save is an action outside the category tablist. */
+.settings-sidebar { position: sticky; top: 0; max-height: calc(100dvh - 32px); overflow-y: auto; }
+.settings-sidebar .settings-tabs { position: static; }
+.settings-save-area { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line-strong); }
+.settings-save { display: flex; align-items: center; gap: 11px; width: 100%; min-height: 46px; padding: 13px 14px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface-2); color: var(--muted); font-size: var(--t-lg); font-weight: 650; cursor: pointer; transition: background var(--dur-fast), color var(--dur-fast); }
+.settings-save svg { width: 17px; height: 17px; flex-shrink: 0; }
+.settings-save[data-dirty="true"] { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.settings-save[data-dirty="true"]:hover:not(:disabled) { background: var(--accent-strong); }
+.settings-save:disabled { cursor: default; opacity: 1; }
+.settings-save:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.settings-save-status { display: block; padding: 8px 14px 0; color: var(--muted); font-size: var(--t-xs); }
+@media (max-width: 950px) {
+  .settings-sidebar { z-index: 8; background: var(--bg); padding-bottom: 10px; }
+  .settings-save-area { margin-top: 10px; padding-top: 10px; display: flex; align-items: center; gap: 12px; }
+  .settings-save { width: auto; min-height: 38px; padding: 8px 14px; }
+  .settings-save-status { padding: 0; }
+}
+@media (max-width: 760px) { .resource-group-content { padding-inline-start: 18px; } }
+
+/* Compact the editor, while keeping actual floating toolbar hit targets intact. */
+.toolbar-customization { padding-top: 20px; margin-top: 20px; }
+.toolbar-customization h3 { margin-bottom: 16px; }
+.toolbar-customization-grid { width: 100%; max-width: 900px; grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); gap: 20px; }
+.toolbar-preview { padding: 10px 0; gap: 12px; }
+.toolbar-preview-buttons { padding: 4px; border-radius: 12px; }
+.toolbar-preview-buttons button { padding: 8px; gap: 5px; white-space: nowrap; }
+.toolbar-preview-selection { white-space: nowrap; }
+.toolbar-preview-selection input { width: 16px; height: 16px; min-width: 16px; min-height: 16px; flex: 0 0 16px; padding: 0; margin: 0; accent-color: var(--accent); }
+.toolbar-module-list { gap: 8px; }
+.toolbar-module-row { min-height: 52px; padding: 8px 10px; gap: 8px; border-radius: 10px; }
+.toolbar-order-buttons { display: flex; gap: 2px; }
+.toolbar-order-buttons button { display: grid; place-items: center; min-width: 28px; min-height: 28px; }
+.toolbar-module-note { margin-top: 8px; }
+@media (max-width: 1100px) { .toolbar-customization-grid { grid-template-columns: 1fr; max-width: 520px; gap: 14px; } }
+
+/* Every feature setting is a row, including nested source/model selectors. */
+#settings-selection .setting-row, #settings-captions .setting-row, #settings-ocr .setting-row { border-bottom: 1px solid var(--line); }
+#settings-selection > .setting-row:last-child, #settings-captions > .setting-row:last-child, #settings-ocr > .setting-row:last-child { border-bottom: 0; }
+.feature-models .setting-row > .select-trigger { width: min(100%, 340px); }
+#settings-toolbar > .ocr-toolbar-settings > .setting-row { border-bottom: 1px solid var(--line); }
+#settings-ocr > .two-cols, #settings-captions > .three-cols { padding-block: 18px; border-bottom: 1px solid var(--line); }
+.profile-card > .profile-select { cursor: default; }

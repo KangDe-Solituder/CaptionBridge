@@ -110,6 +110,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn windows_text_stabilization_does_not_use_local_consensus_mode() {
+        for mode in [
+            crate::models::TranscriptionMode::Basic,
+            crate::models::TranscriptionMode::Consensus,
+        ] {
+            let mut segmenter = BasicSegmenter::new(CaptionSettings {
+                transcription_mode: mode,
+                stable_milliseconds: 100,
+                ..Default::default()
+            });
+            let start = Instant::now();
+            assert!(segmenter.update("Windows subtitle text", start).is_none());
+            let segment = segmenter
+                .update("Windows subtitle text", start + Duration::from_millis(120))
+                .unwrap();
+            assert_eq!(segment.source_text, "Windows subtitle text");
+            assert!(matches!(
+                segment.source,
+                CaptionSourceKind::WindowsLiveCaption
+            ));
+            assert!(segmenter
+                .update("Windows subtitle text", start + Duration::from_millis(240))
+                .is_none());
+        }
+    }
+
+    #[test]
     fn emits_stable_text() {
         let mut segmenter = BasicSegmenter::new(CaptionSettings {
             stable_milliseconds: 100,

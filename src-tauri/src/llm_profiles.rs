@@ -4,7 +4,7 @@ use crate::{
 };
 use serde::Deserialize;
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Deserialize)]
 pub struct ProfileInput {
@@ -36,7 +36,7 @@ fn guard_dependencies(settings: &AppSettings, id: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "该配置已关联：{}。请先在模型与资源中切换来源并解除关联，再删除或修改接口/清空密钥。",
+            "该配置存在 API 关联：{}。请先在模型与资源中解除或更换凭据关联并保存，再删除、修改接口或清空密钥。",
             names.join("、")
         ))
     }
@@ -59,6 +59,11 @@ mod dependency_tests {
         settings.captions.cloud.deepseek.profile_id = None;
         assert!(guard_dependencies(&settings, "shared").is_err());
         settings.ocr.cloud_profile_id = None;
+        settings.translation_profiles = Some(crate::models::TranslationProfiles {
+            selection: Some("shared".into()),
+            live_caption: Some("shared".into()),
+            screenshot: Some("shared".into()),
+        });
         assert!(guard_dependencies(&settings, "shared").is_ok());
     }
 }
@@ -79,6 +84,7 @@ pub fn migrate_legacy(settings: &mut AppSettings, has_key: bool) {
             api_key_configured: has_key,
         });
     }
+    crate::translation_routes::normalize(settings);
 }
 
 fn validate(input: &mut ProfileInput, previous: Option<&LlmProfile>) -> Result<(), String> {
@@ -127,6 +133,10 @@ fn validate(input: &mut ProfileInput, previous: Option<&LlmProfile>) -> Result<(
     }
     if let Some(key) = new_key {
         secrets::normalize_api_key(key)?;
+    }
+    if new_key.is_some() || (!input.clear_api_key && previous.is_some_and(|p| p.api_key_configured))
+    {
+        secrets::validate_credential_transport(&input.config.endpoint)?;
     }
     if previous.is_some_and(|p| {
         p.api_key_configured && p.config.endpoint.trim_end_matches('/') != input.config.endpoint
@@ -231,6 +241,7 @@ pub async fn save_llm_profile(
     if current.llm_profiles.is_empty() || next.llm.profile_id.as_ref() == Some(&id) {
         next.llm = profile.config;
     }
+    crate::translation_routes::normalize(&mut next);
     secrets::write_profile_key(&id, key.as_deref())?;
     if let Err(error) = settings::save(&state.paths, &next) {
         secrets::write_profile_key(&id, old_key.as_deref())
@@ -267,16 +278,30 @@ pub async fn remove_llm_profile(
     state: State<'_, AppState>,
 ) -> Result<SettingsView, String> {
     let mut current = state.settings.write().map_err(|e| e.to_string())?;
-    guard_dependencies(&current, &id)?;
     if !current.llm_profiles.iter().any(|p| p.id == id) {
         return Err("配置不存在".into());
     }
+    guard_dependencies(&current, &id)?;
     let old_key = secrets::profile_key(&id)?;
     let mut next = current.clone();
     next.llm_profiles.retain(|p| p.id != id);
     if next.llm.profile_id.as_ref() == Some(&id) {
         next.llm = LlmProviderSettings::default();
     }
+    crate::translation_routes::normalize(&mut next);
+    let stop_caption = current
+        .translation_profiles
+        .as_ref()
+        .and_then(|r| r.live_caption.as_deref())
+        == Some(id.as_str())
+        || matches!(current.captions.source, crate::models::CaptionSourceConfig::CloudAsr { provider } if current.captions.cloud.config(provider).profile_id.as_deref() == Some(id.as_str()));
+    let stop_ocr = current
+        .translation_profiles
+        .as_ref()
+        .and_then(|r| r.screenshot.as_deref())
+        == Some(id.as_str())
+        || (current.ocr.provider == "deepseek"
+            && current.ocr.cloud_profile_id.as_deref() == Some(id.as_str()));
     secrets::write_profile_key(&id, None)?;
     if let Err(error) = settings::save(&state.paths, &next) {
         secrets::write_profile_key(&id, old_key.as_deref())
@@ -284,7 +309,18 @@ pub async fn remove_llm_profile(
         return Err(error);
     }
     *current = next.clone();
-    Ok(publish(&state, &app, next))
+    let view = publish(&state, &app, next);
+    let app = app.clone();
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        if stop_caption {
+            let _ = crate::set_caption_running_inner(app.clone(), state.clone(), false).await;
+        }
+        if stop_ocr {
+            let _ = crate::ocr::cancel_ocr(app.clone(), app.state::<AppState>()).await;
+        }
+    });
+    Ok(view)
 }
 
 #[cfg(test)]

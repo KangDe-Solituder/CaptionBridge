@@ -45,6 +45,7 @@ export interface VisualSettings {
 }
 export type ToolbarModule = "selection" | "ocr" | "captions";
 export interface AppSettings {
+  translation_profiles?: Record<TranslationMode, string | null>;
   toolbar_order: ToolbarModule[];
   llm_profiles: LlmProfile[];
   schema_version: number; llm: LlmProviderSettings; selection: SelectionSettings;
